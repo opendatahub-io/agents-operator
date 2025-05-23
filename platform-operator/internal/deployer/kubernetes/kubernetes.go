@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
@@ -56,11 +57,13 @@ func (d *KubernetesDeployer) Deploy(ctx context.Context, component *platformv1al
 			return fmt.Errorf("failed to create namespace: %w", err)
 		}
 	}
+	logger.Info("Creating deployment", "component", component.Name, "namespace", component.Namespace)
 	if err := d.createDeployment(ctx, component, namespace); err != nil {
 		return fmt.Errorf("failed to create deployment: %w", err)
 	}
-
+	logger.Info("Creating service", "component", component.Name, "namespace", component.Namespace)
 	if err := d.createService(ctx, component, namespace); err != nil {
+		logger.Error(err, "failed to create service")
 		return fmt.Errorf("failed to create service: %w", err)
 	}
 
@@ -136,6 +139,13 @@ func (d *KubernetesDeployer) createDeployment(ctx context.Context, component *pl
 				Protocol:      port.Protocol,
 			})
 		}
+	} else {
+		containerPorts = append(containerPorts, corev1.ContainerPort{
+			Name:          "http",
+			ContainerPort: 8080,
+			Protocol:      corev1.ProtocolSCTP,
+		})
+
 	}
 	labels := map[string]string{
 		"app.kubernetes.io/name":       component.Name,
@@ -213,7 +223,7 @@ func (d *KubernetesDeployer) createService(ctx context.Context, component *platf
 	kubeSpec := component.Spec.Deployer.Kubernetes
 
 	if kubeSpec == nil {
-		return fmt.Errorf("failed to create deployment - missing expected Spec.Deployer.Kubernetes in the CR")
+		return fmt.Errorf("failed to create service - missing expected Spec.Deployer.Kubernetes in the CR")
 	}
 	labels := map[string]string{
 		"app.kubernetes.io/name":       component.Name,
@@ -237,6 +247,14 @@ func (d *KubernetesDeployer) createService(ctx context.Context, component *platf
 				Protocol:   corev1.ProtocolTCP,
 			})
 		}
+	} else {
+		servicePorts = append(servicePorts, corev1.ServicePort{
+			Name:       "http",
+			Port:       8000,
+			TargetPort: intstr.FromInt(8080),
+			Protocol:   corev1.ProtocolTCP,
+		})
+
 	}
 	service := &corev1.Service{
 
@@ -266,7 +284,8 @@ func (d *KubernetesDeployer) createService(ctx context.Context, component *platf
 	err := d.Client.Get(ctx, k8stypes.NamespacedName{Name: service.Name, Namespace: service.Namespace}, existigService)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			return d.Client.Create(ctx, existigService)
+			d.Log.Info("createService() ---------------------------------- -", "component", component.Name, "Namespace", component.Namespace)
+			return d.Client.Create(ctx, service)
 		}
 		return err
 	}
@@ -298,7 +317,8 @@ func getReplicaCount(component *platformv1alpha1.Component) *int32 {
 }
 func (d *KubernetesDeployer) CheckComponentStatus(ctx context.Context, component *platformv1alpha1.Component) (bool, string, error) {
 
-	d.Log.WithValues("component", component.Name, "namespace", component.Namespace)
+	logger := d.Log.WithValues("Kubernetes Deployer", component.Name, "namespace", component.Namespace)
+	logger.Info("CheckComponentStatus")
 
 	namespace := component.Namespace
 	if component.Spec.Deployer.Namespace != "" {
@@ -313,6 +333,7 @@ func (d *KubernetesDeployer) CheckComponentStatus(ctx context.Context, component
 		d.Log.Error(err, "Failed to get deployment object")
 		return false, fmt.Sprintf("Error checking deployment: %v", err), err
 	}
+	logger.Info("CheckComponentStatus", "status", deployment.Status)
 
 	if deployment.Status.ReadyReplicas < 1 {
 		message := fmt.Sprintf("Deployment not ready: %d/%d replicas available",
@@ -329,11 +350,13 @@ func (d *KubernetesDeployer) CheckComponentStatus(ctx context.Context, component
 		err := d.Client.Get(ctx, k8stypes.NamespacedName{Name: component.Name, Namespace: namespace}, service)
 		if err != nil {
 			if errors.IsNotFound(err) {
+				d.Log.Error(err, "!!!!!!!!!!! CheckComponentStatus() -  Service Not Found")
 				return false, "Service not found", nil
 			}
 			d.Log.Error(err, "Failed to get service")
 			return false, fmt.Sprintf("Error checking service: %v", err), err
 		}
 	}
+	logger.Info("CheckComponentStatus", "Comoponent is ready", component.Name, "namespace", component.Namespace)
 	return true, "Component is ready", nil
 }

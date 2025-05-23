@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kaniko-docker-build-step
+  labels:
+    kagenti.operator.dev/tekton: step 
+data:
+
+  task-spec.yaml: |
+    params:
+      - name: DOCKERFILE
+        type: string
+        description: Path to the Dockerfile relative to context
+        default: "Dockerfile"
+      - name: IMAGE
+        type: string
+        description: Destination image reference
+      - name: SKIP_TLS_VERIFY
+        type: string
+        description: Skip TLS verification when pushing to registry
+        default: "false"
+      - name: subfolder-path
+        type: string
+        description: Path to the subfolder to use as build context
+      - name: registry-secret
+        type: string
+        description: Name of the secret containing registry credentials
+        default: "ghcr-token"
+    steps:
+      - name: docker-build
+        image: gcr.io/kaniko-project/executor:v1.9.1
+        args:
+          - --dockerfile=$(params.DOCKERFILE)
+          - --context=$(workspaces.source.path)/$(params.subfolder-path)
+          - --destination=$(params.IMAGE)
+          - --skip-tls-verify=$(params.SKIP_TLS_VERIFY)
+          - --verbosity=trace
+        env:
+          - name: DOCKER_CONFIG
+            value: /kaniko/.docker
+
+    volumes:
+      - name: registry-credentials
+        secret:
+          secretName: $(params.registry-secret)
+    workspaces:
+      - name: source

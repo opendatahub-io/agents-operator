@@ -3,19 +3,53 @@ kind: Component
 metadata:
   name: research-agent
 spec:
-  description: "A BeeAI research agent for information gathering"
+  description: "A research agent for information gathering"
 
-  # Component type (only one should be specified)
-  agentComponent:
+  agent:
   
     # Optional build specification for building from source
     build:
-      sourceRepository: "github.com/kagenti/agent-examples.git"
-      sourceRevision: "main"
-      sourceSubfolder: "acp/ollama-deep-researcher"
-      repoUser: "cwiklik"
-      sourceCredentials:
-        name: "github-token-secret"
+#      sourceRepository: "github.com/kagenti/agent-examples.git"
+#      sourceRevision: "main"
+#      sourceSubfolder: "acp/ollama-deep-researcher"
+#      repoUser: "cwiklik"
+#      sourceCredentials:
+#        name: "github-token-secret"
+
+      pipeline:
+        steps:
+          - name: github-clone
+            configMap: github-clone-step
+            parameters:
+              - name: github-token-secret
+                value: "github-credentials"  
+              - name: repo-url
+                value: "github.com/kagenti/agent-examples.git"
+              - name: revision
+                value: "main"
+       
+          - name: folder-verification
+            configMap: check-subfolder-step
+            parameters:
+              - name: subfolder-path
+                value: "acp/ollama-deep-researcher"
+              - name: fail-on-missing
+                value: "true"      
+
+          - name: kaniko-build
+            configMap:  kaniko-docker-build-step
+            parameters:
+              - name: IMAGE
+                value: "registry.cr-system.svc.cluster.local:5000/beai-research-agent:latest"
+              - name: subfolder-path
+                value: "acp/ollama-deep-researcher"
+              - name: registry-secret
+                value: "github-token-secret"
+              - name: SKIP_TLS_VERIFY
+                value: "false"
+              - name: DOCKERFILE
+                value: "Dockerfile"    
+
       buildOutput:
         image: "beai-research-agent"
         imageTag: "latest"
@@ -27,13 +61,22 @@ spec:
   deployer:
     name: "my-agent-deployment"
     namespace: "default"
-    deployAfterBuild: true
+    deployAfterBuild: false
     kubernetes:
       imageSpec:
         image: "beai-research-agent"
         imageTag: "latest"
         imageRegistry: "registry.cr-system.svc.cluster.local:5000"
         imagePullPolicy: "IfNotPresent"
+      containerPorts:
+        - name: "http"
+          containerPort: 8090
+          protocol: "TCP"
+      servicePorts:
+        - name: "http"
+          port: 8008
+          targetPort: 8090
+          protocol: "TCP"   
       resources:
         limits:
           cpu: "1"

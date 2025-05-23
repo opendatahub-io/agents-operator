@@ -73,7 +73,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			logger.Error(err, "Failed to initialize component status")
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second * 5}, nil
 	}
 	if !controllerutil.ContainsFinalizer(component, componentFinalizer) {
 		controllerutil.AddFinalizer(component, componentFinalizer)
@@ -83,12 +83,50 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		return ctrl.Result{}, nil
 	}
+
+	doBuild, err := r.triggerBuild(component)
+	if err != nil {
+		logger.Error(err, "Failed to determine if build is needed")
+		return ctrl.Result{}, err
+	}
+	logger.Info("Controller --------", "buildNeeded", doBuild)
+	if doBuild {
+		err := r.Builder.Build(ctx, component)
+		if err != nil {
+			logger.Error(err, "Failed to build component", "component", component.Name)
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+	}
+	if component.Status.BuildStatus != nil {
+		logger.Info("Controller --------", "build Phase", component.Status.BuildStatus.Phase)
+		if component.Status.BuildStatus.Phase == "Building" {
+			err := r.Builder.CheckStatus(ctx, component)
+			if err != nil {
+				logger.Error(err, "Failed to check component status", "component", component.Name)
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: time.Second * 5}, nil
+		} else if component.Status.BuildStatus.Phase == "Succeeded" {
+			err := r.Builder.Cleanup(ctx, component)
+			if err != nil {
+				logger.Error(err, "Failed to cleanup Builder resource", "component", component.Name)
+				return ctrl.Result{}, err
+			}
+		}
+	}
+
 	doDeploy, err := r.isDeploymentNeeded(component)
 	if err != nil {
 		logger.Error(err, "Failed to determine if deployment is needed")
 		return ctrl.Result{}, err
 	}
-	if doDeploy {
+	phase := ""
+	if component.Status.DeploymentStatus != nil {
+		phase = component.Status.DeploymentStatus.Phase
+	}
+	logger.Info("Component deployment phase", "phase", phase)
+	if doDeploy && phase != "deploying" {
 		logger.Info("Starting component deployment --------")
 		component.Status.DeploymentStatus.Phase = "Deploying"
 		component.Status.DeploymentStatus.DeploymentMessage = "Deployment in progress"
@@ -116,24 +154,19 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		return ctrl.Result{RequeueAfter: time.Second * 20}, nil
 	}
-	phase := ""
-	if component.Status.DeploymentStatus != nil {
-		phase = component.Status.DeploymentStatus.Phase
-	}
 
 	if component.Status.DeploymentStatus != nil && component.Status.DeploymentStatus.Phase == "Deploying" {
 		if err := r.checkDeploymentStatus(ctx, component); err != nil {
 			logger.Error(err, "Failed to check deployment status")
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{RequeueAfter: time.Second * 20}, nil
 	}
 	if r.updateComponentStatus(ctx, component); err != nil {
 		logger.Error(err, "Failed to update component status")
 		return ctrl.Result{}, nil
 	}
 	logger.Info("Component reconciliation completed successfully", "phase", phase)
-	return ctrl.Result{RequeueAfter: time.Second * 50}, nil
+	return ctrl.Result{RequeueAfter: time.Second * 10}, nil
 }
 func (r *ComponentReconciler) initializeComponentStatus(ctx context.Context, component *platformv1alpha1.Component) error {
 	now := metav1.Now()
@@ -243,7 +276,7 @@ func (r *ComponentReconciler) checkDeploymentStatus(ctx context.Context, compone
 	}
 	component.Status.DeploymentStatus.DeploymentMessage = message
 
-	logger.Info("checkDeploymentStatus", "phase", component.Status.DeploymentStatus.Phase)
+	logger.Info("checkDeploymentStatus", "phase", component.Status.DeploymentStatus.Phase, "isReady", ready)
 
 	nn := types.NamespacedName{
 		Name:      component.Name,
@@ -272,7 +305,23 @@ func (r *ComponentReconciler) checkDeploymentStatus(ctx context.Context, compone
 	return nil
 }
 
+func (r *ComponentReconciler) triggerBuild(component *platformv1alpha1.Component) (bool, error) {
+	if !r.hasBuildSpec(component) {
+		return false, nil
+	}
+
+	if component.Status.BuildStatus == nil || component.Status.BuildStatus.Phase == "Pending" {
+		return true, nil
+	}
+	if component.Status.BuildStatus.Phase == "Failed" {
+		return true, nil
+	}
+
+	return false, nil
+}
+
 func (r *ComponentReconciler) isDeploymentNeeded(component *platformv1alpha1.Component) (bool, error) {
+	r.Log.Info("isDeploymentNeeded()", "deploymentStatus", component.Status.DeploymentStatus)
 	if component.Status.DeploymentStatus == nil || component.Status.DeploymentStatus.Phase == "Pending" {
 		return true, nil
 	}

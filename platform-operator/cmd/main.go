@@ -44,6 +44,7 @@ import (
 	"github.com/kagenti/operator/platform/internal/deployer/helm"
 	"github.com/kagenti/operator/platform/internal/deployer/kubernetes"
 	"github.com/kagenti/operator/platform/internal/deployer/olm"
+	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -54,7 +55,7 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-
+	utilruntime.Must(tektonv1.AddToScheme(scheme))
 	utilruntime.Must(kagentioperatordevv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
@@ -208,10 +209,16 @@ func main() {
 	}
 
 	if err = (&controller.ComponentReconciler{
-		Client:  mgr.GetClient(),
-		Scheme:  mgr.GetScheme(),
-		Log:     ctrl.Log.WithName("controllers").WithName("Component"),
-		Builder: tekton.NewTektonBuilder(mgr.GetClient(), mgr.GetLogger(), mgr.GetScheme()),
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Log:    ctrl.Log.WithName("controllers").WithName("Component"),
+		Builder: tekton.NewTektonBuilder(
+			mgr.GetClient(),
+			mgr.GetLogger(),
+			mgr.GetScheme(),
+			tekton.NewPipelineComposer(mgr.GetClient()),
+			tekton.NewWorkspaceManager(mgr.GetClient(), mgr.GetLogger()),
+		),
 		DeployerFactory: &deployer.DeployerFactory{
 			Client:       mgr.GetClient(),
 			Scheme:       mgr.GetScheme(),

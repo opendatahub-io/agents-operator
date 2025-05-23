@@ -86,6 +86,69 @@ spec:
                         description: CleanupAfterBuild indicates whether to automatically
                           cleanup after build
                         type: boolean
+                      pipeline:
+                        description: Pipeline specifies the pipeline configuration
+                        properties:
+                          parameters:
+                            description: Parameters contains additional parameters
+                              to pass to the pipeline
+                            items:
+                              description: Parameter defines an argument
+                              properties:
+                                name:
+                                  description: Name of the  argument
+                                  type: string
+                                value:
+                                  description: Value of the argument
+                                  type: string
+                              required:
+                              - name
+                              - value
+                              type: object
+                            type: array
+                          steps:
+                            description: Steps is an ordered list of pipeline steps
+                              to execute
+                            items:
+                              description: PipelineStepSpec defines a single step
+                                in the pipeline
+                              properties:
+                                configMap:
+                                  description: ConfigMap references the ConfigMap
+                                    containing the step definition
+                                  type: string
+                                enabled:
+                                  description: Enabled indicates whether this step
+                                    should be included in the pipeline
+                                  type: boolean
+                                name:
+                                  description: Name is the identifier for the step
+                                  type: string
+                                parameters:
+                                  description: Parameters contains step-specific parameters
+                                    that override global parameters
+                                  items:
+                                    description: Parameter defines an argument
+                                    properties:
+                                      name:
+                                        description: Name of the  argument
+                                        type: string
+                                      value:
+                                        description: Value of the argument
+                                        type: string
+                                    required:
+                                    - name
+                                    - value
+                                    type: object
+                                  type: array
+                              required:
+                              - configMap
+                              - name
+                              type: object
+                            type: array
+                        required:
+                        - steps
+                        type: object
                       repoUser:
                         description: RepoUser is the username in the Git repository
                           containing the source
@@ -117,9 +180,7 @@ spec:
                           containing the source
                         type: string
                     required:
-                    - repoUser
-                    - sourceRepository
-                    - sourceRevision
+                    - pipeline
                     type: object
                 type: object
               dependencies:
@@ -610,6 +671,69 @@ spec:
                         description: CleanupAfterBuild indicates whether to automatically
                           cleanup after build
                         type: boolean
+                      pipeline:
+                        description: Pipeline specifies the pipeline configuration
+                        properties:
+                          parameters:
+                            description: Parameters contains additional parameters
+                              to pass to the pipeline
+                            items:
+                              description: Parameter defines an argument
+                              properties:
+                                name:
+                                  description: Name of the  argument
+                                  type: string
+                                value:
+                                  description: Value of the argument
+                                  type: string
+                              required:
+                              - name
+                              - value
+                              type: object
+                            type: array
+                          steps:
+                            description: Steps is an ordered list of pipeline steps
+                              to execute
+                            items:
+                              description: PipelineStepSpec defines a single step
+                                in the pipeline
+                              properties:
+                                configMap:
+                                  description: ConfigMap references the ConfigMap
+                                    containing the step definition
+                                  type: string
+                                enabled:
+                                  description: Enabled indicates whether this step
+                                    should be included in the pipeline
+                                  type: boolean
+                                name:
+                                  description: Name is the identifier for the step
+                                  type: string
+                                parameters:
+                                  description: Parameters contains step-specific parameters
+                                    that override global parameters
+                                  items:
+                                    description: Parameter defines an argument
+                                    properties:
+                                      name:
+                                        description: Name of the  argument
+                                        type: string
+                                      value:
+                                        description: Value of the argument
+                                        type: string
+                                    required:
+                                    - name
+                                    - value
+                                    type: object
+                                  type: array
+                              required:
+                              - configMap
+                              - name
+                              type: object
+                            type: array
+                        required:
+                        - steps
+                        type: object
                       repoUser:
                         description: RepoUser is the username in the Git repository
                           containing the source
@@ -641,9 +765,7 @@ spec:
                           containing the source
                         type: string
                     required:
-                    - repoUser
-                    - sourceRepository
-                    - sourceRevision
+                    - pipeline
                     type: object
                   toolType:
                     description: |-

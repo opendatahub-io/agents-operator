@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: check-subfolder-step
+  labels:
+    kagenti.operator.dev/tekton: step 
+data:
+  
+  task-spec.yaml: |
+    params:
+      - name: subfolder-path
+        type: string
+        description: Path to the subfolder to verify
+        default: ""
+    steps:
+      - name: check-dir
+        image: public.ecr.aws/docker/library/alpine:latest
+        command:
+          - sh
+          - -c
+        args:
+          - |
+            if [ ! -d "$(workspaces.source.path)/$(params.subfolder-path)" ]; then 
+              echo "Subfolder $(params.subfolder-path) not found"
+              exit 1
+            else 
+              echo "Subfolder $(params.subfolder-path) exists"
+            fi
+    workspaces:
+      - name: source

@@ -12,4 +12,8 @@ type Builder interface {
 	Cancel(ctx context.Context, component *platformv1alpha1.Component) error
 
 	GetStatus(ctx context.Context, component *platformv1alpha1.Component) (platformv1alpha1.BuildStatus, error)
+
+	CheckStatus(ctx context.Context, component *platformv1alpha1.Component) error
+
+	Cleanup(ctx context.Context, component *platformv1alpha1.Component) error
 }
