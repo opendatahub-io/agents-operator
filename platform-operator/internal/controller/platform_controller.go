@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	//"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -84,6 +85,8 @@ func (r *PlatformReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Error(err, "Faled to update platform status")
 		return ctrl.Result{}, err
 	}
+	logger.Info("Agentic platform", "phase", platform.Status.Phase)
+
 	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 }
 func (r *PlatformReconciler) updatePlatformStatus(ctx context.Context, platform *platformv1alpha1.Platform) error {
@@ -162,7 +165,7 @@ func (r *PlatformReconciler) updateCondition(conditions *[]metav1.Condition, con
 	*conditions = append(*conditions, condition)
 }
 func (r *PlatformReconciler) reconcileComponents(ctx context.Context, platform *platformv1alpha1.Platform, components []platformv1alpha1.PlatformComponentRef, componentType string) error {
-	logger := r.Log.WithValues("platform", platform.Name, "Namespace", platform.Namespace)
+	logger := r.Log.WithValues("platform", platform.Name, "Namespace", platform.Namespace, "Type", componentType)
 	logger.Info("Reconciling components", "count", len(components))
 
 	for _, compRef := range components {
@@ -173,27 +176,16 @@ func (r *PlatformReconciler) reconcileComponents(ctx context.Context, platform *
 		}
 		err := r.Client.Get(ctx, nn, component)
 		if client.IgnoreNotFound(err) != nil {
-			logger.Error(err, "Failed to get component", "component", compRef.Name)
+			logger.Error(err, "Failed to fetch component", "component", compRef.Name, "namespace", compRef.ComponentReference.Namespace)
+			return err
+		} else if err != nil {
+			logger.Error(err, "Platform component not found", "component", compRef.Name, "namespace", compRef.ComponentReference.Namespace)
 			return err
 		}
-		if err != nil {
-			logger.Info("Component not found, creating reference", "component", compRef.Name)
-			refComponent := &platformv1alpha1.Component{}
-			refNN := types.NamespacedName{
-				Name:      compRef.ComponentReference.Name,
-				Namespace: r.getNamespace(compRef.ComponentReference.Namespace, platform.Namespace),
-			}
-			if err := r.Client.Get(ctx, refNN, refComponent); err != nil {
-				logger.Error(err, "Referenced component not found", "component", compRef.Name)
-				r.updateComponentStatusInPlatform(ctx, platform, compRef.Name, componentType, "Failed",
-					fmt.Sprintf("Referenced component %s not found", compRef.Name))
-			}
-			if err := r.setComponentOwner(ctx, platform, refComponent, compRef); err != nil {
-				logger.Error(err, "Failed to set component ownership", "component", compRef.Name)
-			}
+		if err := r.setComponentOwner(ctx, platform, component, compRef); err != nil {
+			logger.Error(err, "Failed to set component ownership", "component", compRef.Name)
 		}
 		r.updateComponentStatusFromComponent(ctx, platform, component, compRef.Name, componentType)
-
 	}
 	return nil
 }

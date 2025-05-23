@@ -23,6 +23,10 @@ spec:
       app.kubernetes.io/managed-by: platform-operator
       team: ai-engineering
   
+  infrastructure:
+
+  tools:
+  
   agents:
     - name: research-agent
       componentReference:
