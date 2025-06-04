@@ -35,33 +35,33 @@ archives:
 kos:           
   - repositories: 
     - ghcr.io/kagenti/kagenti-operator/beeai-operator
-    working_dir: beeai
-    main: ./cmd
-    build: beeai
-    tags:
-    - '{{.Version}}'
-    - latest
-    bare: true
-    preserve_import_paths: false
-    platforms:
-    - linux/amd64
-    - linux/arm64
-    env:
-    - CGO_ENABLED=0
+      working_dir: beeai
+      main: ./cmd
+      build: beeai
+      tags:
+        - '{{.Version}}'
+        - latest
+      bare: true
+      preserve_import_paths: false
+      platforms:
+        - linux/amd64
+        - linux/arm64
+      env:
+        - CGO_ENABLED=0
     - ghcr.io/kagenti/kagenti-operator/platform-operator 
-    working_dir: platform-operator 
-    main: ./cmd  
-    build: platform-operator
-    tags:
-    - '{{.Version}}'
-    - latest
-    bare: true
-    preserve_import_paths: false
-    platforms: 
-    - linux/amd64
-    - linux/arm64
-    env: 
-    - CGO_ENABLED=0
+      working_dir: platform-operator 
+      main: ./cmd  
+      build: platform-operator
+      tags:
+        - '{{.Version}}'
+        - latest
+      bare: true
+      preserve_import_paths: false
+      platforms: 
+        - linux/amd64
+        - linux/arm64
+      env: 
+        - CGO_ENABLED=0
 release:
   draft: false
   prerelease: auto
