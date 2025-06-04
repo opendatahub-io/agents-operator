@@ -44,7 +44,7 @@ type KubernetesDeployer struct {
 }
 
 func NewKubernetesDeployer(client client.Client, log logr.Logger, scheme *runtime.Scheme) *KubernetesDeployer {
-	log.Info("NewKubernetesDeployer -------------- ")
+	log.Info("NewKubernetesDeployer ------ ")
 	return &KubernetesDeployer{
 		Client: client,
 		Log:    log,
