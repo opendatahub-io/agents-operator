@@ -1,6 +1,6 @@
 ## Kagenti Operator ##
 
-The `Kagenti Operator` is a Kubernetes operator that manages AI Agent lifecycle supporting deployments from existing images or from source code. 
+The `Kagenti Operator` is a Kubernetes operator that manages AI Agent lifecycle supporting deployments from existing container images or from source code. 
 
 ### Architecture ###
 ```mermaid
