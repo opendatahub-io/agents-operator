@@ -121,6 +121,32 @@ rules:
   - patch
   - update
 - apiGroups:
+  - agent.kagenti.dev
+  resources:
+  - agentruntimes
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - agent.kagenti.dev
+  resources:
+  - agentruntimes/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - agent.kagenti.dev
+  resources:
+  - agentruntimes/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - networking.k8s.io
   resources:
   - ingresses
