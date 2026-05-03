@@ -124,7 +124,7 @@ func main() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.BoolVar(&enableClientRegistration, "enable-client-registration", true,
-		"Enable operator-based Keycloak client registration for agent/tool workloads")
+		"Enable operator-managed Keycloak client registration for agent/tool workloads")
 	flag.StringVar(&configPath, "config-path", "/etc/kagenti/config.yaml", "Path to platform config file")
 	flag.StringVar(&featureGatesPath, "feature-gates-path",
 		"/etc/kagenti/feature-gates/feature-gates.yaml", "Path to feature gates config file")
@@ -402,7 +402,7 @@ func main() {
 			setupLog.Error(err, "unable to create controller", "controller", "ClientRegistration")
 			os.Exit(1)
 		}
-		setupLog.Info("Operator-based client registration controller enabled")
+		setupLog.Info("Operator-managed client registration controller enabled")
 	}
 
 	if controller.TektonConfigCRDExists(mgr.GetConfig()) {
