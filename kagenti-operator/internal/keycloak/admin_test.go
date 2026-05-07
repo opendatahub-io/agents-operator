@@ -105,8 +105,8 @@ func TestAdmin_RegisterOrFetchClient_updatesDrift(t *testing.T) {
 			if attrs == nil {
 				t.Fatal("expected attributes in PUT body")
 			}
-			ex, _ := attrs["standard.token.exchange.enabled"].([]interface{})
-			if len(ex) != 1 || ex[0] != "true" {
+			ex, _ := attrs["standard.token.exchange.enabled"].(string)
+			if ex != "true" {
 				t.Fatalf("expected token exchange true in PUT, got %#v", attrs["standard.token.exchange.enabled"])
 			}
 			w.WriteHeader(http.StatusNoContent)
