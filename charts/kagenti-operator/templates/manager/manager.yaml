@@ -42,9 +42,6 @@ spec:
             {{- if .Values.signatureVerification.enforceNetworkPolicies }}
             - "--enforce-network-policies=true"
             {{- end }}
-            {{- if .Values.signatureVerification.spireTrustDomain }}
-            - "--spire-trust-domain={{ .Values.signatureVerification.spireTrustDomain }}"
-            {{- end }}
             {{- if .Values.signatureVerification.spireTrustBundle.configMapName }}
             - "--spire-trust-bundle-configmap={{ .Values.signatureVerification.spireTrustBundle.configMapName }}"
             {{- end }}
@@ -60,6 +57,19 @@ spec:
             {{- if .Values.signatureVerification.svidExpiryGracePeriod }}
             - "--svid-expiry-grace-period={{ .Values.signatureVerification.svidExpiryGracePeriod }}"
             {{- end }}
+            {{- end }}
+            {{/*
+              --spire-trust-domain is rendered independently of
+              signatureVerification.enabled. The flag is also consumed by the
+              ClientRegistrationReconciler, which resolves SPIFFE client IDs of
+              the form spiffe://<trust-domain>/ns/<ns>/sa/<sa> when
+              authbridge-config has SPIRE_ENABLED=true. Gating it on signature
+              verification would break operator-managed client registration in
+              clusters that use SPIRE for workload identity but do not enable
+              A2A signature enforcement.
+            */}}
+            {{- if .Values.signatureVerification.spireTrustDomain }}
+            - "--spire-trust-domain={{ .Values.signatureVerification.spireTrustDomain }}"
             {{- end }}
           command:
             - {{ .Values.controllerManager.container.cmd }}

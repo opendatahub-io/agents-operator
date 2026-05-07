@@ -100,7 +100,12 @@ signatureVerification:
   auditMode: false
   # Enforce network policies based on signature verification
   enforceNetworkPolicies: false
-  # SPIRE trust domain (required when enabled)
+  # SPIRE trust domain. Required when SPIRE is enabled in the cluster even if
+  # signatureVerification.enabled is false: the ClientRegistrationReconciler
+  # uses this to build SPIFFE-shaped Keycloak client IDs
+  # (spiffe://<trust-domain>/ns/<ns>/sa/<sa>) whenever authbridge-config has
+  # SPIRE_ENABLED=true. The chart renders --spire-trust-domain independently of
+  # signatureVerification.enabled for this reason.
   spireTrustDomain: ""
   # Key within the SPIRE trust bundle ConfigMap. Matches the SPIRE hardened Helm chart default
   # and the binary flag default. Override to "bundle.crt" only for older ZTWIM deployments.
