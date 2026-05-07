@@ -27,7 +27,7 @@ print(f'  Signatures: {len(d.get(\"signatures\", []))}')
 echo ""
 
 echo "=== 3. JWS Protected Header ==="
-kubectl get agentcard weather-agent-card -n "$NAMESPACE" \
+kubectl get agentcard weather-agent-deployment-card -n "$NAMESPACE" \
   -o jsonpath='{.status.card.signatures[0].protected}' | python3 -c "
 import sys, base64, json
 b64 = sys.stdin.read().strip()
@@ -40,7 +40,7 @@ print(f'  x5c certs:  {len(header.get(\"x5c\", []))}')
 echo ""
 
 echo "=== 4. Operator Verification Status ==="
-kubectl get agentcard weather-agent-card -n "$NAMESPACE" \
+kubectl get agentcard weather-agent-deployment-card -n "$NAMESPACE" \
   -o jsonpath='{.status.conditions}' | python3 -c "
 import sys, json
 for c in json.loads(sys.stdin.read()):
@@ -54,7 +54,7 @@ for c in json.loads(sys.stdin.read()):
 echo ""
 
 echo "=== 5. Identity Binding ==="
-kubectl get agentcard weather-agent-card -n "$NAMESPACE" \
+kubectl get agentcard weather-agent-deployment-card -n "$NAMESPACE" \
   -o jsonpath='{.status}' | python3 -c "
 import sys, json
 s = json.loads(sys.stdin.read())
