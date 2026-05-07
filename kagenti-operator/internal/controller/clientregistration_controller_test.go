@@ -25,6 +25,7 @@ import (
 
 const (
 	clientRegistrationTestNamespace      = "test-ns"
+	clientRegistrationTestOperatorNS     = "operator-ns"
 	clientRegistrationTestDeploymentName = "my-dep"
 )
 
@@ -197,6 +198,10 @@ func authbridgeConfigMapForTest(ns, keycloakURL string) *corev1.ConfigMap {
 	}
 }
 
+// keycloakAdminSecretForTest creates a test keycloak-admin-secret.
+// The secret should be created in the operator namespace (clientRegistrationTestOperatorNS),
+// NOT in agent namespaces. This matches the production behavior where admin credentials
+// are restricted to the operator namespace for security.
 func keycloakAdminSecretForTest(ns string) *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -309,11 +314,13 @@ func TestClientRegistrationReconciler_Reconcile(t *testing.T) {
 			wantRequeue: requeue,
 		},
 		{
-			name: "missing keycloak admin secret waits with requeue",
+			name: "missing keycloak admin secret in operator namespace waits with requeue",
 			objs: []client.Object{
 				clusterFeatureGatesConfigMap(true),
 				testDeploymentForClientReg(),
 				authbridgeConfigMapForTest(clientRegistrationTestNamespace, "https://keycloak.example"),
+				// Note: keycloak-admin-secret intentionally NOT created in operator namespace
+				// to test the missing secret path
 			},
 			wantRequeue: requeue,
 		},
@@ -323,7 +330,11 @@ func TestClientRegistrationReconciler_Reconcile(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			scheme := clientRegistrationTestScheme(t)
 			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tc.objs...).Build()
-			r := &ClientRegistrationReconciler{Client: c, Scheme: scheme}
+			r := &ClientRegistrationReconciler{
+				Client:            c,
+				Scheme:            scheme,
+				OperatorNamespace: clientRegistrationTestOperatorNS,
+			}
 			res, err := r.Reconcile(ctx, req)
 			if err != nil {
 				t.Fatalf("Reconcile: %v", err)
@@ -351,9 +362,14 @@ func TestClientRegistrationReconciler_Reconcile(t *testing.T) {
 			clusterFeatureGatesConfigMap(true),
 			dep,
 			authbridgeConfigMapForTest(clientRegistrationTestNamespace, srv.URL),
-			keycloakAdminSecretForTest(clientRegistrationTestNamespace),
+			// keycloak-admin-secret created in OPERATOR namespace (not agent namespace)
+			keycloakAdminSecretForTest(clientRegistrationTestOperatorNS),
 		).Build()
-		r := &ClientRegistrationReconciler{Client: c, Scheme: scheme}
+		r := &ClientRegistrationReconciler{
+			Client:            c,
+			Scheme:            scheme,
+			OperatorNamespace: clientRegistrationTestOperatorNS,
+		}
 		res, err := r.Reconcile(ctx, req)
 		if err != nil || res != (ctrl.Result{}) {
 			t.Fatalf("got (%v, %v), want (zero Result, nil)", res, err)

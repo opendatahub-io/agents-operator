@@ -35,7 +35,7 @@ import (
 	"github.com/kagenti/operator/internal/keycloak"
 )
 
-// Well-known namespace resources (same contract as kagenti-webhook injector).
+// Well-known namespace resources.
 const (
 	authbridgeConfigConfigMap = "authbridge-config"
 	keycloakAdminSecret       = "keycloak-admin-secret"
@@ -55,10 +55,15 @@ const (
 // never reference a missing Secret; the webhook mounts the Secret for injected sidecars that use shared-data.
 type ClientRegistrationReconciler struct {
 	client.Client
-	// APIReader reads authbridge-config and keycloak-admin-secret from the API server. Those objects
-	// are not in the manager's ConfigMap cache (see cmd/main.go cache.ByObject for ConfigMap).
+	// APIReader reads authbridge-config from agent namespaces and keycloak-admin-secret from
+	// the operator's namespace from the API server. Those objects are not in the manager's
+	// ConfigMap cache (see cmd/main.go cache.ByObject for ConfigMap).
 	APIReader client.Reader
 	Scheme    *runtime.Scheme
+
+	// OperatorNamespace is the namespace where the operator is running and where keycloak-admin-secret
+	// is located. This is dynamically detected from the operator's service account.
+	OperatorNamespace string
 
 	SpireTrustDomain string
 	// KeycloakAdminTokenCache caches admin password-grant tokens by Keycloak URL and credentials to
@@ -163,10 +168,13 @@ func (r *ClientRegistrationReconciler) reconcileOne(
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
+	// Read keycloak-admin-secret from the operator's namespace, not from agent namespace.
+	// This prevents Keycloak admin credentials from being replicated to every agent namespace,
+	// which would be a security risk if an agent namespace is compromised.
 	adminSecret := &corev1.Secret{}
-	if err := r.uncachedReader().Get(ctx, types.NamespacedName{Namespace: ns, Name: keycloakAdminSecret}, adminSecret); err != nil {
+	if err := r.uncachedReader().Get(ctx, types.NamespacedName{Namespace: r.OperatorNamespace, Name: keycloakAdminSecret}, adminSecret); err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.Info("waiting for keycloak-admin-secret", "namespace", ns)
+			logger.Info("waiting for keycloak-admin-secret", "namespace", r.OperatorNamespace)
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 		return ctrl.Result{}, err
