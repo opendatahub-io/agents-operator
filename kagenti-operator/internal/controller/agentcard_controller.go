@@ -140,6 +140,7 @@ type AgentCardReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups=agents.x-k8s.io,resources=sandboxes,verbs=get;list;watch
 
 func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	agentCardLogger.V(1).Info("Reconciling AgentCard", "namespacedName", req.NamespacedName)
@@ -1281,6 +1282,16 @@ func (r *AgentCardReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.mapWorkloadToAgentCard("apps/v1", "StatefulSet")),
 			builder.WithPredicates(workloadPredicates),
 		)
+
+	if SandboxCRDExists(mgr.GetConfig()) {
+		sandboxObj := &unstructured.Unstructured{}
+		sandboxObj.SetGroupVersionKind(sandboxGVK)
+		controllerBuilder = controllerBuilder.Watches(
+			sandboxObj,
+			handler.EnqueueRequestsFromMapFunc(r.mapWorkloadToAgentCard("agents.x-k8s.io/v1alpha1", "Sandbox")),
+			builder.WithPredicates(workloadPredicates),
+		)
+	}
 
 	return controllerBuilder.
 		Named("AgentCard").
