@@ -413,6 +413,15 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 			}
 		}
 
+		// Mount operator-managed Keycloak client credentials for any container that uses
+		// shared-data (authbridge-proxy reads /shared/client-id.txt and /shared/client-secret.txt
+		// for its jwt-validation + token-exchange plugins). Without this, proxy-sidecar mode
+		// polls the credential files forever and rejects every inbound request with
+		// 503 "identity not yet configured (credentials pending)". Envoy-sidecar mode
+		// already calls this helper further down; the proxy-sidecar branch returns early,
+		// so it needs its own invocation.
+		ApplyKeycloakClientCredentialsSecretVolumes(podSpec, annotations)
+
 		mutatorLog.Info("proxy-sidecar mode injection complete",
 			"namespace", namespace, "crName", crName,
 			"image", builder.cfg.Images.AuthBridgeLight,

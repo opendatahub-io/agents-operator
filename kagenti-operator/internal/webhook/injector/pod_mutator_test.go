@@ -746,6 +746,71 @@ func TestInjectAuthBridge_ProxySidecarMode_InjectsCorrectly(t *testing.T) {
 	}
 }
 
+func TestInjectAuthBridge_ProxySidecarMode_MountsKeycloakCredentials(t *testing.T) {
+	// Regression: the proxy-sidecar branch used to return before reaching
+	// ApplyKeycloakClientCredentialsSecretVolumes. That left authbridge-proxy polling
+	// /shared/client-id.txt forever and returning 503 "identity not yet configured".
+	m := newTestMutator()
+	ctx := context.Background()
+
+	podSpec := &corev1.PodSpec{
+		ServiceAccountName: "my-agent",
+		Containers: []corev1.Container{
+			{Name: "agent", Image: "my-agent:latest"},
+		},
+	}
+	labels := map[string]string{
+		KagentiTypeLabel: KagentiTypeAgent,
+	}
+	annotations := map[string]string{
+		AnnotationAuthBridgeMode:           ModeProxySidecar,
+		AnnotationKeycloakClientSecretName: "kagenti-keycloak-client-credentials-abc12345",
+	}
+
+	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, annotations)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !mutated {
+		t.Fatal("proxy-sidecar mode should mutate the pod")
+	}
+
+	// The Secret volume must be declared so kubelet can resolve it.
+	volFound := false
+	for _, v := range podSpec.Volumes {
+		if v.Secret != nil && v.Secret.SecretName == "kagenti-keycloak-client-credentials-abc12345" {
+			volFound = true
+			break
+		}
+	}
+	if !volFound {
+		t.Error("expected a Secret volume for operator-managed Keycloak client credentials; got none")
+	}
+
+	// The authbridge-proxy container must mount client-id.txt and client-secret.txt
+	// via subPath so its plugins can read them.
+	var proxyMounts []corev1.VolumeMount
+	for _, c := range podSpec.Containers {
+		if c.Name == AuthBridgeProxyContainerName {
+			proxyMounts = c.VolumeMounts
+			break
+		}
+	}
+	haveIDMount, haveSecretMount := false, false
+	for _, m := range proxyMounts {
+		if m.MountPath == "/shared/client-id.txt" && m.SubPath == "client-id.txt" {
+			haveIDMount = true
+		}
+		if m.MountPath == "/shared/client-secret.txt" && m.SubPath == "client-secret.txt" {
+			haveSecretMount = true
+		}
+	}
+	if !haveIDMount || !haveSecretMount {
+		t.Errorf("authbridge-proxy missing Keycloak credential subPath mounts: id=%v secret=%v",
+			haveIDMount, haveSecretMount)
+	}
+}
+
 func TestInjectHTTPProxyEnv_DoesNotDuplicate(t *testing.T) {
 	c := &corev1.Container{
 		Name: "agent",

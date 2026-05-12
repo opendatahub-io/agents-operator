@@ -9,8 +9,6 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -32,7 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/yaml"
 
-	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
+	"github.com/kagenti/operator/internal/clientreg"
 	"github.com/kagenti/operator/internal/keycloak"
 )
 
@@ -44,10 +42,12 @@ const (
 	// LabelClientRegistrationInject: when not "true", the operator registers the OAuth client and sets
 	// AnnotationKeycloakClientSecretName. Value "true" opts the workload into the legacy webhook
 	// client-registration sidecar; the operator skips registration for that workload.
-	LabelClientRegistrationInject = "kagenti.io/client-registration-inject"
+	// Re-exported from internal/clientreg so existing callers keep working.
+	LabelClientRegistrationInject = clientreg.LabelClientRegistrationInject
 
 	// AnnotationKeycloakClientSecretName must match kagenti-webhook injector.AnnotationKeycloakClientSecretName.
-	AnnotationKeycloakClientSecretName = "kagenti.io/keycloak-client-credentials-secret-name"
+	// Re-exported from internal/clientreg to give both the controller and the webhook one source of truth.
+	AnnotationKeycloakClientSecretName = clientreg.AnnotationKeycloakClientSecretName
 )
 
 // ClientRegistrationReconciler registers OAuth clients in Keycloak and patches agent/tool workloads that
@@ -303,34 +303,14 @@ func injectKeycloakClientCredentialsAnnotation(template *corev1.PodTemplateSpec,
 	return true
 }
 
-// keycloakClientCredentialsSkipReason returns a non-empty human-readable reason when this controller should
-// not process the workload; empty string means reconcile should continue.
+// keycloakClientCredentialsSkipReason and workloadWantsOperatorClientReg delegate to internal/clientreg
+// so the controller's reconcile decision and the webhook's admission decision stay in lockstep.
 func keycloakClientCredentialsSkipReason(labels map[string]string, injectTools bool) string {
-	if labels == nil {
-		return "pod template has no labels"
-	}
-	if labels[LabelClientRegistrationInject] == "true" {
-		return fmt.Sprintf("%s is \"true\" (legacy webhook client-registration sidecar; operator-managed registration disabled for this workload)", LabelClientRegistrationInject)
-	}
-	switch labels[LabelAgentType] {
-	case LabelValueAgent:
-		return ""
-	case string(agentv1alpha1.RuntimeTypeTool):
-		if !injectTools {
-			return "kagenti.io/type is tool but cluster injectTools feature gate is disabled"
-		}
-		return ""
-	default:
-		t := labels[LabelAgentType]
-		if t == "" {
-			return "kagenti.io/type label is missing or not agent/tool"
-		}
-		return fmt.Sprintf("kagenti.io/type=%q is not agent or tool", t)
-	}
+	return clientreg.SkipReason(labels, injectTools)
 }
 
 func workloadWantsOperatorClientReg(labels map[string]string, injectTools bool) bool {
-	return keycloakClientCredentialsSkipReason(labels, injectTools) == ""
+	return clientreg.WorkloadWantsOperatorClientReg(labels, injectTools)
 }
 
 type authbridgeConfig struct {
@@ -440,9 +420,11 @@ func resolveKeycloakClientID(namespace, workloadName, serviceAccount string, spi
 	return fmt.Sprintf("spiffe://%s/ns/%s/sa/%s", trustDomain, namespace, sa), nil
 }
 
+// keycloakClientCredentialsSecretName is a thin alias over the shared helper so call sites in this
+// package stay unchanged. The shared implementation lives in internal/clientreg so the AuthBridge
+// mutating webhook can compute the same name at admission time.
 func keycloakClientCredentialsSecretName(namespace, workload string) string {
-	sum := sha256.Sum256([]byte(namespace + "\000" + workload + "\000kagenti-keycloak-client-credentials"))
-	return "kagenti-keycloak-client-credentials-" + hex.EncodeToString(sum[:8])
+	return clientreg.KeycloakClientCredentialsSecretName(namespace, workload)
 }
 
 func (r *ClientRegistrationReconciler) ensureClientCredentialsSecret(ctx context.Context, owner client.Object, secretName, clientID, clientSecret string) error {

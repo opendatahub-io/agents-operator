@@ -239,6 +239,97 @@ var _ = Describe("AuthBridge Pod Webhook", func() {
 			Expect(containerNames(pod.Spec.Containers)).To(ContainElement(injector.AuthBridgeContainerName))
 		})
 	})
+
+	// Pre-population of the Keycloak client-credentials annotation ensures that the first pod
+	// created for an agent workload mounts the operator-produced Secret without having to wait
+	// for the ClientRegistration controller to patch the workload's pod template and trigger a
+	// pod recreate. Kubelet resolves the Secret lazily (Optional=false), so the pod simply sits
+	// in ContainerCreating until the controller creates the Secret.
+	Context("operator-managed Keycloak credentials: annotation pre-population", func() {
+		It("sets the annotation for an agent workload missing it", func() {
+			createAgentRuntime(testNamespace, "prepop-agent")
+
+			pod := newTestPod("prepop-agent", map[string]string{
+				"kagenti.io/type":   "agent",
+				"kagenti.io/inject": "enabled",
+			})
+
+			err := k8sClient.Create(ctx, pod)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(pod), pod)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(pod.Annotations).To(HaveKey(injector.AnnotationKeycloakClientSecretName))
+			Expect(pod.Annotations[injector.AnnotationKeycloakClientSecretName]).
+				To(HavePrefix("kagenti-keycloak-client-credentials-"))
+
+			// The webhook should also have declared the Secret volume (lazy-resolved by kubelet).
+			found := false
+			for _, v := range pod.Spec.Volumes {
+				if v.Secret != nil && v.Secret.SecretName == pod.Annotations[injector.AnnotationKeycloakClientSecretName] {
+					found = true
+					break
+				}
+			}
+			Expect(found).To(BeTrue(), "expected a Secret volume referencing the pre-populated credentials secret")
+		})
+
+		It("does not overwrite an existing annotation", func() {
+			createAgentRuntime(testNamespace, "prepop-existing")
+
+			const preset = "kagenti-keycloak-client-credentials-deadbeef"
+			pod := newTestPod("prepop-existing", map[string]string{
+				"kagenti.io/type":   "agent",
+				"kagenti.io/inject": "enabled",
+			})
+			pod.Annotations = map[string]string{
+				injector.AnnotationKeycloakClientSecretName: preset,
+			}
+
+			err := k8sClient.Create(ctx, pod)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(pod), pod)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(pod.Annotations[injector.AnnotationKeycloakClientSecretName]).To(Equal(preset))
+		})
+
+		It("skips tool workloads when the injectTools gate is disabled", func() {
+			pod := newTestPod("prepop-tool", map[string]string{
+				"kagenti.io/type":   "tool",
+				"kagenti.io/inject": "enabled",
+			})
+
+			err := k8sClient.Create(ctx, pod)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(pod), pod)
+			Expect(err).NotTo(HaveOccurred())
+
+			// No injection happens at all when injectTools is off, so the annotation should not be set.
+			Expect(pod.Annotations).NotTo(HaveKey(injector.AnnotationKeycloakClientSecretName))
+		})
+
+		It("skips workloads opted into the legacy client-registration sidecar", func() {
+			createAgentRuntime(testNamespace, "prepop-legacy")
+
+			pod := newTestPod("prepop-legacy", map[string]string{
+				"kagenti.io/type":                       "agent",
+				"kagenti.io/inject":                     "enabled",
+				"kagenti.io/client-registration-inject": "true",
+			})
+
+			err := k8sClient.Create(ctx, pod)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(pod), pod)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(pod.Annotations).NotTo(HaveKey(injector.AnnotationKeycloakClientSecretName))
+		})
+	})
 })
 
 var _ = Describe("deriveWorkloadName", func() {

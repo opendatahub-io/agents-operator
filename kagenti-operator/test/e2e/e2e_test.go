@@ -364,6 +364,12 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 		_, err = utils.KubectlApplyStdin(authBridgeConfigMapFixture(), authBridgeTestNamespace)
 		Expect(err).NotTo(HaveOccurred())
 
+		By("pre-creating Keycloak client credentials Secret (no real Keycloak in e2e)")
+		_, err = utils.KubectlApplyStdin(
+			keycloakClientCredentialsSecretFixture(authBridgeTestNamespace, "authbridge-agent"),
+			authBridgeTestNamespace)
+		Expect(err).NotTo(HaveOccurred())
+
 		By("creating AgentRuntime CR for authbridge-agent (with retry for webhook readiness)")
 		Eventually(func() error {
 			_, err := utils.KubectlApplyStdin(authBridgeAgentRuntimeFixture(), authBridgeTestNamespace)
@@ -1508,6 +1514,12 @@ rules:
 
 		By("applying auth bridge ConfigMaps")
 		_, err = utils.KubectlApplyStdin(combinedConfigMapFixture(), combinedTestNamespace)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("pre-creating Keycloak client credentials Secret (no real Keycloak in e2e)")
+		_, err = utils.KubectlApplyStdin(
+			keycloakClientCredentialsSecretFixture(combinedTestNamespace, "combined-agent"),
+			combinedTestNamespace)
 		Expect(err).NotTo(HaveOccurred())
 
 		By("ensuring kagenti-system namespace exists")

@@ -16,10 +16,39 @@ limitations under the License.
 
 package e2e
 
+import (
+	"encoding/base64"
+	"fmt"
+
+	"github.com/kagenti/operator/internal/clientreg"
+)
+
 const testNamespace = "e2e-agentcard-test"
 const authBridgeTestNamespace = "e2e-authbridge-test"
 const authBridgeAgentName = "authbridge-agent"
 const authBridgeAgentCMName = "authbridge-config-" + authBridgeAgentName
+
+// keycloakClientCredentialsSecretFixture returns YAML for a Secret that matches the deterministic
+// name the AuthBridge mutating webhook will pre-populate on pods of the given workload. Without it,
+// the webhook's eager Secret mount (introduced to eliminate the first-deploy credentials race) would
+// keep the pod in ContainerCreating forever in the e2e environment, which has no real Keycloak + no
+// admin-secret for the ClientRegistration controller to successfully register clients. The values
+// are dummy — these tests exercise injection shape, not OAuth flow.
+func keycloakClientCredentialsSecretFixture(namespace, workload string) string {
+	name := clientreg.KeycloakClientCredentialsSecretName(namespace, workload)
+	clientID := base64.StdEncoding.EncodeToString([]byte("e2e-" + workload))
+	clientSecret := base64.StdEncoding.EncodeToString([]byte("e2e-dummy-secret"))
+	return fmt.Sprintf(`apiVersion: v1
+kind: Secret
+metadata:
+  name: %s
+  namespace: %s
+type: Opaque
+data:
+  client-id.txt: %s
+  client-secret.txt: %s
+`, name, namespace, clientID, clientSecret)
+}
 
 // echoAgentFixture returns YAML for echo-agent Deployment + Service (used by S1, S3).
 func echoAgentFixture() string {
