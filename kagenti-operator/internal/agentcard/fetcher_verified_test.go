@@ -66,15 +66,24 @@ func TestSpiffeIDFromCert_MultipleURIs(t *testing.T) {
 
 func TestNewSpiffeFetcher(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
-	fetcher := NewSpiffeFetcher(nil, "example.org")
+	fetcher, err := NewSpiffeFetcher(nil, "example.org")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(fetcher).NotTo(gomega.BeNil())
 	g.Expect(fetcher.trustDomain).To(gomega.Equal("example.org"))
 }
 
+func TestNewSpiffeFetcher_InvalidTrustDomain(t *testing.T) {
+	g := gomega.NewGomegaWithT(t)
+	_, err := NewSpiffeFetcher(nil, "")
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("invalid SPIFFE trust domain"))
+}
+
 func TestSpiffeFetcher_UnsupportedProtocol(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
-	fetcher := NewSpiffeFetcher(nil, "example.org")
-	_, err := fetcher.FetchAuthenticated(t.Context(), "unsupported", "https://example.com")
+	fetcher, err := NewSpiffeFetcher(nil, "example.org")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = fetcher.FetchAuthenticated(t.Context(), "unsupported", "https://example.com")
 	g.Expect(err).To(gomega.HaveOccurred())
 	g.Expect(err.Error()).To(gomega.ContainSubstring("unsupported protocol"))
 }

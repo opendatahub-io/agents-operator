@@ -103,8 +103,7 @@ func (f *DefaultFetcher) fetchA2ACard(ctx context.Context, serviceURL string) (*
 
 	card, legacyErr := f.fetchAgentCardFromPath(ctx, serviceURL, A2ALegacyAgentCardPath)
 	if legacyErr != nil {
-		// Return the original error since the primary path is canonical.
-		return nil, err
+		return nil, legacyErr
 	}
 
 	fetcherLogger.Info("Agent card served from deprecated endpoint",
@@ -256,8 +255,13 @@ type SpiffeFetcher struct {
 
 // NewSpiffeFetcher creates a SpiffeFetcher that uses the provided X509Source
 // for mTLS and validates peers against the given trust domain.
-func NewSpiffeFetcher(source *workloadapi.X509Source, trustDomain string) *SpiffeFetcher {
-	td, _ := spiffeid.TrustDomainFromString(trustDomain)
+func NewSpiffeFetcher(
+	source *workloadapi.X509Source, trustDomain string,
+) (*SpiffeFetcher, error) {
+	td, err := spiffeid.TrustDomainFromString(trustDomain)
+	if err != nil {
+		return nil, fmt.Errorf("invalid SPIFFE trust domain %q: %w", trustDomain, err)
+	}
 	tlsCfg := tlsconfig.MTLSClientConfig(source, source, tlsconfig.AuthorizeMemberOf(td))
 	return &SpiffeFetcher{
 		x509Source:  source,
@@ -266,7 +270,7 @@ func NewSpiffeFetcher(source *workloadapi.X509Source, trustDomain string) *Spiff
 			Timeout:   DefaultFetchTimeout,
 			Transport: &http.Transport{TLSClientConfig: tlsCfg},
 		},
-	}
+	}, nil
 }
 
 func (f *SpiffeFetcher) FetchAuthenticated(ctx context.Context, protocol, serviceURL string) (*FetchResult, error) {
@@ -294,7 +298,7 @@ func (f *SpiffeFetcher) fetchA2ACardAuthenticated(ctx context.Context, serviceUR
 
 	result, legacyErr := f.fetchAuthenticatedFromPath(ctx, serviceURL, A2ALegacyAgentCardPath)
 	if legacyErr != nil {
-		return nil, err
+		return nil, legacyErr
 	}
 
 	fetcherLogger.Info("Agent card served from deprecated endpoint (authenticated)",
@@ -333,12 +337,20 @@ func (f *SpiffeFetcher) fetchAuthenticatedFromPath(ctx context.Context, serviceU
 	}, nil
 }
 
-// extractSpiffeIDFromTLS returns the SPIFFE ID from the peer certificate's URI SANs.
+// extractSpiffeIDFromTLS returns the SPIFFE ID from the verified peer
+// certificate's URI SANs. Prefers VerifiedChains (post-validation) over
+// PeerCertificates (pre-validation) for defense-in-depth.
 func extractSpiffeIDFromTLS(state *tls.ConnectionState) string {
-	if state == nil || len(state.PeerCertificates) == 0 {
+	if state == nil {
 		return ""
 	}
-	return spiffeIDFromCert(state.PeerCertificates[0])
+	if len(state.VerifiedChains) > 0 && len(state.VerifiedChains[0]) > 0 {
+		return spiffeIDFromCert(state.VerifiedChains[0][0])
+	}
+	if len(state.PeerCertificates) > 0 {
+		return spiffeIDFromCert(state.PeerCertificates[0])
+	}
+	return ""
 }
 
 func spiffeIDFromCert(cert *x509.Certificate) string {

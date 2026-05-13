@@ -349,6 +349,9 @@ func (r *AgentCardReconciler) fetchCardData(
 		}
 		agentCardLogger.Info("TLS port not found on service, falling back to HTTP fetch",
 			"service", workload.ServiceName, "expectedPortName", AgentTLSPortName)
+		r.Recorder.Event(agentCard, corev1.EventTypeWarning, "FallbackToHTTP",
+			fmt.Sprintf("Service %s has no %s port; fetch is unverified",
+				workload.ServiceName, AgentTLSPortName))
 		cardData, err := r.AgentFetcher.Fetch(
 			ctx, protocol, serviceURL, workload.ServiceName, agentCard.Namespace)
 		if err != nil {
@@ -438,7 +441,10 @@ func (r *AgentCardReconciler) evaluateTrust( //nolint:gocyclo
 		eval.identityMatch = &match
 	}
 
-	// Compute final Verified status
+	// Compute final Verified status.
+	// mTLS takes precedence over JWS: if the agent was authenticated via mTLS,
+	// it is unconditionally Verified regardless of JWS state. This avoids
+	// ambiguity when both mechanisms succeed with different SPIFFE IDs.
 	if eval.isMTLSVerified {
 		eval.verifiedStatus = metav1.ConditionTrue
 		eval.verifiedReason = "mTLSVerified"

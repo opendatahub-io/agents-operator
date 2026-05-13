@@ -361,7 +361,12 @@ func main() {
 					"--spire-trust-domain is required when --enable-verified-fetch=true")
 				os.Exit(1)
 			}
-			authenticatedFetcher = agentcard.NewSpiffeFetcher(fetchX509Source, td)
+			fetcher, fetcherErr := agentcard.NewSpiffeFetcher(fetchX509Source, td)
+			if fetcherErr != nil {
+				setupLog.Error(fetcherErr, "Failed to create authenticated fetcher")
+				os.Exit(1)
+			}
+			authenticatedFetcher = fetcher
 			defer fetchX509Source.Close() //nolint:errcheck
 			setupLog.Info("Verified fetch enabled (mTLS via SPIFFE)",
 				"socket", verifiedFetchSpiffeSocket,
