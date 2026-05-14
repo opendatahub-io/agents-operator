@@ -416,7 +416,7 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 	SetDefaultEventuallyPollingInterval(time.Second)
 
 	Context("Sidecar injection", Ordered, func() {
-		It("should inject envoy-proxy, proxy-init, and spiffe-helper", func() {
+		It("should inject envoy-proxy + proxy-init with bundled spiffe-helper", func() {
 			By("deploying authbridge-agent")
 			_, err := utils.KubectlApplyStdin(authBridgeAgentFixture(), authBridgeTestNamespace)
 			Expect(err).NotTo(HaveOccurred())
@@ -424,6 +424,12 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 			By("waiting for deployment to be ready")
 			Expect(utils.WaitForDeploymentReady("authbridge-agent", authBridgeTestNamespace, 3*time.Minute)).To(Succeed())
 
+			// Spiffe-helper is bundled inside the authbridge-envoy combined
+			// image and gated by SPIRE_ENABLED — there is no separate
+			// "spiffe-helper" container anymore. Same for client-registration
+			// (operator-managed Secret). Bundling is verified below via the
+			// SPIRE_ENABLED env var + spiffe-helper-config volume mount on
+			// the envoy-proxy container.
 			By("verifying injected sidecar containers")
 			Eventually(func(g Gomega) {
 				containers, err := utils.KubectlGetJsonpath("pod", "",
@@ -431,8 +437,18 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 					"{.items[?(@.metadata.labels.app\\.kubernetes\\.io/name=='authbridge-agent')].spec.containers[*].name}")
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(containers).To(ContainSubstring("envoy-proxy"))
-				g.Expect(containers).To(ContainSubstring("spiffe-helper"))
+				g.Expect(containers).NotTo(ContainSubstring("spiffe-helper"),
+					"spiffe-helper is bundled inside envoy-proxy, not a separate container")
 				g.Expect(containers).NotTo(ContainSubstring("kagenti-client-registration"))
+			}).Should(Succeed())
+
+			By("verifying spiffe-helper is wired into envoy-proxy via SPIRE_ENABLED env")
+			Eventually(func(g Gomega) {
+				spireEnv, err := utils.KubectlGetJsonpath("pod", "",
+					authBridgeTestNamespace,
+					"{.items[?(@.metadata.labels.app\\.kubernetes\\.io/name=='authbridge-agent')].spec.containers[?(@.name=='envoy-proxy')].env[?(@.name=='SPIRE_ENABLED')].value}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(spireEnv).To(Equal("true"))
 			}).Should(Succeed())
 
 			By("verifying injected init containers")
@@ -496,7 +512,7 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 				g.Expect(phase).To(Equal("Running"))
 			}, 3*time.Minute, 2*time.Second).Should(Succeed())
 
-			By("verifying exactly 1 envoy-proxy, 1 spiffe-helper, 1 proxy-init")
+			By("verifying exactly 1 envoy-proxy and 1 proxy-init (no separate spiffe-helper)")
 			cmd = exec.Command("kubectl", "get", "pods",
 				"-l", "app.kubernetes.io/name=authbridge-agent",
 				"-n", authBridgeTestNamespace,
@@ -504,7 +520,8 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 			containers, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(strings.Count(containers, "envoy-proxy")).To(Equal(1), "expected exactly 1 envoy-proxy")
-			Expect(strings.Count(containers, "spiffe-helper")).To(Equal(1), "expected exactly 1 spiffe-helper")
+			Expect(strings.Count(containers, "spiffe-helper")).To(Equal(0),
+				"spiffe-helper is bundled inside envoy-proxy, should not appear as a separate container")
 
 			cmd = exec.Command("kubectl", "get", "pods",
 				"-l", "app.kubernetes.io/name=authbridge-agent",
@@ -1731,6 +1748,9 @@ rules:
 	})
 
 	It("should inject Auth Bridge sidecars into workload pods", func() {
+		// Spiffe-helper is bundled inside the envoy-proxy combined image
+		// and gated by SPIRE_ENABLED — verified below via env var, not
+		// by presence of a separate container.
 		By("verifying injected sidecar containers")
 		Eventually(func(g Gomega) {
 			containers, err := utils.KubectlGetJsonpath("pod", "",
@@ -1738,7 +1758,17 @@ rules:
 				"{.items[?(@.metadata.labels.app\\.kubernetes\\.io/name=='combined-agent')].spec.containers[*].name}")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(containers).To(ContainSubstring("envoy-proxy"))
-			g.Expect(containers).To(ContainSubstring("spiffe-helper"))
+			g.Expect(containers).NotTo(ContainSubstring("spiffe-helper"),
+				"spiffe-helper is bundled inside envoy-proxy, not a separate container")
+		}).Should(Succeed())
+
+		By("verifying spiffe-helper is wired into envoy-proxy via SPIRE_ENABLED env")
+		Eventually(func(g Gomega) {
+			spireEnv, err := utils.KubectlGetJsonpath("pod", "",
+				combinedTestNamespace,
+				"{.items[?(@.metadata.labels.app\\.kubernetes\\.io/name=='combined-agent')].spec.containers[?(@.name=='envoy-proxy')].env[?(@.name=='SPIRE_ENABLED')].value}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(spireEnv).To(Equal("true"))
 		}).Should(Succeed())
 
 		By("verifying injected init containers")
@@ -1885,14 +1915,15 @@ rules:
 			g.Expect(phase).To(Equal("Running"))
 		}, 3*time.Minute, 2*time.Second).Should(Succeed())
 
-		By("verifying replacement pod has sidecars")
+		By("verifying replacement pod has sidecars (spiffe-helper bundled in envoy-proxy)")
 		Eventually(func(g Gomega) {
 			containers, err := utils.KubectlGetJsonpath("pod", "",
 				combinedTestNamespace,
 				"{.items[?(@.metadata.labels.app\\.kubernetes\\.io/name=='combined-agent')].spec.containers[*].name}")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(containers).To(ContainSubstring("envoy-proxy"))
-			g.Expect(containers).To(ContainSubstring("spiffe-helper"))
+			g.Expect(containers).NotTo(ContainSubstring("spiffe-helper"),
+				"spiffe-helper is bundled inside envoy-proxy, not a separate container")
 		}).Should(Succeed())
 
 		By("verifying replacement pod has proxy-init")

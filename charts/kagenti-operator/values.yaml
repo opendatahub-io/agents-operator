@@ -183,9 +183,3 @@ defaults:
       limits:
         cpu: 300m
         memory: 384Mi
-
-  # Per-sidecar enable/disable at the platform level (lowest-priority layer).
-  # Overridden by feature gates, namespace labels, and workload labels.
-  sidecars:
-    envoyProxy:
-      enabled: true

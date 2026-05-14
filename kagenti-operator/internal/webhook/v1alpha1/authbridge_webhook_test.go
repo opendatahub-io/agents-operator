@@ -228,30 +228,6 @@ var _ = Describe("AuthBridge Pod Webhook", func() {
 		})
 	})
 
-	Context("when a Pod already has the combined authbridge container (idempotency)", func() {
-		It("should not double-inject", func() {
-			pod := newTestPod("already-combined-pod", map[string]string{
-				"kagenti.io/type":   "agent",
-				"kagenti.io/inject": "enabled",
-			})
-			// Pre-add the authbridge container to simulate prior combined injection
-			pod.Spec.Containers = append(pod.Spec.Containers, corev1.Container{
-				Name:  injector.AuthBridgeContainerName,
-				Image: "authbridge:test",
-			})
-
-			err := k8sClient.Create(ctx, pod)
-			Expect(err).NotTo(HaveOccurred())
-
-			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(pod), pod)
-			Expect(err).NotTo(HaveOccurred())
-
-			// Should not have added any additional sidecar containers
-			Expect(containerNames(pod.Spec.Containers)).NotTo(ContainElement(injector.EnvoyProxyContainerName))
-			Expect(containerNames(pod.Spec.Containers)).To(ContainElement(injector.AuthBridgeContainerName))
-		})
-	})
-
 	// Pre-population of the Keycloak client-credentials annotation ensures that the first pod
 	// created for an agent workload mounts the operator-produced Secret without having to wait
 	// for the ClientRegistration controller to patch the workload's pod template and trigger a

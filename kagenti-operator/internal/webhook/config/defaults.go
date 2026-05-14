@@ -73,8 +73,5 @@ func CompiledDefaults() *PlatformConfig {
 			EnableMetrics: true,
 			EnableTracing: false,
 		},
-		Sidecars: SidecarDefaults{
-			EnvoyProxy: SidecarDefault{Enabled: true},
-		},
 	}
 }

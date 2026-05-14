@@ -33,7 +33,6 @@ const (
 	// Container names for AuthBridge sidecars
 	EnvoyProxyContainerName = "envoy-proxy"
 	ProxyInitContainerName  = "proxy-init"
-	AuthBridgeContainerName = "authbridge"
 
 	SharedVolumesFSGroup = 0
 )

@@ -14,7 +14,6 @@ type PlatformConfig struct {
 	TokenExchange TokenExchangeDefaults `json:"tokenExchange" yaml:"tokenExchange"`
 	Spiffe        SpiffeConfig          `json:"spiffe" yaml:"spiffe"`
 	Observability ObservabilityConfig   `json:"observability" yaml:"observability"`
-	Sidecars      SidecarDefaults       `json:"sidecars" yaml:"sidecars"`
 }
 
 type ImageConfig struct {
@@ -64,20 +63,6 @@ type ObservabilityConfig struct {
 	EnableMetrics  bool   `json:"enableMetrics" yaml:"enableMetrics"`
 	EnableTracing  bool   `json:"enableTracing" yaml:"enableTracing"`
 	TracingBackend string `json:"tracingBackend" yaml:"tracingBackend"`
-}
-
-// SidecarDefaults controls per-sidecar enable/disable at the platform level.
-// This is the lowest-priority layer in the injection precedence chain.
-//
-// Spiffe-helper is bundled in the EnvoyProxy and AuthBridge combined images
-// rather than injected as a separate sidecar; its start is gated by the
-// per-workload SPIRE_ENABLED env var rather than this enable flag.
-type SidecarDefaults struct {
-	EnvoyProxy SidecarDefault `json:"envoyProxy" yaml:"envoyProxy"`
-}
-
-type SidecarDefault struct {
-	Enabled bool `json:"enabled" yaml:"enabled"`
 }
 
 // DeepCopy creates a copy of the config

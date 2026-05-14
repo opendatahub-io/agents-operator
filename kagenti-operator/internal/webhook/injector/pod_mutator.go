@@ -35,10 +35,6 @@ import (
 var mutatorLog = logf.Log.WithName("pod-mutator")
 
 const (
-	// Container names
-	SpiffeHelperContainerName       = "spiffe-helper"
-	ClientRegistrationContainerName = "kagenti-client-registration"
-
 	// Label selector for authbridge injection opt-out.
 	// Injection uses opt-out semantics for agents: sidecars are injected by
 	// default. Setting AuthBridgeInjectLabel=AuthBridgeDisabledValue on a
@@ -77,9 +73,8 @@ const (
 )
 
 type PodMutator struct {
-	Client                   client.Client
-	APIReader                client.Reader // uncached reader for cross-namespace ConfigMap reads
-	EnableClientRegistration bool
+	Client    client.Client
+	APIReader client.Reader // uncached reader for cross-namespace ConfigMap reads
 	// Getter functions for hot-reloadable config (used by precedence evaluator)
 	GetPlatformConfig func() *config.PlatformConfig
 	GetFeatureGates   func() *config.FeatureGates
@@ -88,16 +83,14 @@ type PodMutator struct {
 func NewPodMutator(
 	c client.Client,
 	apiReader client.Reader,
-	enableClientRegistration bool,
 	getPlatformConfig func() *config.PlatformConfig,
 	getFeatureGates func() *config.FeatureGates,
 ) *PodMutator {
 	return &PodMutator{
-		Client:                   c,
-		APIReader:                apiReader,
-		EnableClientRegistration: enableClientRegistration,
-		GetPlatformConfig:        getPlatformConfig,
-		GetFeatureGates:          getFeatureGates,
+		Client:            c,
+		APIReader:         apiReader,
+		GetPlatformConfig: getPlatformConfig,
+		GetFeatureGates:   getFeatureGates,
 	}
 }
 
@@ -327,9 +320,7 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 		var agentContainer *corev1.Container
 		for i := range podSpec.Containers {
 			c := &podSpec.Containers[i]
-			if c.Name == AuthBridgeProxyContainerName ||
-				c.Name == SpiffeHelperContainerName ||
-				c.Name == ClientRegistrationContainerName {
+			if c.Name == AuthBridgeProxyContainerName {
 				continue
 			}
 			if len(c.Ports) > 0 {
@@ -414,9 +405,7 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 		// Inject HTTP_PROXY env vars into all existing app containers
 		for i := range podSpec.Containers {
 			c := &podSpec.Containers[i]
-			if c.Name == AuthBridgeProxyContainerName ||
-				c.Name == SpiffeHelperContainerName ||
-				c.Name == ClientRegistrationContainerName {
+			if c.Name == AuthBridgeProxyContainerName {
 				continue
 			}
 			injectHTTPProxyEnv(c, forwardProxyPort)

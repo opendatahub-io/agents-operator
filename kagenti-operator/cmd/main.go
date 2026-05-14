@@ -425,12 +425,9 @@ func main() {
 
 	// AuthBridge sidecar injection webhook
 	if authBridgeWebhooksEnabled() {
-		// Pass false to disable legacy client-registration sidecar injection.
-		// Client registration is now handled by the operator controller.
 		podMutator := injector.NewPodMutator(
 			mgr.GetClient(),
 			mgr.GetAPIReader(),
-			false, // disableLegacyClientRegistrationSidecar
 			configLoader.Get,
 			featureGateLoader.Get,
 		)

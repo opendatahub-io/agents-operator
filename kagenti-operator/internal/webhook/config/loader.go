@@ -220,8 +220,5 @@ func logConfig(cfg *PlatformConfig, source string) {
 		"trustDomain", cfg.Spiffe.TrustDomain,
 		"socketPath", cfg.Spiffe.SocketPath,
 	)
-	log.Info("[config] sidecars",
-		"envoyProxy.enabled", cfg.Sidecars.EnvoyProxy.Enabled,
-	)
 	log.Info("=============================================")
 }
