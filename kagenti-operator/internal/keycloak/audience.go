@@ -47,6 +47,8 @@ type protocolMapperRep struct {
 	Config          map[string]string `json:"config"`
 }
 
+const oidcAudienceMapper = "oidc-audience-mapper"
+
 // AudienceScopeName derives the realm client-scope name from CLIENT_NAME (same as Python).
 func AudienceScopeName(clientName string) string {
 	return "agent-" + strings.ReplaceAll(clientName, "/", "-") + "-aud"
@@ -186,7 +188,7 @@ func (a *Admin) ensureAudienceMapper(ctx context.Context, token, realm, scopeID,
 	mapper := protocolMapperRep{
 		Name:            scopeName,
 		Protocol:        "openid-connect",
-		ProtocolMapper:  "oidc-audience-mapper",
+		ProtocolMapper:  oidcAudienceMapper,
 		ConsentRequired: false,
 		Config: map[string]string{
 			"included.custom.audience": audience,
@@ -271,7 +273,7 @@ func (a *Admin) updateAudienceMapperIfNeeded(ctx context.Context, token, realm, 
 		if mappers[i].Name != scopeName {
 			continue
 		}
-		if mappers[i].ProtocolMapper != "oidc-audience-mapper" {
+		if mappers[i].ProtocolMapper != oidcAudienceMapper {
 			if err := a.deleteMapper(ctx, token, realm, scopeID, mappers[i].ID); err != nil {
 				return fmt.Errorf("delete stale mapper %q (type %q) for scope %q: %w",
 					mappers[i].Name, mappers[i].ProtocolMapper, scopeName, err)
@@ -321,7 +323,7 @@ func (a *Admin) createAudienceMapperBestEffort(ctx context.Context, token, realm
 	mapper := protocolMapperRep{
 		Name:            scopeName,
 		Protocol:        "openid-connect",
-		ProtocolMapper:  "oidc-audience-mapper",
+		ProtocolMapper:  oidcAudienceMapper,
 		ConsentRequired: false,
 		Config: map[string]string{
 			"included.custom.audience": audience,
@@ -360,7 +362,7 @@ func (a *Admin) createAudienceMapperBestEffort(ctx context.Context, token, realm
 			return nil
 		}
 		for i := range mappers {
-			if mappers[i].Name == scopeName && mappers[i].ProtocolMapper == "oidc-audience-mapper" {
+			if mappers[i].Name == scopeName && mappers[i].ProtocolMapper == oidcAudienceMapper {
 				if mappers[i].Config != nil && mappers[i].Config["included.custom.audience"] == audience {
 					return nil
 				}
@@ -420,7 +422,7 @@ func (a *Admin) verifyAudienceMapper(ctx context.Context, token, realm, scopeID,
 		if mappers[i].Name != scopeName {
 			continue
 		}
-		if mappers[i].ProtocolMapper != "oidc-audience-mapper" {
+		if mappers[i].ProtocolMapper != oidcAudienceMapper {
 			if err := a.deleteMapper(ctx, token, realm, scopeID, mappers[i].ID); err != nil {
 				return fmt.Errorf("delete stale mapper %q (type %q): %w",
 					mappers[i].Name, mappers[i].ProtocolMapper, err)
