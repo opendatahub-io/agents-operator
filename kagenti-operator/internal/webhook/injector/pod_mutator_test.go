@@ -50,6 +50,16 @@ func newAgentRuntime(namespace, targetName string) *agentv1alpha1.AgentRuntime {
 	}
 }
 
+// newAgentRuntimeWithMode is the same as newAgentRuntime but pins the
+// per-workload AuthBridgeMode (proxy-sidecar / envoy-sidecar / waypoint).
+// Used by tests that exercise mode-specific code paths now that mode
+// selection comes from the CR rather than a pod annotation.
+func newAgentRuntimeWithMode(namespace, targetName, mode string) *agentv1alpha1.AgentRuntime {
+	rt := newAgentRuntime(namespace, targetName)
+	rt.Spec.AuthBridgeMode = mode
+	return rt
+}
+
 func newTestMutator(objs ...client.Object) *PodMutator {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
@@ -57,11 +67,10 @@ func newTestMutator(objs ...client.Object) *PodMutator {
 	_ = agentv1alpha1.AddToScheme(scheme)
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
 	return &PodMutator{
-		Client:                   fakeClient,
-		APIReader:                fakeClient,
-		EnableClientRegistration: true,
-		GetPlatformConfig:        config.CompiledDefaults,
-		GetFeatureGates:          config.DefaultFeatureGates,
+		Client:            fakeClient,
+		APIReader:         fakeClient,
+		GetPlatformConfig: config.CompiledDefaults,
+		GetFeatureGates:   config.DefaultFeatureGates,
 	}
 }
 
@@ -141,6 +150,7 @@ func TestEnsureServiceAccount_AlreadyExistsNoLabels(t *testing.T) {
 func TestInjectAuthBridge_NoAgentRuntime_InjectsWithDefaults(t *testing.T) {
 	// Agent pod with correct labels but no AgentRuntime CR → inject with
 	// defaults-only config (platform + namespace defaults, no CR overrides).
+	// Default mode is proxy-sidecar so the authbridge-proxy container is injected.
 	m := newTestMutator()
 	ctx := context.Background()
 
@@ -157,15 +167,16 @@ func TestInjectAuthBridge_NoAgentRuntime_InjectsWithDefaults(t *testing.T) {
 		t.Fatal("expected InjectAuthBridge to return true with defaults-only config")
 	}
 
-	// Verify specific sidecar containers are present
-	if !containerExists(podSpec.Containers, EnvoyProxyContainerName) {
-		t.Errorf("expected %s container to be injected", EnvoyProxyContainerName)
+	// Default mode is proxy-sidecar — expect authbridge-proxy container,
+	// no envoy-proxy / proxy-init / standalone spiffe-helper.
+	if !containerExists(podSpec.Containers, AuthBridgeProxyContainerName) {
+		t.Errorf("expected %s container to be injected", AuthBridgeProxyContainerName)
 	}
-	if !containerExists(podSpec.Containers, SpiffeHelperContainerName) {
-		t.Errorf("expected %s container to be injected", SpiffeHelperContainerName)
+	if containerExists(podSpec.Containers, EnvoyProxyContainerName) {
+		t.Errorf("unexpected %s container in proxy-sidecar mode", EnvoyProxyContainerName)
 	}
-	if !containerExists(podSpec.InitContainers, ProxyInitContainerName) {
-		t.Errorf("expected %s init container to be injected", ProxyInitContainerName)
+	if containerExists(podSpec.InitContainers, ProxyInitContainerName) {
+		t.Errorf("unexpected %s init container in proxy-sidecar mode", ProxyInitContainerName)
 	}
 }
 
@@ -346,7 +357,8 @@ func TestInjectAuthBridge_DefaultSAOverridden(t *testing.T) {
 }
 
 func TestInjectAuthBridge_OutboundPortsExcludeAnnotation(t *testing.T) {
-	m := newTestMutator(newAgentRuntime("test-ns", "my-agent"))
+	// proxy-init is only injected in envoy-sidecar mode.
+	m := newTestMutator(newAgentRuntimeWithMode("test-ns", "my-agent", ModeEnvoySidecar))
 	ctx := context.Background()
 
 	podSpec := &corev1.PodSpec{}
@@ -383,7 +395,8 @@ func TestInjectAuthBridge_OutboundPortsExcludeAnnotation(t *testing.T) {
 }
 
 func TestInjectAuthBridge_InboundPortsExcludeAnnotation(t *testing.T) {
-	m := newTestMutator(newAgentRuntime("test-ns", "my-agent"))
+	// proxy-init is only injected in envoy-sidecar mode.
+	m := newTestMutator(newAgentRuntimeWithMode("test-ns", "my-agent", ModeEnvoySidecar))
 	ctx := context.Background()
 
 	podSpec := &corev1.PodSpec{}
@@ -433,173 +446,9 @@ func TestInjectAuthBridge_InboundPortsExcludeAnnotation(t *testing.T) {
 	t.Fatal("proxy-init container not found in initContainers")
 }
 
-// ========================================
-// Combined sidecar mode tests
-// ========================================
-
-func newTestMutatorWithCombinedSidecar(objs ...client.Object) *PodMutator {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-	_ = agentv1alpha1.AddToScheme(scheme)
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
-	return &PodMutator{
-		Client:                   fakeClient,
-		EnableClientRegistration: true,
-		GetPlatformConfig:        config.CompiledDefaults,
-		GetFeatureGates: func() *config.FeatureGates {
-			fg := config.DefaultFeatureGates()
-			fg.CombinedSidecar = true
-			return fg
-		},
-	}
-}
-
-func TestInjectAuthBridge_CombinedMode_SingleContainer(t *testing.T) {
-	m := newTestMutatorWithCombinedSidecar(newAgentRuntime("test-ns", "my-agent"))
-	ctx := context.Background()
-
-	podSpec := &corev1.PodSpec{}
-	labels := map[string]string{
-		KagentiTypeLabel: KagentiTypeAgent,
-	}
-
-	injected, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", labels, nil)
-	if err != nil {
-		t.Fatalf("InjectAuthBridge() returned error: %v", err)
-	}
-	if !injected {
-		t.Fatal("expected InjectAuthBridge to return true")
-	}
-
-	// Should have exactly 1 sidecar container (authbridge) — NOT envoy-proxy, spiffe-helper, or client-registration
-	if !containerExists(podSpec.Containers, AuthBridgeContainerName) {
-		t.Error("expected authbridge container to be injected")
-	}
-	if containerExists(podSpec.Containers, EnvoyProxyContainerName) {
-		t.Error("unexpected envoy-proxy container in combined mode")
-	}
-	if containerExists(podSpec.Containers, SpiffeHelperContainerName) {
-		t.Error("unexpected spiffe-helper container in combined mode")
-	}
-	if containerExists(podSpec.Containers, ClientRegistrationContainerName) {
-		t.Error("unexpected client-registration container in combined mode")
-	}
-
-	// Should still have proxy-init
-	if !containerExists(podSpec.InitContainers, ProxyInitContainerName) {
-		t.Error("expected proxy-init init container to be injected")
-	}
-}
-
-func TestInjectAuthBridge_CombinedMode_EnvoyDisabled_NoInjection(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-	_ = agentv1alpha1.AddToScheme(scheme)
-	ar := newAgentRuntime("test-ns", "my-agent")
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ar).Build()
-	m := &PodMutator{
-		Client:                   fakeClient,
-		EnableClientRegistration: true,
-		GetPlatformConfig:        config.CompiledDefaults,
-		GetFeatureGates: func() *config.FeatureGates {
-			fg := config.DefaultFeatureGates()
-			fg.CombinedSidecar = true
-			fg.EnvoyProxy = false
-			return fg
-		},
-	}
-	ctx := context.Background()
-
-	podSpec := &corev1.PodSpec{}
-	labels := map[string]string{
-		KagentiTypeLabel: KagentiTypeAgent,
-	}
-
-	injected, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", labels, nil)
-	if err != nil {
-		t.Fatalf("InjectAuthBridge() returned error: %v", err)
-	}
-	// With envoy-proxy disabled, the combined container should NOT be present
-	if containerExists(podSpec.Containers, AuthBridgeContainerName) {
-		t.Error("authbridge container should not be injected when envoy-proxy is disabled")
-	}
-	_ = injected
-}
-
-func TestInjectAuthBridge_CombinedMode_SpiffeDisabled_FlagPassed(t *testing.T) {
-	m := newTestMutatorWithCombinedSidecar(newAgentRuntime("test-ns", "my-agent"))
-	ctx := context.Background()
-
-	podSpec := &corev1.PodSpec{}
-	labels := map[string]string{
-		KagentiTypeLabel:        KagentiTypeAgent,
-		LabelSpiffeHelperInject: "false",
-	}
-
-	injected, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", labels, nil)
-	if err != nil {
-		t.Fatalf("InjectAuthBridge() returned error: %v", err)
-	}
-	if !injected {
-		t.Fatal("expected InjectAuthBridge to return true")
-	}
-
-	// authbridge container should be present with SPIRE_ENABLED=false
-	if !containerExists(podSpec.Containers, AuthBridgeContainerName) {
-		t.Fatal("expected authbridge container to be injected")
-	}
-
-	for _, c := range podSpec.Containers {
-		if c.Name != AuthBridgeContainerName {
-			continue
-		}
-		for _, env := range c.Env {
-			if env.Name == "SPIRE_ENABLED" {
-				if env.Value != "false" {
-					t.Errorf("SPIRE_ENABLED = %q, want %q", env.Value, "false")
-				}
-				return
-			}
-		}
-		t.Fatal("missing SPIRE_ENABLED env var on authbridge container")
-	}
-}
-
-func TestInjectAuthBridge_CombinedMode_Idempotency(t *testing.T) {
-	m := newTestMutatorWithCombinedSidecar(newAgentRuntime("test-ns", "my-agent"))
-	ctx := context.Background()
-
-	podSpec := &corev1.PodSpec{
-		Containers: []corev1.Container{
-			{Name: AuthBridgeContainerName, Image: "authbridge:test"},
-		},
-	}
-	labels := map[string]string{
-		KagentiTypeLabel: KagentiTypeAgent,
-	}
-
-	injected, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", labels, nil)
-	if err != nil {
-		t.Fatalf("InjectAuthBridge() returned error: %v", err)
-	}
-	if !injected {
-		t.Fatal("expected InjectAuthBridge to return true")
-	}
-
-	// Should still be exactly 1 authbridge container
-	count := 0
-	for _, c := range podSpec.Containers {
-		if c.Name == AuthBridgeContainerName {
-			count++
-		}
-	}
-	if count != 1 {
-		t.Errorf("expected exactly 1 authbridge container, got %d", count)
-	}
-}
-
 func TestInjectAuthBridge_NilAnnotations(t *testing.T) {
-	m := newTestMutator(newAgentRuntime("test-ns", "my-agent"))
+	// proxy-init is only injected in envoy-sidecar mode.
+	m := newTestMutator(newAgentRuntimeWithMode("test-ns", "my-agent", ModeEnvoySidecar))
 	ctx := context.Background()
 
 	podSpec := &corev1.PodSpec{}
@@ -636,8 +485,279 @@ func TestInjectAuthBridge_NilAnnotations(t *testing.T) {
 // Mode-aware injection tests
 // ========================================
 
+// authbridgeRuntimeConfigMap returns a fake authbridge-runtime-config
+// ConfigMap pinning the given mode. Used by mode-resolution tests that
+// exercise the namespace-config layer of the chain.
+func authbridgeRuntimeConfigMap(namespace, mode string) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      AuthBridgeRuntimeConfigMapName,
+			Namespace: namespace,
+		},
+		Data: map[string]string{
+			"config.yaml": "mode: " + mode + "\n",
+		},
+	}
+}
+
+// Mode resolution chain (first non-empty wins):
+//   1. AgentRuntime CR Spec.AuthBridgeMode
+//   2. namespace authbridge-runtime-config mode field
+//   3. kagenti.io/authbridge-mode annotation (deprecated)
+//   4. ModeProxySidecar (cluster default)
+//
+// Layer 1 is exercised by the existing WaypointMode / ProxySidecarMode
+// tests via newAgentRuntimeWithMode. The tests below cover layers 2-4.
+
+func TestInjectAuthBridge_ModeResolution_NamespaceConfigMap(t *testing.T) {
+	// AgentRuntime CR has no mode set; namespace ConfigMap pins envoy-sidecar.
+	m := newTestMutator(
+		newAgentRuntime("team1", "my-agent"),
+		authbridgeRuntimeConfigMap("team1", ModeEnvoySidecar),
+	)
+	ctx := context.Background()
+
+	podSpec := &corev1.PodSpec{
+		Containers: []corev1.Container{{Name: "agent", Image: "my-agent:latest"}},
+	}
+	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
+
+	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !mutated {
+		t.Fatal("expected mutation")
+	}
+
+	// envoy-sidecar shape: envoy-proxy + proxy-init, no authbridge-proxy
+	if !containerExists(podSpec.Containers, EnvoyProxyContainerName) {
+		t.Errorf("expected %s container (namespace ConfigMap selected envoy-sidecar)", EnvoyProxyContainerName)
+	}
+	if !containerExists(podSpec.InitContainers, ProxyInitContainerName) {
+		t.Errorf("expected %s init container", ProxyInitContainerName)
+	}
+	if containerExists(podSpec.Containers, AuthBridgeProxyContainerName) {
+		t.Error("unexpected authbridge-proxy container in envoy-sidecar mode")
+	}
+}
+
+func TestInjectAuthBridge_ModeResolution_CRBeatsNamespaceConfigMap(t *testing.T) {
+	// CR pins proxy-sidecar; namespace ConfigMap says envoy-sidecar. CR wins.
+	m := newTestMutator(
+		newAgentRuntimeWithMode("team1", "my-agent", ModeProxySidecar),
+		authbridgeRuntimeConfigMap("team1", ModeEnvoySidecar),
+	)
+	ctx := context.Background()
+
+	podSpec := &corev1.PodSpec{
+		ServiceAccountName: "my-agent",
+		Containers:         []corev1.Container{{Name: "agent", Image: "my-agent:latest"}},
+	}
+	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
+
+	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !mutated {
+		t.Fatal("expected mutation")
+	}
+
+	if !containerExists(podSpec.Containers, AuthBridgeProxyContainerName) {
+		t.Errorf("expected %s container (CR field beats namespace ConfigMap)", AuthBridgeProxyContainerName)
+	}
+	if containerExists(podSpec.Containers, EnvoyProxyContainerName) {
+		t.Error("unexpected envoy-proxy container — CR pin should override namespace ConfigMap")
+	}
+}
+
+func TestInjectAuthBridge_ModeResolution_DeprecatedAnnotation(t *testing.T) {
+	// Neither CR nor namespace ConfigMap set; deprecated annotation pins envoy-sidecar.
+	m := newTestMutator(newAgentRuntime("team1", "my-agent"))
+	ctx := context.Background()
+
+	podSpec := &corev1.PodSpec{
+		Containers: []corev1.Container{{Name: "agent", Image: "my-agent:latest"}},
+	}
+	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
+	annotations := map[string]string{AnnotationAuthBridgeMode: ModeEnvoySidecar}
+
+	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, annotations)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !mutated {
+		t.Fatal("expected mutation")
+	}
+
+	if !containerExists(podSpec.Containers, EnvoyProxyContainerName) {
+		t.Errorf("expected %s container (annotation fallback selected envoy-sidecar)", EnvoyProxyContainerName)
+	}
+}
+
+func TestInjectAuthBridge_ModeResolution_CRBeatsAnnotation(t *testing.T) {
+	// CR pins proxy-sidecar; annotation says envoy-sidecar. CR wins.
+	m := newTestMutator(newAgentRuntimeWithMode("team1", "my-agent", ModeProxySidecar))
+	ctx := context.Background()
+
+	podSpec := &corev1.PodSpec{
+		ServiceAccountName: "my-agent",
+		Containers:         []corev1.Container{{Name: "agent", Image: "my-agent:latest"}},
+	}
+	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
+	annotations := map[string]string{AnnotationAuthBridgeMode: ModeEnvoySidecar}
+
+	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, annotations)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !mutated {
+		t.Fatal("expected mutation")
+	}
+
+	if !containerExists(podSpec.Containers, AuthBridgeProxyContainerName) {
+		t.Errorf("expected %s container (CR field beats annotation)", AuthBridgeProxyContainerName)
+	}
+	if containerExists(podSpec.Containers, EnvoyProxyContainerName) {
+		t.Error("unexpected envoy-proxy container — CR pin should override annotation")
+	}
+}
+
+func TestInjectAuthBridge_ModeResolution_ClusterDefault(t *testing.T) {
+	// No CR, no namespace ConfigMap, no annotation — expect proxy-sidecar default.
+	m := newTestMutator(newAgentRuntime("team1", "my-agent"))
+	ctx := context.Background()
+
+	podSpec := &corev1.PodSpec{
+		ServiceAccountName: "my-agent",
+		Containers:         []corev1.Container{{Name: "agent", Image: "my-agent:latest"}},
+	}
+	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
+
+	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !mutated {
+		t.Fatal("expected mutation")
+	}
+
+	if !containerExists(podSpec.Containers, AuthBridgeProxyContainerName) {
+		t.Errorf("expected %s container (cluster default is proxy-sidecar)", AuthBridgeProxyContainerName)
+	}
+	if containerExists(podSpec.Containers, EnvoyProxyContainerName) {
+		t.Error("unexpected envoy-proxy container under default fallback")
+	}
+}
+
+func TestInjectAuthBridge_LiteMode_UsesAuthBridgeLiteImage(t *testing.T) {
+	// Lite mode is structurally proxy-sidecar but uses Images.AuthBridgeLite.
+	m := newTestMutator(newAgentRuntimeWithMode("team1", "my-agent", ModeLite))
+	ctx := context.Background()
+
+	podSpec := &corev1.PodSpec{
+		ServiceAccountName: "my-agent",
+		Containers:         []corev1.Container{{Name: "agent", Image: "my-agent:latest"}},
+	}
+	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
+
+	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !mutated {
+		t.Fatal("expected mutation")
+	}
+
+	// Same shape as proxy-sidecar: authbridge-proxy container, no envoy-proxy.
+	if !containerExists(podSpec.Containers, AuthBridgeProxyContainerName) {
+		t.Errorf("expected %s container (lite mode uses proxy-sidecar shape)", AuthBridgeProxyContainerName)
+	}
+	if containerExists(podSpec.Containers, EnvoyProxyContainerName) {
+		t.Error("unexpected envoy-proxy container in lite mode")
+	}
+
+	// But the image must be AuthBridgeLite, not AuthBridge.
+	wantImage := config.CompiledDefaults().Images.AuthBridgeLite
+	gotImage := ""
+	for _, c := range podSpec.Containers {
+		if c.Name == AuthBridgeProxyContainerName {
+			gotImage = c.Image
+			break
+		}
+	}
+	if gotImage != wantImage {
+		t.Errorf("authbridge-proxy image = %q, want %q (Images.AuthBridgeLite)", gotImage, wantImage)
+	}
+}
+
+func TestInjectAuthBridge_LiteMode_FromNamespaceConfigMap(t *testing.T) {
+	// Namespace ConfigMap pins lite; CR has no override.
+	m := newTestMutator(
+		newAgentRuntime("team1", "my-agent"),
+		authbridgeRuntimeConfigMap("team1", ModeLite),
+	)
+	ctx := context.Background()
+
+	podSpec := &corev1.PodSpec{
+		ServiceAccountName: "my-agent",
+		Containers:         []corev1.Container{{Name: "agent", Image: "my-agent:latest"}},
+	}
+	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
+
+	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !mutated {
+		t.Fatal("expected mutation")
+	}
+
+	wantImage := config.CompiledDefaults().Images.AuthBridgeLite
+	for _, c := range podSpec.Containers {
+		if c.Name == AuthBridgeProxyContainerName && c.Image != wantImage {
+			t.Errorf("namespace ConfigMap selected lite but image = %q, want %q", c.Image, wantImage)
+		}
+	}
+}
+
+func TestInjectAuthBridge_ModeResolution_UnrecognizedFallsBackToProxySidecar(t *testing.T) {
+	// A typo in the namespace ConfigMap (e.g. "proxy-sidecart") should
+	// not silently flow through to the envoy-sidecar branch. The
+	// resolution chain validates the resolved value and falls back to
+	// proxy-sidecar with a WARN log.
+	m := newTestMutator(
+		newAgentRuntime("team1", "my-agent"),
+		authbridgeRuntimeConfigMap("team1", "proxy-sidecart"),
+	)
+	ctx := context.Background()
+
+	podSpec := &corev1.PodSpec{
+		ServiceAccountName: "my-agent",
+		Containers:         []corev1.Container{{Name: "agent", Image: "my-agent:latest"}},
+	}
+	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
+
+	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !mutated {
+		t.Fatal("expected mutation despite unrecognized mode")
+	}
+
+	// Should land on proxy-sidecar (the safe fallback), not envoy-sidecar.
+	if !containerExists(podSpec.Containers, AuthBridgeProxyContainerName) {
+		t.Errorf("expected %s container (typo should fall back to proxy-sidecar)", AuthBridgeProxyContainerName)
+	}
+	if containerExists(podSpec.Containers, EnvoyProxyContainerName) {
+		t.Error("unexpected envoy-proxy container — typo should not silently route to envoy-sidecar")
+	}
+}
+
 func TestInjectAuthBridge_WaypointMode_SkipsInjection(t *testing.T) {
-	m := newTestMutator()
+	m := newTestMutator(newAgentRuntimeWithMode("team1", "my-agent", ModeWaypoint))
 	ctx := context.Background()
 
 	podSpec := &corev1.PodSpec{
@@ -648,11 +768,8 @@ func TestInjectAuthBridge_WaypointMode_SkipsInjection(t *testing.T) {
 	labels := map[string]string{
 		KagentiTypeLabel: KagentiTypeAgent,
 	}
-	annotations := map[string]string{
-		AnnotationAuthBridgeMode: ModeWaypoint,
-	}
 
-	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, annotations)
+	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -665,7 +782,7 @@ func TestInjectAuthBridge_WaypointMode_SkipsInjection(t *testing.T) {
 }
 
 func TestInjectAuthBridge_ProxySidecarMode_InjectsCorrectly(t *testing.T) {
-	m := newTestMutator()
+	m := newTestMutator(newAgentRuntimeWithMode("team1", "my-agent", ModeProxySidecar))
 	ctx := context.Background()
 
 	podSpec := &corev1.PodSpec{
@@ -677,11 +794,8 @@ func TestInjectAuthBridge_ProxySidecarMode_InjectsCorrectly(t *testing.T) {
 	labels := map[string]string{
 		KagentiTypeLabel: KagentiTypeAgent,
 	}
-	annotations := map[string]string{
-		AnnotationAuthBridgeMode: ModeProxySidecar,
-	}
 
-	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, annotations)
+	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -694,8 +808,8 @@ func TestInjectAuthBridge_ProxySidecarMode_InjectsCorrectly(t *testing.T) {
 	for _, c := range podSpec.Containers {
 		if c.Name == AuthBridgeProxyContainerName {
 			proxyFound = true
-			if c.Image != config.CompiledDefaults().Images.AuthBridgeLight {
-				t.Errorf("proxy container image = %q, want authbridge-light", c.Image)
+			if c.Image != config.CompiledDefaults().Images.AuthBridge {
+				t.Errorf("proxy container image = %q, want %q", c.Image, config.CompiledDefaults().Images.AuthBridge)
 			}
 		}
 	}
@@ -750,7 +864,7 @@ func TestInjectAuthBridge_ProxySidecarMode_MountsKeycloakCredentials(t *testing.
 	// Regression: the proxy-sidecar branch used to return before reaching
 	// ApplyKeycloakClientCredentialsSecretVolumes. That left authbridge-proxy polling
 	// /shared/client-id.txt forever and returning 503 "identity not yet configured".
-	m := newTestMutator()
+	m := newTestMutator(newAgentRuntimeWithMode("team1", "my-agent", ModeProxySidecar))
 	ctx := context.Background()
 
 	podSpec := &corev1.PodSpec{
@@ -763,7 +877,6 @@ func TestInjectAuthBridge_ProxySidecarMode_MountsKeycloakCredentials(t *testing.
 		KagentiTypeLabel: KagentiTypeAgent,
 	}
 	annotations := map[string]string{
-		AnnotationAuthBridgeMode:           ModeProxySidecar,
 		AnnotationKeycloakClientSecretName: "kagenti-keycloak-client-credentials-abc12345",
 	}
 
@@ -854,7 +967,7 @@ func TestInjectHTTPProxyEnv_DoesNotDuplicate(t *testing.T) {
 }
 
 func TestInjectAuthBridge_ProxySidecarMode_PortCollision(t *testing.T) {
-	m := newTestMutator()
+	m := newTestMutator(newAgentRuntimeWithMode("team1", "my-agent", ModeProxySidecar))
 	ctx := context.Background()
 
 	// Agent uses ports 8000 and 8001 — agent should move to 8002, not 8001
@@ -874,11 +987,8 @@ func TestInjectAuthBridge_ProxySidecarMode_PortCollision(t *testing.T) {
 	labels := map[string]string{
 		KagentiTypeLabel: KagentiTypeAgent,
 	}
-	annotations := map[string]string{
-		AnnotationAuthBridgeMode: ModeProxySidecar,
-	}
 
-	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, annotations)
+	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -915,7 +1025,7 @@ func TestInjectAuthBridge_ProxySidecarMode_PortCollision(t *testing.T) {
 }
 
 func TestInjectAuthBridge_ProxySidecarMode_ForwardProxyCollision(t *testing.T) {
-	m := newTestMutator()
+	m := newTestMutator(newAgentRuntimeWithMode("team1", "my-agent", ModeProxySidecar))
 	ctx := context.Background()
 
 	// Agent uses port 8081 — forward proxy should use 8082 instead of default 8081
@@ -935,11 +1045,8 @@ func TestInjectAuthBridge_ProxySidecarMode_ForwardProxyCollision(t *testing.T) {
 	labels := map[string]string{
 		KagentiTypeLabel: KagentiTypeAgent,
 	}
-	annotations := map[string]string{
-		AnnotationAuthBridgeMode: ModeProxySidecar,
-	}
 
-	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, annotations)
+	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1036,7 +1143,7 @@ func TestSetOrAddEnv_AddsNew(t *testing.T) {
 }
 
 func TestInjectAuthBridge_ProxySidecarMode_NoPorts_UsesDefault(t *testing.T) {
-	m := newTestMutator()
+	m := newTestMutator(newAgentRuntimeWithMode("team1", "my-agent", ModeProxySidecar))
 	ctx := context.Background()
 
 	// Agent container with no ports — should use default 8000
@@ -1049,11 +1156,8 @@ func TestInjectAuthBridge_ProxySidecarMode_NoPorts_UsesDefault(t *testing.T) {
 	labels := map[string]string{
 		KagentiTypeLabel: KagentiTypeAgent,
 	}
-	annotations := map[string]string{
-		AnnotationAuthBridgeMode: ModeProxySidecar,
-	}
 
-	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, annotations)
+	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

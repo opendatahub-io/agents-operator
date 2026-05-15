@@ -195,10 +195,7 @@ func (w *AuthBridgeWebhook) isAlreadyInjected(podSpec *corev1.PodSpec) bool {
 	// containerExists/volumeExists checks for idempotency).
 	for i := range podSpec.Containers {
 		if podSpec.Containers[i].Name == injector.EnvoyProxyContainerName ||
-			podSpec.Containers[i].Name == injector.AuthBridgeProxyContainerName ||
-			podSpec.Containers[i].Name == injector.SpiffeHelperContainerName ||
-			podSpec.Containers[i].Name == injector.ClientRegistrationContainerName ||
-			podSpec.Containers[i].Name == injector.AuthBridgeContainerName {
+			podSpec.Containers[i].Name == injector.AuthBridgeProxyContainerName {
 			return true
 		}
 	}

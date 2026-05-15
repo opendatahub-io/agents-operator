@@ -19,7 +19,6 @@ package injector
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/kagenti/operator/internal/webhook/config"
 	appsv1 "k8s.io/api/apps/v1"
@@ -36,10 +35,6 @@ import (
 var mutatorLog = logf.Log.WithName("pod-mutator")
 
 const (
-	// Container names
-	SpiffeHelperContainerName       = "spiffe-helper"
-	ClientRegistrationContainerName = "kagenti-client-registration"
-
 	// Label selector for authbridge injection opt-out.
 	// Injection uses opt-out semantics for agents: sidecars are injected by
 	// default. Setting AuthBridgeInjectLabel=AuthBridgeDisabledValue on a
@@ -78,9 +73,8 @@ const (
 )
 
 type PodMutator struct {
-	Client                   client.Client
-	APIReader                client.Reader // uncached reader for cross-namespace ConfigMap reads
-	EnableClientRegistration bool
+	Client    client.Client
+	APIReader client.Reader // uncached reader for cross-namespace ConfigMap reads
 	// Getter functions for hot-reloadable config (used by precedence evaluator)
 	GetPlatformConfig func() *config.PlatformConfig
 	GetFeatureGates   func() *config.FeatureGates
@@ -89,16 +83,14 @@ type PodMutator struct {
 func NewPodMutator(
 	c client.Client,
 	apiReader client.Reader,
-	enableClientRegistration bool,
 	getPlatformConfig func() *config.PlatformConfig,
 	getFeatureGates func() *config.FeatureGates,
 ) *PodMutator {
 	return &PodMutator{
-		Client:                   c,
-		APIReader:                apiReader,
-		EnableClientRegistration: enableClientRegistration,
-		GetPlatformConfig:        getPlatformConfig,
-		GetFeatureGates:          getFeatureGates,
+		Client:            c,
+		APIReader:         apiReader,
+		GetPlatformConfig: getPlatformConfig,
+		GetFeatureGates:   getFeatureGates,
 	}
 }
 
@@ -156,7 +148,6 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 		{"envoy-proxy", decision.EnvoyProxy},
 		{"proxy-init", decision.ProxyInit},
 		{"spiffe-helper", decision.SpiffeHelper},
-		{"client-registration", decision.ClientRegistration},
 	} {
 		mutatorLog.Info("injection decision",
 			"sidecar", d.name,
@@ -263,14 +254,60 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 	// Mode-aware injection
 	// ========================================
 	//
-	// The authbridge-mode annotation selects the deployment pattern:
-	//   envoy-sidecar (default) — iptables + Envoy + ext_proc (authbridge-envoy image)
-	//   proxy-sidecar           — HTTP_PROXY env + lightweight authbridge (authbridge-light image)
+	// Three deployment shapes:
+	//   proxy-sidecar (default) — HTTP_PROXY env + authbridge-proxy container (authbridge image)
+	//   envoy-sidecar           — iptables + Envoy + ext_proc (authbridge-envoy image)
 	//   waypoint                — standalone deployment, not injected as sidecar
-	authBridgeMode := annotations[AnnotationAuthBridgeMode]
-	if authBridgeMode == "" {
-		authBridgeMode = ModeEnvoySidecar
+	//
+	// Resolution chain (first non-empty wins):
+	//   1. AgentRuntime CR `Spec.AuthBridgeMode`             (per-workload override)
+	//   2. namespace authbridge-runtime-config `mode:` field (namespace default)
+	//   3. kagenti.io/authbridge-mode annotation             (deprecated)
+	//   4. ModeProxySidecar                                  (cluster-wide fallback)
+	authBridgeMode := ""
+	modeSource := ""
+	if arOverrides != nil && arOverrides.AuthBridgeMode != nil {
+		authBridgeMode = *arOverrides.AuthBridgeMode
+		modeSource = "agentruntime-cr"
 	}
+	if authBridgeMode == "" {
+		if m := ExtractMode(nsConfig.AuthBridgeRuntimeYAML); m != "" {
+			authBridgeMode = m
+			modeSource = "namespace-configmap"
+		}
+	}
+	if authBridgeMode == "" {
+		if m := annotations[AnnotationAuthBridgeMode]; m != "" {
+			authBridgeMode = m
+			modeSource = "annotation-deprecated"
+			mutatorLog.Info("DEPRECATED: kagenti.io/authbridge-mode annotation used; set AgentRuntime.Spec.AuthBridgeMode instead",
+				"namespace", namespace, "crName", crName, "mode", authBridgeMode)
+		}
+	}
+	if authBridgeMode == "" {
+		authBridgeMode = ModeProxySidecar
+		modeSource = "cluster-default"
+	}
+	// Validate the resolved value. The CRD path is enum-checked by the
+	// API server, but the namespace ConfigMap and the deprecated
+	// annotation accept arbitrary strings — a typo (e.g.
+	// "proxy-sidecart") would otherwise flow through to the
+	// envoy-sidecar branch silently. Fall back to the cluster default
+	// and log a warning so operators can spot the typo. Per PR #361
+	// review feedback.
+	switch authBridgeMode {
+	case ModeProxySidecar, ModeEnvoySidecar, ModeLite, ModeWaypoint:
+		// recognized, keep as-is
+	default:
+		mutatorLog.Info("WARN: unrecognized authBridgeMode; defaulting to proxy-sidecar",
+			"namespace", namespace, "crName", crName,
+			"unrecognized", authBridgeMode, "source", modeSource)
+		authBridgeMode = ModeProxySidecar
+		modeSource = "cluster-default-invalid-fallback"
+	}
+	mutatorLog.Info("resolved authbridge mode",
+		"namespace", namespace, "crName", crName,
+		"mode", authBridgeMode, "source", modeSource)
 
 	if authBridgeMode == ModeWaypoint {
 		mutatorLog.Info("waypoint mode — skipping sidecar injection (waypoint is a standalone deployment)",
@@ -278,14 +315,28 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 		return false, nil
 	}
 
-	if authBridgeMode == ModeProxySidecar {
-		// Proxy-sidecar mode: inject lightweight authbridge container + HTTP_PROXY env vars.
+	if authBridgeMode == ModeProxySidecar || authBridgeMode == ModeLite {
+		// Proxy-sidecar / lite mode: inject the authbridge container + HTTP_PROXY env vars.
 		// No iptables, no proxy-init, no Envoy.
+		//
+		// proxy-sidecar uses Images.AuthBridge (full plugin set including parsers).
+		// lite           uses Images.AuthBridgeLite (auth-only — parsers dropped).
+		// Listener layout, ports, ConfigMap shape, and SPIRE wiring are identical;
+		// only the image differs.
 		//
 		// Port-stealing: the reverse proxy takes over the agent's original port so
 		// the Service doesn't need patching. The agent is moved to a free port.
 		//   Service → :8000 → reverse proxy (validates JWT) → :8002 → agent
 		//   Agent outbound → HTTP_PROXY=127.0.0.1:8081 → forward proxy
+
+		// Pick the image based on mode. The lite binary still accepts
+		// mode=proxy-sidecar in its YAML config (lite is a build
+		// variant, not a runtime mode), so the per-agent ConfigMap's
+		// `mode:` field stays "proxy-sidecar" regardless.
+		proxyImage := builder.cfg.Images.AuthBridge
+		if authBridgeMode == ModeLite {
+			proxyImage = builder.cfg.Images.AuthBridgeLite
+		}
 
 		// Collect all ports in use across all containers in the pod.
 		usedPorts := map[int32]bool{}
@@ -300,9 +351,7 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 		var agentContainer *corev1.Container
 		for i := range podSpec.Containers {
 			c := &podSpec.Containers[i]
-			if c.Name == AuthBridgeProxyContainerName ||
-				c.Name == SpiffeHelperContainerName ||
-				c.Name == ClientRegistrationContainerName {
+			if c.Name == AuthBridgeProxyContainerName {
 				continue
 			}
 			if len(c.Ports) > 0 {
@@ -378,6 +427,7 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 			podSpec.Containers = append(podSpec.Containers,
 				builder.BuildProxySidecarContainerWithPorts(
 					spireEnabled,
+					proxyImage,
 					originalAgentPort, // reverse proxy listens here
 					newAgentPort,      // forwards to agent here
 					forwardProxyPort,  // forward proxy listens here
@@ -387,21 +437,14 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 		// Inject HTTP_PROXY env vars into all existing app containers
 		for i := range podSpec.Containers {
 			c := &podSpec.Containers[i]
-			if c.Name == AuthBridgeProxyContainerName ||
-				c.Name == SpiffeHelperContainerName ||
-				c.Name == ClientRegistrationContainerName {
+			if c.Name == AuthBridgeProxyContainerName {
 				continue
 			}
 			injectHTTPProxyEnv(c, forwardProxyPort)
 		}
 
-		// spiffe-helper and client-registration are still injected
-		if decision.SpiffeHelper.Inject && !containerExists(podSpec.Containers, SpiffeHelperContainerName) {
-			podSpec.Containers = append(podSpec.Containers, builder.BuildSpiffeHelperContainer())
-		}
-		if decision.ClientRegistration.Inject && !containerExists(podSpec.Containers, ClientRegistrationContainerName) {
-			podSpec.Containers = append(podSpec.Containers, builder.BuildClientRegistrationContainerWithSpireOption(crName, namespace, spireEnabled))
-		}
+		// spiffe-helper is bundled in the authbridge combined image and
+		// gated by SPIRE_ENABLED; client-registration is operator-managed.
 
 		// Inject volumes — use per-agent ConfigMap name for authbridge config.
 		// requiredVolumes is always set above (resolved or legacy path) before
@@ -424,7 +467,8 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 
 		mutatorLog.Info("proxy-sidecar mode injection complete",
 			"namespace", namespace, "crName", crName,
-			"image", builder.cfg.Images.AuthBridgeLight,
+			"resolvedMode", authBridgeMode,
+			"image", proxyImage,
 			"perAgentConfigMap", perAgentCMName,
 			"reverseProxyPort", originalAgentPort,
 			"agentPort", newAgentPort,
@@ -437,59 +481,28 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 	}
 
 	// ========================================
-	// Envoy-sidecar mode (default)
+	// Envoy-sidecar mode
 	// ========================================
+	//
+	// Single combined container (authbridge-envoy image): Envoy + ext_proc
+	// authbridge + bundled spiffe-helper. proxy-init is a separate
+	// init container. spiffe-helper starts conditionally on SPIRE_ENABLED.
 
-	// Create per-agent ConfigMap for envoy-sidecar mode (no listener overrides).
-	// Skip when combinedSidecar is enabled — that container uses env vars directly
-	// and does not mount authbridge-runtime-config.
-	if !currentGates.CombinedSidecar {
-		perAgentCMName, err := m.ensurePerAgentConfigMap(ctx, namespace, crName,
-			ModeEnvoySidecar, nsConfig.AuthBridgeRuntimeYAML, nsConfig, nil)
-		if err != nil {
-			return false, fmt.Errorf("envoy-sidecar per-agent ConfigMap: %w", err)
-		}
-		requiredVolumes = overrideAuthBridgeConfigMapInVolumes(requiredVolumes, perAgentCMName)
+	perAgentCMName, err := m.ensurePerAgentConfigMap(ctx, namespace, crName,
+		ModeEnvoySidecar, nsConfig.AuthBridgeRuntimeYAML, nsConfig, nil)
+	if err != nil {
+		return false, fmt.Errorf("envoy-sidecar per-agent ConfigMap: %w", err)
+	}
+	requiredVolumes = overrideAuthBridgeConfigMapInVolumes(requiredVolumes, perAgentCMName)
+
+	if decision.EnvoyProxy.Inject && !containerExists(podSpec.Containers, EnvoyProxyContainerName) {
+		podSpec.Containers = append(podSpec.Containers, builder.BuildEnvoyProxyContainerWithSpireOption(spireEnabled))
 	}
 
-	// Conditionally inject sidecars based on precedence decisions.
-	// Two modes controlled by the combinedSidecar feature gate:
-	//   true  → combined mode: single "authbridge" container replaces envoy-proxy +
-	//           spiffe-helper + client-registration. proxy-init is still separate.
-	//   false → legacy mode: separate sidecar containers (unchanged behavior).
-	if currentGates.CombinedSidecar {
-		// Combined mode: inject single authbridge container (only when envoy-proxy is enabled)
-		if decision.EnvoyProxy.Inject && !containerExists(podSpec.Containers, AuthBridgeContainerName) {
-			podSpec.Containers = append(podSpec.Containers,
-				builder.BuildAuthBridgeContainer(crName, namespace,
-					decision.SpiffeHelper.Inject,
-					decision.ClientRegistration.Inject))
-		}
-		// proxy-init is still injected separately
-		if decision.ProxyInit.Inject && !containerExists(podSpec.InitContainers, ProxyInitContainerName) {
-			outboundExclude := annotations[OutboundPortsExcludeAnnotation]
-			inboundExclude := annotations[InboundPortsExcludeAnnotation]
-			podSpec.InitContainers = append(podSpec.InitContainers, builder.BuildProxyInitContainer(outboundExclude, inboundExclude))
-		}
-	} else {
-		// Legacy mode: separate sidecar containers
-		if decision.EnvoyProxy.Inject && !containerExists(podSpec.Containers, EnvoyProxyContainerName) {
-			podSpec.Containers = append(podSpec.Containers, builder.BuildEnvoyProxyContainerWithSpireOption(spireEnabled))
-		}
-
-		if decision.ProxyInit.Inject && !containerExists(podSpec.InitContainers, ProxyInitContainerName) {
-			outboundExclude := annotations[OutboundPortsExcludeAnnotation]
-			inboundExclude := annotations[InboundPortsExcludeAnnotation]
-			podSpec.InitContainers = append(podSpec.InitContainers, builder.BuildProxyInitContainer(outboundExclude, inboundExclude))
-		}
-
-		if decision.SpiffeHelper.Inject && !containerExists(podSpec.Containers, SpiffeHelperContainerName) {
-			podSpec.Containers = append(podSpec.Containers, builder.BuildSpiffeHelperContainer())
-		}
-
-		if decision.ClientRegistration.Inject && !containerExists(podSpec.Containers, ClientRegistrationContainerName) {
-			podSpec.Containers = append(podSpec.Containers, builder.BuildClientRegistrationContainerWithSpireOption(crName, namespace, spireEnabled))
-		}
+	if decision.ProxyInit.Inject && !containerExists(podSpec.InitContainers, ProxyInitContainerName) {
+		outboundExclude := annotations[OutboundPortsExcludeAnnotation]
+		inboundExclude := annotations[InboundPortsExcludeAnnotation]
+		podSpec.InitContainers = append(podSpec.InitContainers, builder.BuildProxyInitContainer(outboundExclude, inboundExclude))
 	}
 
 	// Inject volumes
@@ -501,9 +514,6 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 
 	// Mount operator-managed Keycloak client credentials if annotation is present
 	ApplyKeycloakClientCredentialsSecretVolumes(podSpec, annotations)
-
-	// Log how credentials are delivered for this pod
-	logClientRegistrationPaths(namespace, crName, labels, currentGates.CombinedSidecar, decision, annotations)
 
 	// Set fsGroup for shared volume access when SPIRE is enabled
 	if spireEnabled {
@@ -797,39 +807,6 @@ func volumeExists(volumes []corev1.Volume, name string) bool {
 		}
 	}
 	return false
-}
-
-// logClientRegistrationPaths logs how Keycloak credentials are delivered to this pod.
-func logClientRegistrationPaths(namespace, crName string, labels map[string]string, combinedSidecar bool, decision InjectionDecision, annotations map[string]string) {
-	keycloakClientCredentialsSecret := strings.TrimSpace(annotations[AnnotationKeycloakClientSecretName])
-
-	var paths []string
-	if keycloakClientCredentialsSecret != "" {
-		paths = append(paths, "operator-secret")
-	}
-
-	if combinedSidecar {
-		if decision.EnvoyProxy.Inject && decision.ClientRegistration.Inject {
-			paths = append(paths, "combined-authbridge")
-		}
-	} else if decision.ClientRegistration.Inject {
-		paths = append(paths, "sidecar")
-	}
-
-	if len(paths) == 0 {
-		paths = append(paths, "skip")
-	}
-
-	mutatorLog.Info("AuthBridge client registration: how credentials are supplied for this Pod",
-		"namespace", namespace,
-		"workloadKey", crName,
-		"kagentiType", labels[KagentiTypeLabel],
-		"deliveryPaths", strings.Join(paths, ","),
-		"keycloakClientCredentialsSecretName", keycloakClientCredentialsSecret,
-		"combinedSidecarMode", combinedSidecar,
-		"injectClientRegistrationSidecar", decision.ClientRegistration.Inject,
-		"injectEnvoyOrAuthbridge", decision.EnvoyProxy.Inject,
-	)
 }
 
 // ensureFSGroup sets fsGroup in the pod security context to enable shared volume access.

@@ -120,11 +120,14 @@ signatureVerification:
 # Feature gates — highest-priority layer in the injection precedence chain.
 # Set globalEnabled to false to disable ALL sidecar injection (kill switch).
 # Set individual gates to false to disable specific sidecars cluster-wide.
+#
+# spiffe-helper and client-registration no longer have feature gates:
+#   * spiffe-helper is bundled inside the combined authbridge images and
+#     gated per-workload by the SPIRE_ENABLED env var.
+#   * client-registration is operator-managed (no in-pod sidecar).
 featureGates:
   globalEnabled: true
   envoyProxy: true
-  spiffeHelper: true
-  clientRegistration: true
   # injectTools controls whether tool workloads (kagenti.io/type=tool) receive
   # sidecar injection. Defaults to false — tools are not injected by default.
   injectTools: false
@@ -133,23 +136,24 @@ featureGates:
   # Default false — cached mode is faster and sufficient when namespace ConfigMaps
   # rarely change. Cache is cleared on webhook pod restart.
   perWorkloadConfigResolution: false
-  # combinedSidecar controls whether injection uses a single combined authbridge
-  # container instead of separate envoy-proxy + spiffe-helper + client-registration.
-  # Requires the authbridge image. Default false — separate sidecars.
-  combinedSidecar: false
 
 # Platform defaults for AuthBridge sidecar injection.
 # These are the lowest-priority layer — overridden by feature gates,
 # namespace labels/ConfigMaps, and workload labels/AgentRuntime CRs.
+#
+# Three combined images, selected per workload by deployment mode:
+#   * envoyProxy     (envoy-sidecar mode):     Envoy + ext_proc authbridge + spiffe-helper.
+#   * authbridge     (proxy-sidecar mode, default): authbridge-proxy (full plugin set) + spiffe-helper.
+#   * authbridgeLite (lite mode):              authbridge-lite (jwt-validation + token-exchange only,
+#                                              parsers dropped) + spiffe-helper. Same listener layout
+#                                              as authbridge; for size-constrained deployments.
+# proxy-init applies to envoy-sidecar mode only.
 defaults:
-  # Container images with version tags
   images:
     envoyProxy: ghcr.io/kagenti/kagenti-extensions/authbridge-envoy:latest
-    authbridgeLight: ghcr.io/kagenti/kagenti-extensions/authbridge-light:latest
-    proxyInit: ghcr.io/kagenti/kagenti-extensions/proxy-init:latest
-    spiffeHelper: ghcr.io/kagenti/kagenti-extensions/spiffe-helper:latest
-    clientRegistration: ghcr.io/kagenti/kagenti-extensions/client-registration:latest
     authbridge: ghcr.io/kagenti/kagenti-extensions/authbridge:latest
+    authbridgeLite: ghcr.io/kagenti/kagenti-extensions/authbridge-lite:latest
+    proxyInit: ghcr.io/kagenti/kagenti-extensions/proxy-init:latest
     pullPolicy: IfNotPresent
 
   # Proxy settings
@@ -176,20 +180,6 @@ defaults:
       limits:
         cpu: 10m
         memory: 10Mi
-    spiffeHelper:
-      requests:
-        cpu: 50m
-        memory: 64Mi
-      limits:
-        cpu: 100m
-        memory: 128Mi
-    clientRegistration:
-      requests:
-        cpu: 50m
-        memory: 64Mi
-      limits:
-        cpu: 100m
-        memory: 128Mi
     authbridge:
       requests:
         cpu: 100m
@@ -197,13 +187,3 @@ defaults:
       limits:
         cpu: 300m
         memory: 384Mi
-
-  # Per-sidecar enable/disable at the platform level (lowest-priority layer).
-  # These are overridden by feature gates, namespace labels, and workload labels.
-  sidecars:
-    envoyProxy:
-      enabled: true
-    spiffeHelper:
-      enabled: true
-    clientRegistration:
-      enabled: true

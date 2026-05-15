@@ -14,17 +14,30 @@ type PlatformConfig struct {
 	TokenExchange TokenExchangeDefaults `json:"tokenExchange" yaml:"tokenExchange"`
 	Spiffe        SpiffeConfig          `json:"spiffe" yaml:"spiffe"`
 	Observability ObservabilityConfig   `json:"observability" yaml:"observability"`
-	Sidecars      SidecarDefaults       `json:"sidecars" yaml:"sidecars"`
 }
 
 type ImageConfig struct {
-	EnvoyProxy         string            `json:"envoyProxy" yaml:"envoyProxy"`
-	AuthBridgeLight    string            `json:"authbridgeLight" yaml:"authbridgeLight"`
-	ProxyInit          string            `json:"proxyInit" yaml:"proxyInit"`
-	SpiffeHelper       string            `json:"spiffeHelper" yaml:"spiffeHelper"`
-	ClientRegistration string            `json:"clientRegistration" yaml:"clientRegistration"`
-	AuthBridge         string            `json:"authbridge" yaml:"authbridge"`
-	PullPolicy         corev1.PullPolicy `json:"pullPolicy" yaml:"pullPolicy"`
+	// EnvoyProxy is the combined image for envoy-sidecar mode:
+	// Envoy + authbridge (ext_proc) + spiffe-helper bundled.
+	// Spiffe-helper starts conditionally based on SPIRE_ENABLED.
+	EnvoyProxy string `json:"envoyProxy" yaml:"envoyProxy"`
+
+	// AuthBridge is the combined image for proxy-sidecar mode (default):
+	// authbridge-proxy + spiffe-helper bundled. No Envoy, no gRPC.
+	// Spiffe-helper starts conditionally based on SPIRE_ENABLED.
+	AuthBridge string `json:"authbridge" yaml:"authbridge"`
+
+	// AuthBridgeLite is the size-optimized variant of AuthBridge:
+	// authbridge-lite (jwt-validation + token-exchange only, parsers
+	// dropped) + spiffe-helper bundled. Same listener layout as
+	// AuthBridge, used for the "lite" mode.
+	AuthBridgeLite string `json:"authbridgeLite" yaml:"authbridgeLite"`
+
+	// ProxyInit is the iptables init container, used by envoy-sidecar
+	// mode only.
+	ProxyInit string `json:"proxyInit" yaml:"proxyInit"`
+
+	PullPolicy corev1.PullPolicy `json:"pullPolicy" yaml:"pullPolicy"`
 }
 
 type ProxyConfig struct {
@@ -35,11 +48,9 @@ type ProxyConfig struct {
 }
 
 type ResourcesConfig struct {
-	EnvoyProxy         corev1.ResourceRequirements `json:"envoyProxy" yaml:"envoyProxy"`
-	ProxyInit          corev1.ResourceRequirements `json:"proxyInit" yaml:"proxyInit"`
-	SpiffeHelper       corev1.ResourceRequirements `json:"spiffeHelper" yaml:"spiffeHelper"`
-	ClientRegistration corev1.ResourceRequirements `json:"clientRegistration" yaml:"clientRegistration"`
-	AuthBridge         corev1.ResourceRequirements `json:"authbridge" yaml:"authbridge"`
+	EnvoyProxy corev1.ResourceRequirements `json:"envoyProxy" yaml:"envoyProxy"`
+	ProxyInit  corev1.ResourceRequirements `json:"proxyInit" yaml:"proxyInit"`
+	AuthBridge corev1.ResourceRequirements `json:"authbridge" yaml:"authbridge"`
 }
 
 type TokenExchangeDefaults struct {
@@ -60,18 +71,6 @@ type ObservabilityConfig struct {
 	TracingBackend string `json:"tracingBackend" yaml:"tracingBackend"`
 }
 
-// SidecarDefaults controls per-sidecar enable/disable at the platform level.
-// This is the lowest-priority layer in the injection precedence chain.
-type SidecarDefaults struct {
-	EnvoyProxy         SidecarDefault `json:"envoyProxy" yaml:"envoyProxy"`
-	SpiffeHelper       SidecarDefault `json:"spiffeHelper" yaml:"spiffeHelper"`
-	ClientRegistration SidecarDefault `json:"clientRegistration" yaml:"clientRegistration"`
-}
-
-type SidecarDefault struct {
-	Enabled bool `json:"enabled" yaml:"enabled"`
-}
-
 // DeepCopy creates a copy of the config
 func (c *PlatformConfig) DeepCopy() *PlatformConfig {
 	if c == nil {
@@ -87,8 +86,6 @@ func (c *PlatformConfig) DeepCopy() *PlatformConfig {
 	// Deep copy ResourceRequirements — ResourceList is a map that would be shared
 	result.Resources.EnvoyProxy = deepCopyResourceRequirements(c.Resources.EnvoyProxy)
 	result.Resources.ProxyInit = deepCopyResourceRequirements(c.Resources.ProxyInit)
-	result.Resources.SpiffeHelper = deepCopyResourceRequirements(c.Resources.SpiffeHelper)
-	result.Resources.ClientRegistration = deepCopyResourceRequirements(c.Resources.ClientRegistration)
 	result.Resources.AuthBridge = deepCopyResourceRequirements(c.Resources.AuthBridge)
 
 	return &result
@@ -125,14 +122,14 @@ func (c *PlatformConfig) Validate() error {
 	if c.Images.EnvoyProxy == "" {
 		return fmt.Errorf("images.envoyProxy is required")
 	}
+	if c.Images.AuthBridge == "" {
+		return fmt.Errorf("images.authbridge is required")
+	}
+	if c.Images.AuthBridgeLite == "" {
+		return fmt.Errorf("images.authbridgeLite is required")
+	}
 	if c.Images.ProxyInit == "" {
 		return fmt.Errorf("images.proxyInit is required")
-	}
-	if c.Images.SpiffeHelper == "" {
-		return fmt.Errorf("images.spiffeHelper is required")
-	}
-	if c.Images.ClientRegistration == "" {
-		return fmt.Errorf("images.clientRegistration is required")
 	}
 	return nil
 }

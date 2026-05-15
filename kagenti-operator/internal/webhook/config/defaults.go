@@ -11,13 +11,21 @@ func CompiledDefaults() *PlatformConfig {
 		// Compiled defaults are overridden at runtime by the platform-config
 		// ConfigMap (kagenti-platform-config). These serve as fallbacks only.
 		Images: ImageConfig{
-			EnvoyProxy:         "ghcr.io/kagenti/kagenti-extensions/authbridge-envoy:latest",
-			AuthBridgeLight:    "ghcr.io/kagenti/kagenti-extensions/authbridge-light:latest",
-			ProxyInit:          "ghcr.io/kagenti/kagenti-extensions/proxy-init:latest",
-			SpiffeHelper:       "ghcr.io/kagenti/kagenti-extensions/spiffe-helper:latest",
-			ClientRegistration: "ghcr.io/kagenti/kagenti-extensions/client-registration:latest",
-			AuthBridge:         "ghcr.io/kagenti/kagenti-extensions/authbridge:latest",
-			PullPolicy:         corev1.PullIfNotPresent,
+			// authbridge-envoy: combined image for envoy-sidecar mode
+			// (Envoy + ext_proc authbridge + spiffe-helper bundled).
+			EnvoyProxy: "ghcr.io/kagenti/kagenti-extensions/authbridge-envoy:latest",
+			// authbridge: combined image for proxy-sidecar mode (default
+			// deployment shape) — authbridge-proxy + spiffe-helper
+			// bundled, no Envoy, no gRPC.
+			AuthBridge: "ghcr.io/kagenti/kagenti-extensions/authbridge:latest",
+			// authbridge-lite: size-optimized variant for the "lite"
+			// mode. Same listener layout as AuthBridge but parsers
+			// (a2a/mcp/inference) are dropped.
+			AuthBridgeLite: "ghcr.io/kagenti/kagenti-extensions/authbridge-lite:latest",
+			// proxy-init: iptables init container, used by
+			// envoy-sidecar mode only.
+			ProxyInit:  "ghcr.io/kagenti/kagenti-extensions/proxy-init:latest",
+			PullPolicy: corev1.PullIfNotPresent,
 		},
 		Proxy: ProxyConfig{
 			Port:             15123,
@@ -46,26 +54,6 @@ func CompiledDefaults() *PlatformConfig {
 					corev1.ResourceMemory: resource.MustParse("10Mi"),
 				},
 			},
-			SpiffeHelper: corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceCPU:    resource.MustParse("50m"),
-					corev1.ResourceMemory: resource.MustParse("64Mi"),
-				},
-				Limits: corev1.ResourceList{
-					corev1.ResourceCPU:    resource.MustParse("100m"),
-					corev1.ResourceMemory: resource.MustParse("128Mi"),
-				},
-			},
-			ClientRegistration: corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceCPU:    resource.MustParse("50m"),
-					corev1.ResourceMemory: resource.MustParse("64Mi"),
-				},
-				Limits: corev1.ResourceList{
-					corev1.ResourceCPU:    resource.MustParse("100m"),
-					corev1.ResourceMemory: resource.MustParse("128Mi"),
-				},
-			},
 			AuthBridge: corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{
 					corev1.ResourceCPU:    resource.MustParse("100m"),
@@ -88,11 +76,6 @@ func CompiledDefaults() *PlatformConfig {
 			LogLevel:      "info",
 			EnableMetrics: true,
 			EnableTracing: false,
-		},
-		Sidecars: SidecarDefaults{
-			EnvoyProxy:         SidecarDefault{Enabled: true},
-			SpiffeHelper:       SidecarDefault{Enabled: true},
-			ClientRegistration: SidecarDefault{Enabled: true},
 		},
 	}
 }

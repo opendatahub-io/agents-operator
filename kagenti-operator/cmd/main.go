@@ -190,8 +190,8 @@ func main() {
 		setupLog.Info("Feature gates updated",
 			"globalEnabled", fg.GlobalEnabled,
 			"envoyProxy", fg.EnvoyProxy,
-			"spiffeHelper", fg.SpiffeHelper,
-			"clientRegistration", fg.ClientRegistration)
+			"injectTools", fg.InjectTools,
+			"perWorkloadConfigResolution", fg.PerWorkloadConfigResolution)
 	})
 	if err := featureGateLoader.Watch(ctx); err != nil {
 		setupLog.Error(err, "Failed to start feature gates watcher")
@@ -425,12 +425,9 @@ func main() {
 
 	// AuthBridge sidecar injection webhook
 	if authBridgeWebhooksEnabled() {
-		// Pass false to disable legacy client-registration sidecar injection.
-		// Client registration is now handled by the operator controller.
 		podMutator := injector.NewPodMutator(
 			mgr.GetClient(),
 			mgr.GetAPIReader(),
-			false, // disableLegacyClientRegistrationSidecar
 			configLoader.Get,
 			featureGateLoader.Get,
 		)

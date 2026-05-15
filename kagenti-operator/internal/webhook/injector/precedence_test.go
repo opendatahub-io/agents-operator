@@ -22,216 +22,74 @@ func TestPrecedenceEvaluator(t *testing.T) {
 		expectEnvoy      bool
 		expectProxyInit  bool
 		expectSpiffe     bool
-		expectClientReg  bool
 		expectEnvoyLayer string
 	}{
-		// === Per-sidecar feature gate tests ===
+		// === Per-sidecar feature gate ===
 		{
-			name: "per-sidecar gate off - envoy skipped",
+			name: "envoy gate off - envoy and proxy-init skipped",
 			featureGates: &config.FeatureGates{
-				GlobalEnabled:      true,
-				EnvoyProxy:         false,
-				SpiffeHelper:       true,
-				ClientRegistration: true,
+				GlobalEnabled: true,
+				EnvoyProxy:    false,
 			},
-
 			workloadLabels:   noLabels(),
 			expectEnvoy:      false,
 			expectProxyInit:  false, // follows envoy
-			expectSpiffe:     true,
-			expectClientReg:  false, // opt-in: no label → not injected
+			expectSpiffe:     true,  // spiffe gate is implicit-true
 			expectEnvoyLayer: "feature-gate",
 		},
+
+		// === Workload label ===
 		{
-			name: "per-sidecar gate off - spiffe skipped",
-			featureGates: &config.FeatureGates{
-				GlobalEnabled:      true,
-				EnvoyProxy:         true,
-				SpiffeHelper:       false,
-				ClientRegistration: true,
-			},
-
-			workloadLabels:  noLabels(),
-			expectEnvoy:     true,
-			expectProxyInit: true,
-			expectSpiffe:    false,
-			expectClientReg: false, // opt-in: no label → not injected
-		},
-		{
-			name: "per-sidecar gate off - client-registration skipped",
-			featureGates: &config.FeatureGates{
-				GlobalEnabled:      true,
-				EnvoyProxy:         true,
-				SpiffeHelper:       true,
-				ClientRegistration: false,
-			},
-
-			workloadLabels:  noLabels(),
-			expectEnvoy:     true,
-			expectProxyInit: true,
-			expectSpiffe:    true,
-			expectClientReg: false,
-		},
-
-		// === Workload label tests ===
-		{
-			name:         "workload label disables envoy - envoy and proxy-init skipped",
-			featureGates: allEnabledGates(),
-
+			name:             "envoy label false - envoy+proxy-init skipped",
+			featureGates:     allEnabledGates(),
 			workloadLabels:   map[string]string{LabelEnvoyProxyInject: "false"},
 			expectEnvoy:      false,
 			expectProxyInit:  false,
 			expectSpiffe:     true,
-			expectClientReg:  false, // opt-in: no label → not injected
 			expectEnvoyLayer: "workload-label",
 		},
 		{
-			name:         "workload label disables spiffe only",
-			featureGates: allEnabledGates(),
-
+			name:            "spiffe label false - spiffe skipped, envoy unaffected",
+			featureGates:    allEnabledGates(),
 			workloadLabels:  map[string]string{LabelSpiffeHelperInject: "false"},
 			expectEnvoy:     true,
 			expectProxyInit: true,
 			expectSpiffe:    false,
-			expectClientReg: false, // opt-in: no label → not injected
 		},
 		{
-			name:         "workload label disables client-registration explicitly",
-			featureGates: allEnabledGates(),
-
-			workloadLabels:  map[string]string{LabelClientRegistrationInject: "false"},
-			expectEnvoy:     true,
-			expectProxyInit: true,
-			expectSpiffe:    true,
-			expectClientReg: false,
-		},
-		{
-			name:         "client-registration label true - opt-in sidecar injected",
-			featureGates: allEnabledGates(),
-
-			workloadLabels:  map[string]string{LabelClientRegistrationInject: "true"},
-			expectEnvoy:     true,
-			expectProxyInit: true,
-			expectSpiffe:    true,
-			expectClientReg: true,
-		},
-		{
-			name:         "workload label true value on envoy - no effect on others",
-			featureGates: allEnabledGates(),
-
-			workloadLabels:  map[string]string{LabelEnvoyProxyInject: "true"},
-			expectEnvoy:     true,
-			expectProxyInit: true,
-			expectSpiffe:    true,
-			expectClientReg: false, // opt-in: no client-reg label → not injected
-		},
-		{
-			name:         "workload labels absent - envoy+spiffe injected, client-reg not (opt-in)",
-			featureGates: allEnabledGates(),
-
-			workloadLabels:  noLabels(),
-			expectEnvoy:     true,
-			expectProxyInit: true,
-			expectSpiffe:    true,
-			expectClientReg: false, // opt-in: default is operator-managed
-		},
-		{
-			name:         "all workload opt-out labels set - all skipped",
-			featureGates: allEnabledGates(),
-
-			workloadLabels: map[string]string{
-				LabelEnvoyProxyInject:         "false",
-				LabelSpiffeHelperInject:       "false",
-				LabelClientRegistrationInject: "false",
-			},
-			expectEnvoy:      false,
-			expectProxyInit:  false,
-			expectSpiffe:     false,
-			expectClientReg:  false,
-			expectEnvoyLayer: "workload-label",
-		},
-		{
-			name:         "all labels opt-in - everything injected",
-			featureGates: allEnabledGates(),
-
-			workloadLabels: map[string]string{
-				LabelClientRegistrationInject: "true",
-			},
-			expectEnvoy:     true,
-			expectProxyInit: true,
-			expectSpiffe:    true,
-			expectClientReg: true,
-		},
-
-		// === Precedence ordering: feature gate beats workload label ===
-		{
-			name: "feature gate off + workload label absent - skipped (gate wins)",
-			featureGates: &config.FeatureGates{
-				GlobalEnabled:      true,
-				EnvoyProxy:         false,
-				SpiffeHelper:       true,
-				ClientRegistration: true,
-			},
-
-			workloadLabels:   map[string]string{LabelEnvoyProxyInject: "true"},
-			expectEnvoy:      false,
-			expectProxyInit:  false,
-			expectSpiffe:     true,
-			expectClientReg:  false, // opt-in: no label → not injected
-			expectEnvoyLayer: "feature-gate",
-		},
-		{
-			name: "client-reg feature gate off beats opt-in label",
-			featureGates: &config.FeatureGates{
-				GlobalEnabled:      true,
-				EnvoyProxy:         true,
-				SpiffeHelper:       true,
-				ClientRegistration: false,
-			},
-
-			workloadLabels:  map[string]string{LabelClientRegistrationInject: "true"},
-			expectEnvoy:     true,
-			expectProxyInit: true,
-			expectSpiffe:    true,
-			expectClientReg: false, // gate off overrides opt-in label
-		},
-		{
-			name:         "all gates pass, no client-reg label - envoy+spiffe injected",
-			featureGates: allEnabledGates(),
-
+			name:             "no labels - envoy+spiffe injected",
+			featureGates:     allEnabledGates(),
 			workloadLabels:   noLabels(),
 			expectEnvoy:      true,
 			expectProxyInit:  true,
 			expectSpiffe:     true,
-			expectClientReg:  false, // opt-in: default is not injected
 			expectEnvoyLayer: "default",
 		},
-
-		// === proxy-init coupling tests ===
 		{
-			name: "envoy skipped via feature gate - proxy-init also skipped",
-			featureGates: &config.FeatureGates{
-				GlobalEnabled:      true,
-				EnvoyProxy:         false,
-				SpiffeHelper:       true,
-				ClientRegistration: true,
-			},
-
-			workloadLabels:  noLabels(),
-			expectEnvoy:     false,
-			expectProxyInit: false,
-			expectSpiffe:    true,
-			expectClientReg: false, // opt-in: no label
-		},
-		{
-			name:         "envoy skipped via workload label - proxy-init also skipped",
+			name:         "all opt-out labels set - all skipped",
 			featureGates: allEnabledGates(),
+			workloadLabels: map[string]string{
+				LabelEnvoyProxyInject:   "false",
+				LabelSpiffeHelperInject: "false",
+			},
+			expectEnvoy:      false,
+			expectProxyInit:  false,
+			expectSpiffe:     false,
+			expectEnvoyLayer: "workload-label",
+		},
 
-			workloadLabels:  map[string]string{LabelEnvoyProxyInject: "false"},
-			expectEnvoy:     false,
-			expectProxyInit: false,
-			expectSpiffe:    true,
-			expectClientReg: false, // opt-in: no label
+		// === Precedence ordering: gate beats workload label ===
+		{
+			name: "envoy gate off + label true - gate wins",
+			featureGates: &config.FeatureGates{
+				GlobalEnabled: true,
+				EnvoyProxy:    false,
+			},
+			workloadLabels:   map[string]string{LabelEnvoyProxyInject: "true"},
+			expectEnvoy:      false,
+			expectProxyInit:  false,
+			expectSpiffe:     true,
+			expectEnvoyLayer: "feature-gate",
 		},
 	}
 
@@ -255,11 +113,6 @@ func TestPrecedenceEvaluator(t *testing.T) {
 					decision.SpiffeHelper.Inject, tt.expectSpiffe,
 					decision.SpiffeHelper.Reason, decision.SpiffeHelper.Layer)
 			}
-			if decision.ClientRegistration.Inject != tt.expectClientReg {
-				t.Errorf("ClientRegistration.Inject = %v, want %v (reason: %s, layer: %s)",
-					decision.ClientRegistration.Inject, tt.expectClientReg,
-					decision.ClientRegistration.Reason, decision.ClientRegistration.Layer)
-			}
 			if tt.expectEnvoyLayer != "" && decision.EnvoyProxy.Layer != tt.expectEnvoyLayer {
 				t.Errorf("EnvoyProxy.Layer = %q, want %q", decision.EnvoyProxy.Layer, tt.expectEnvoyLayer)
 			}
@@ -274,29 +127,26 @@ func TestAnyInjected(t *testing.T) {
 		want     bool
 	}{
 		{
-			name: "all injected",
+			name: "envoy + spiffe injected",
 			decision: InjectionDecision{
-				EnvoyProxy:         SidecarDecision{Inject: true},
-				SpiffeHelper:       SidecarDecision{Inject: true},
-				ClientRegistration: SidecarDecision{Inject: true},
+				EnvoyProxy:   SidecarDecision{Inject: true},
+				SpiffeHelper: SidecarDecision{Inject: true},
 			},
 			want: true,
 		},
 		{
 			name: "only envoy injected",
 			decision: InjectionDecision{
-				EnvoyProxy:         SidecarDecision{Inject: true},
-				SpiffeHelper:       SidecarDecision{Inject: false},
-				ClientRegistration: SidecarDecision{Inject: false},
+				EnvoyProxy:   SidecarDecision{Inject: true},
+				SpiffeHelper: SidecarDecision{Inject: false},
 			},
 			want: true,
 		},
 		{
 			name: "none injected",
 			decision: InjectionDecision{
-				EnvoyProxy:         SidecarDecision{Inject: false},
-				SpiffeHelper:       SidecarDecision{Inject: false},
-				ClientRegistration: SidecarDecision{Inject: false},
+				EnvoyProxy:   SidecarDecision{Inject: false},
+				SpiffeHelper: SidecarDecision{Inject: false},
 			},
 			want: false,
 		},

@@ -2,11 +2,17 @@ package config
 
 // FeatureGates controls which sidecars are globally enabled/disabled.
 // This is the highest-priority layer in the injection precedence chain.
+//
+// Spiffe-helper and client-registration are no longer separate-sidecar
+// features:
+//   - spiffe-helper is bundled inside the EnvoyProxy and AuthBridge
+//     combined images and starts conditionally on the per-workload
+//     SPIRE_ENABLED env var.
+//   - client-registration is now operator-managed entirely (the in-pod
+//     sidecar path is gone). See operator-managed-client-registration.md.
 type FeatureGates struct {
-	GlobalEnabled      bool `json:"globalEnabled" yaml:"globalEnabled"`
-	EnvoyProxy         bool `json:"envoyProxy" yaml:"envoyProxy"`
-	SpiffeHelper       bool `json:"spiffeHelper" yaml:"spiffeHelper"`
-	ClientRegistration bool `json:"clientRegistration" yaml:"clientRegistration"`
+	GlobalEnabled bool `json:"globalEnabled" yaml:"globalEnabled"`
+	EnvoyProxy    bool `json:"envoyProxy" yaml:"envoyProxy"`
 	// InjectTools controls whether tool workloads (kagenti.io/type=tool) receive
 	// sidecar injection. Defaults to false — tools are not injected by default.
 	InjectTools bool `json:"injectTools" yaml:"injectTools"`
@@ -16,9 +22,6 @@ type FeatureGates struct {
 	//   true            → resolved path: webhook reads namespace ConfigMaps at
 	//                     admission time and injects literal env var values.
 	PerWorkloadConfigResolution bool `json:"perWorkloadConfigResolution" yaml:"perWorkloadConfigResolution"`
-	// CombinedSidecar controls whether injection uses a single combined authbridge
-	// container instead of separate envoy-proxy + spiffe-helper + client-registration sidecars.
-	CombinedSidecar bool `json:"combinedSidecar" yaml:"combinedSidecar"`
 }
 
 // DefaultFeatureGates returns feature gates with sidecar injection enabled for
@@ -27,11 +30,8 @@ func DefaultFeatureGates() *FeatureGates {
 	return &FeatureGates{
 		GlobalEnabled:               true,
 		EnvoyProxy:                  true,
-		SpiffeHelper:                true,
-		ClientRegistration:          true,
 		InjectTools:                 false,
 		PerWorkloadConfigResolution: false,
-		CombinedSidecar:             false,
 	}
 }
 

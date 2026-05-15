@@ -22,6 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/yaml"
 )
 
 var nsConfigLog = logf.Log.WithName("namespace-config")
@@ -132,4 +133,31 @@ func getConfigMap(ctx context.Context, c client.Reader, namespace, name string) 
 		return nil, err
 	}
 	return cm, nil
+}
+
+// ExtractMode parses an authbridge-runtime-config config.yaml string and
+// returns the value of its top-level `mode:` key. Returns "" if the YAML
+// is empty, malformed, or has no `mode` field — in any of those cases the
+// caller should fall back to the cluster default.
+//
+// Used by pod_mutator's mode-resolution chain. Stays a small surgical
+// parse rather than a full YAML decode so it tolerates older or
+// hand-edited ConfigMaps that may have other unknown top-level keys.
+func ExtractMode(authbridgeYAML string) string {
+	if authbridgeYAML == "" {
+		return ""
+	}
+	var top struct {
+		Mode string `json:"mode"`
+	}
+	if err := yaml.Unmarshal([]byte(authbridgeYAML), &top); err != nil {
+		// Fail-safe: empty string lets the resolution chain fall through
+		// to the next layer. Log a warning so operators can spot a
+		// malformed authbridge-runtime-config — silent failure here was
+		// flagged in PR #361 review.
+		nsConfigLog.Info("WARN: failed to parse authbridge-runtime-config config.yaml; falling back to next resolution layer",
+			"error", err.Error())
+		return ""
+	}
+	return top.Mode
 }

@@ -34,6 +34,13 @@ var testNsCounter int
 // createAgentRuntime creates an AgentRuntime CR in the given namespace targeting
 // the given workload name. The webhook requires a matching AgentRuntime to exist.
 func createAgentRuntime(namespace, targetName string) {
+	createAgentRuntimeWithMode(namespace, targetName, "")
+}
+
+// createAgentRuntimeWithMode is the same as createAgentRuntime but pins
+// the per-workload AuthBridgeMode field. Pass an empty string to leave
+// mode resolution to the namespace ConfigMap / cluster default.
+func createAgentRuntimeWithMode(namespace, targetName, mode string) {
 	ar := &agentv1alpha1.AgentRuntime{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      targetName + "-runtime",
@@ -46,6 +53,7 @@ func createAgentRuntime(namespace, targetName string) {
 				Kind:       "Deployment",
 				Name:       targetName,
 			},
+			AuthBridgeMode: mode,
 		},
 	}
 	err := k8sClient.Create(ctx, ar)
@@ -92,8 +100,9 @@ var _ = Describe("AuthBridge Pod Webhook", func() {
 
 	Context("when a Pod has kagenti.io/type=agent and kagenti.io/inject=enabled", func() {
 		It("should inject sidecars", func() {
-			// AgentRuntime CR must exist for injection to proceed
-			createAgentRuntime(testNamespace, "agent-pod")
+			// AgentRuntime CR pins envoy-sidecar mode so this test continues to
+			// exercise the envoy-proxy + proxy-init injection path.
+			createAgentRuntimeWithMode(testNamespace, "agent-pod", injector.ModeEnvoySidecar)
 
 			pod := newTestPod("agent-pod", map[string]string{
 				"kagenti.io/type":   "agent",
@@ -179,8 +188,11 @@ var _ = Describe("AuthBridge Pod Webhook", func() {
 			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(pod), pod)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(containerNames(pod.Spec.Containers)).To(ContainElement(injector.EnvoyProxyContainerName))
-			Expect(initContainerNames(pod.Spec.InitContainers)).To(ContainElement(injector.ProxyInitContainerName))
+			// Default mode is proxy-sidecar — expect authbridge-proxy, no
+			// envoy-proxy or proxy-init.
+			Expect(containerNames(pod.Spec.Containers)).To(ContainElement(injector.AuthBridgeProxyContainerName))
+			Expect(containerNames(pod.Spec.Containers)).NotTo(ContainElement(injector.EnvoyProxyContainerName))
+			Expect(initContainerNames(pod.Spec.InitContainers)).NotTo(ContainElement(injector.ProxyInitContainerName))
 		})
 	})
 
@@ -213,30 +225,6 @@ var _ = Describe("AuthBridge Pod Webhook", func() {
 				}
 			}
 			Expect(count).To(Equal(1))
-		})
-	})
-
-	Context("when a Pod already has the combined authbridge container (idempotency)", func() {
-		It("should not double-inject", func() {
-			pod := newTestPod("already-combined-pod", map[string]string{
-				"kagenti.io/type":   "agent",
-				"kagenti.io/inject": "enabled",
-			})
-			// Pre-add the authbridge container to simulate prior combined injection
-			pod.Spec.Containers = append(pod.Spec.Containers, corev1.Container{
-				Name:  injector.AuthBridgeContainerName,
-				Image: "authbridge:test",
-			})
-
-			err := k8sClient.Create(ctx, pod)
-			Expect(err).NotTo(HaveOccurred())
-
-			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(pod), pod)
-			Expect(err).NotTo(HaveOccurred())
-
-			// Should not have added any additional sidecar containers
-			Expect(containerNames(pod.Spec.Containers)).NotTo(ContainElement(injector.EnvoyProxyContainerName))
-			Expect(containerNames(pod.Spec.Containers)).To(ContainElement(injector.AuthBridgeContainerName))
 		})
 	})
 

@@ -46,14 +46,7 @@ func (e *PrecedenceEvaluator) Evaluate(
 			e.featureGates.EnvoyProxy,
 			workloadLabels[LabelEnvoyProxyInject],
 		),
-		SpiffeHelper: e.evaluateSidecar(
-			"spiffe-helper",
-			e.featureGates.SpiffeHelper,
-			workloadLabels[LabelSpiffeHelperInject],
-		),
-		ClientRegistration: e.evaluateClientRegistration(
-			workloadLabels[LabelClientRegistrationInject],
-		),
+		SpiffeHelper: evaluateSpiffeHelper(workloadLabels[LabelSpiffeHelperInject]),
 	}
 
 	// proxy-init always follows envoy-proxy
@@ -66,28 +59,26 @@ func (e *PrecedenceEvaluator) Evaluate(
 	return decision
 }
 
-// evaluateClientRegistration applies feature gate then opt-in label semantics: the legacy
-// client-registration sidecar (or combined authbridge registration slice) injects only when
-// kagenti.io/client-registration-inject is exactly "true". Otherwise kagenti-operator is
-// expected to register the client and supply credentials via pod template annotation.
-func (e *PrecedenceEvaluator) evaluateClientRegistration(workloadLabelValue string) SidecarDecision {
-	if !e.featureGates.ClientRegistration {
+// evaluateSpiffeHelper resolves the per-workload SPIRE-enabled flag from
+// the kagenti.io/spiffe-helper-inject label. Spiffe-helper is bundled
+// inside the combined authbridge images and gated by the SPIRE_ENABLED
+// env var rather than by feature-gate, so this skips the feature-gate
+// layer that evaluateSidecar applies.
+//
+// TODO: rename SpiffeHelper -> SpireEnabled (decision field + label)
+// once the in-pod helper truly retires; left as-is here to keep this
+// PR's blast radius contained.
+func evaluateSpiffeHelper(workloadLabelValue string) SidecarDecision {
+	if workloadLabelValue == labelValueFalse {
 		return SidecarDecision{
 			Inject: false,
-			Reason: "client-registration feature gate disabled",
-			Layer:  "feature-gate",
-		}
-	}
-	if workloadLabelValue == labelValueTrue {
-		return SidecarDecision{
-			Inject: true,
-			Reason: "workload opted in to legacy client-registration (kagenti.io/client-registration-inject=true)",
+			Reason: "workload label disabled spiffe-helper",
 			Layer:  "workload-label",
 		}
 	}
 	return SidecarDecision{
-		Inject: false,
-		Reason: "operator-managed client registration is default; set kagenti.io/client-registration-inject=true for legacy sidecar",
+		Inject: true,
+		Reason: "all gates passed",
 		Layer:  "default",
 	}
 }

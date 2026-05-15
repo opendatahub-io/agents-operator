@@ -48,6 +48,12 @@ type AgentRuntimeOverrides struct {
 	TraceEndpoint     *string
 	TraceProtocol     *string  // "grpc" or "http"
 	TraceSamplingRate *float64 // 0.0–1.0
+
+	// AuthBridge deployment shape — from .spec.authBridgeMode
+	// Nil = no per-workload override; the namespace's
+	// authbridge-runtime-config mode (if set) or the cluster fallback
+	// applies.
+	AuthBridgeMode *string
 }
 
 // ReadAgentRuntimeOverrides reads the AgentRuntime CR for a given workload
@@ -115,10 +121,17 @@ func extractOverrides(rt *agentv1alpha1.AgentRuntime) *AgentRuntimeOverrides {
 		overrides.TraceSamplingRate = &rate
 	}
 
+	// .spec.authBridgeMode
+	if rt.Spec.AuthBridgeMode != "" {
+		mode := rt.Spec.AuthBridgeMode
+		overrides.AuthBridgeMode = &mode
+	}
+
 	arConfigLog.Info("AgentRuntime overrides extracted",
 		"hasSpiffeTrustDomain", overrides.SpiffeTrustDomain != nil,
 		"hasClientRegistration", overrides.ClientRegistrationProvider != nil,
-		"hasTrace", overrides.TraceEndpoint != nil)
+		"hasTrace", overrides.TraceEndpoint != nil,
+		"hasAuthBridgeMode", overrides.AuthBridgeMode != nil)
 
 	return overrides
 }
