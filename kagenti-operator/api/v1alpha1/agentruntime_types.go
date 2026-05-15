@@ -66,14 +66,20 @@ type AgentRuntimeSpec struct {
 	// authbridge-runtime-config ConfigMap's mode is used; if that is
 	// also unset, the operator falls back to "proxy-sidecar".
 	//
-	// Three valid values:
+	// Four valid values:
 	//
-	//   proxy-sidecar  HTTP_PROXY env + lightweight authbridge-proxy
-	//                  + spiffe-helper bundled. No Envoy, no iptables.
+	//   proxy-sidecar  HTTP_PROXY env + authbridge-proxy (full plugin
+	//                  set, including a2a/mcp/inference parsers) +
+	//                  spiffe-helper bundled. No Envoy, no iptables.
 	//                  Default mode.
 	//   envoy-sidecar  Envoy + ext_proc authbridge + spiffe-helper
 	//                  bundled. Requires the proxy-init iptables
 	//                  container.
+	//   lite           Same listener layout as proxy-sidecar but uses
+	//                  the authbridge-lite image (jwt-validation +
+	//                  token-exchange only, parsers dropped to shrink
+	//                  the binary). For size-constrained deployments
+	//                  that don't need protocol-aware abctl events.
 	//   waypoint       Standalone deployment, not injected as a
 	//                  sidecar. Used by Istio ambient mesh.
 	//
@@ -82,7 +88,7 @@ type AgentRuntimeSpec struct {
 	// namespace ConfigMap drive the choice.
 	//
 	// +optional
-	// +kubebuilder:validation:Enum=proxy-sidecar;envoy-sidecar;waypoint
+	// +kubebuilder:validation:Enum=proxy-sidecar;envoy-sidecar;lite;waypoint
 	AuthBridgeMode string `json:"authBridgeMode,omitempty"`
 }
 

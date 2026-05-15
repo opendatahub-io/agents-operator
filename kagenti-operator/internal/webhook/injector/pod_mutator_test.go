@@ -651,6 +651,77 @@ func TestInjectAuthBridge_ModeResolution_ClusterDefault(t *testing.T) {
 	}
 }
 
+func TestInjectAuthBridge_LiteMode_UsesAuthBridgeLiteImage(t *testing.T) {
+	// Lite mode is structurally proxy-sidecar but uses Images.AuthBridgeLite.
+	m := newTestMutator(newAgentRuntimeWithMode("team1", "my-agent", ModeLite))
+	ctx := context.Background()
+
+	podSpec := &corev1.PodSpec{
+		ServiceAccountName: "my-agent",
+		Containers:         []corev1.Container{{Name: "agent", Image: "my-agent:latest"}},
+	}
+	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
+
+	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !mutated {
+		t.Fatal("expected mutation")
+	}
+
+	// Same shape as proxy-sidecar: authbridge-proxy container, no envoy-proxy.
+	if !containerExists(podSpec.Containers, AuthBridgeProxyContainerName) {
+		t.Errorf("expected %s container (lite mode uses proxy-sidecar shape)", AuthBridgeProxyContainerName)
+	}
+	if containerExists(podSpec.Containers, EnvoyProxyContainerName) {
+		t.Error("unexpected envoy-proxy container in lite mode")
+	}
+
+	// But the image must be AuthBridgeLite, not AuthBridge.
+	wantImage := config.CompiledDefaults().Images.AuthBridgeLite
+	gotImage := ""
+	for _, c := range podSpec.Containers {
+		if c.Name == AuthBridgeProxyContainerName {
+			gotImage = c.Image
+			break
+		}
+	}
+	if gotImage != wantImage {
+		t.Errorf("authbridge-proxy image = %q, want %q (Images.AuthBridgeLite)", gotImage, wantImage)
+	}
+}
+
+func TestInjectAuthBridge_LiteMode_FromNamespaceConfigMap(t *testing.T) {
+	// Namespace ConfigMap pins lite; CR has no override.
+	m := newTestMutator(
+		newAgentRuntime("team1", "my-agent"),
+		authbridgeRuntimeConfigMap("team1", ModeLite),
+	)
+	ctx := context.Background()
+
+	podSpec := &corev1.PodSpec{
+		ServiceAccountName: "my-agent",
+		Containers:         []corev1.Container{{Name: "agent", Image: "my-agent:latest"}},
+	}
+	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
+
+	mutated, err := m.InjectAuthBridge(ctx, podSpec, "team1", "my-agent", labels, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !mutated {
+		t.Fatal("expected mutation")
+	}
+
+	wantImage := config.CompiledDefaults().Images.AuthBridgeLite
+	for _, c := range podSpec.Containers {
+		if c.Name == AuthBridgeProxyContainerName && c.Image != wantImage {
+			t.Errorf("namespace ConfigMap selected lite but image = %q, want %q", c.Image, wantImage)
+		}
+	}
+}
+
 func TestInjectAuthBridge_WaypointMode_SkipsInjection(t *testing.T) {
 	m := newTestMutator(newAgentRuntimeWithMode("team1", "my-agent", ModeWaypoint))
 	ctx := context.Background()

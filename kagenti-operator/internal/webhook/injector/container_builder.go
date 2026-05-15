@@ -193,14 +193,19 @@ func spireEnabledStr(b bool) string {
 // The app uses HTTP_PROXY env vars to route outbound traffic through the forward proxy.
 // Inbound traffic goes through the reverse proxy.
 func (b *ContainerBuilder) BuildProxySidecarContainer(spireEnabled bool) corev1.Container {
-	return b.BuildProxySidecarContainerWithPorts(spireEnabled, 8080, 8000, 8081)
+	return b.BuildProxySidecarContainerWithPorts(spireEnabled, b.cfg.Images.AuthBridge, 8080, 8000, 8081)
 }
 
 // BuildProxySidecarContainerWithPorts creates a proxy-sidecar container with dynamic ports.
+// image:            container image to run — Images.AuthBridge (full plugin set) or
+//
+//	Images.AuthBridgeLite (auth-only). Both images expose the same listeners
+//	on the same ports; only the plugin set compiled into the binary differs.
+//
 // reverseProxyPort: where the reverse proxy listens (takes over the agent's original port)
 // agentBackendPort: where the agent actually listens (moved to a free port)
 // forwardProxyPort: where the forward proxy listens (HTTP_PROXY target)
-func (b *ContainerBuilder) BuildProxySidecarContainerWithPorts(spireEnabled bool, reverseProxyPort, agentBackendPort, forwardProxyPort int32) corev1.Container {
+func (b *ContainerBuilder) BuildProxySidecarContainerWithPorts(spireEnabled bool, image string, reverseProxyPort, agentBackendPort, forwardProxyPort int32) corev1.Container {
 	volumeMounts := []corev1.VolumeMount{
 		{
 			Name:      "shared-data",
@@ -236,7 +241,7 @@ func (b *ContainerBuilder) BuildProxySidecarContainerWithPorts(spireEnabled bool
 
 	return corev1.Container{
 		Name:            AuthBridgeProxyContainerName,
-		Image:           b.cfg.Images.AuthBridge,
+		Image:           image,
 		ImagePullPolicy: b.cfg.Images.PullPolicy,
 		Args: []string{
 			"--config", "/etc/authbridge/config.yaml",

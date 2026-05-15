@@ -17,7 +17,8 @@ const (
 // per-pod annotation, then ModeProxySidecar as the cluster-wide default.
 const (
 	ModeEnvoySidecar = "envoy-sidecar" // iptables + Envoy + ext_proc
-	ModeProxySidecar = "proxy-sidecar" // default: HTTP_PROXY env + authbridge proxy
+	ModeProxySidecar = "proxy-sidecar" // default: HTTP_PROXY env + authbridge proxy (full plugins)
+	ModeLite         = "lite"          // same shape as proxy-sidecar; uses authbridge-lite image (auth-only)
 	ModeWaypoint     = "waypoint"      // standalone deployment (not injected)
 
 	// AnnotationAuthBridgeMode is the legacy per-pod mode selector. The

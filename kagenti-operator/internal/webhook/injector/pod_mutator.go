@@ -298,14 +298,28 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 		return false, nil
 	}
 
-	if authBridgeMode == ModeProxySidecar {
-		// Proxy-sidecar mode: inject lightweight authbridge container + HTTP_PROXY env vars.
+	if authBridgeMode == ModeProxySidecar || authBridgeMode == ModeLite {
+		// Proxy-sidecar / lite mode: inject the authbridge container + HTTP_PROXY env vars.
 		// No iptables, no proxy-init, no Envoy.
+		//
+		// proxy-sidecar uses Images.AuthBridge (full plugin set including parsers).
+		// lite           uses Images.AuthBridgeLite (auth-only — parsers dropped).
+		// Listener layout, ports, ConfigMap shape, and SPIRE wiring are identical;
+		// only the image differs.
 		//
 		// Port-stealing: the reverse proxy takes over the agent's original port so
 		// the Service doesn't need patching. The agent is moved to a free port.
 		//   Service → :8000 → reverse proxy (validates JWT) → :8002 → agent
 		//   Agent outbound → HTTP_PROXY=127.0.0.1:8081 → forward proxy
+
+		// Pick the image based on mode. The lite binary still accepts
+		// mode=proxy-sidecar in its YAML config (lite is a build
+		// variant, not a runtime mode), so the per-agent ConfigMap's
+		// `mode:` field stays "proxy-sidecar" regardless.
+		proxyImage := builder.cfg.Images.AuthBridge
+		if authBridgeMode == ModeLite {
+			proxyImage = builder.cfg.Images.AuthBridgeLite
+		}
 
 		// Collect all ports in use across all containers in the pod.
 		usedPorts := map[int32]bool{}
@@ -396,6 +410,7 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 			podSpec.Containers = append(podSpec.Containers,
 				builder.BuildProxySidecarContainerWithPorts(
 					spireEnabled,
+					proxyImage,
 					originalAgentPort, // reverse proxy listens here
 					newAgentPort,      // forwards to agent here
 					forwardProxyPort,  // forward proxy listens here
@@ -435,7 +450,8 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 
 		mutatorLog.Info("proxy-sidecar mode injection complete",
 			"namespace", namespace, "crName", crName,
-			"image", builder.cfg.Images.AuthBridge,
+			"resolvedMode", authBridgeMode,
+			"image", proxyImage,
 			"perAgentConfigMap", perAgentCMName,
 			"reverseProxyPort", originalAgentPort,
 			"agentPort", newAgentPort,

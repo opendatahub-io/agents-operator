@@ -18,9 +18,13 @@ func CompiledDefaults() *PlatformConfig {
 			// deployment shape) — authbridge-proxy + spiffe-helper
 			// bundled, no Envoy, no gRPC.
 			AuthBridge: "ghcr.io/kagenti/kagenti-extensions/authbridge:latest",
+			// authbridge-lite: size-optimized variant for the "lite"
+			// mode. Same listener layout as AuthBridge but parsers
+			// (a2a/mcp/inference) are dropped.
+			AuthBridgeLite: "ghcr.io/kagenti/kagenti-extensions/authbridge-lite:latest",
 			// proxy-init: iptables init container, used by
 			// envoy-sidecar mode only.
-			ProxyInit:  "ghcr.io/kagenti/kagenti-extensions/proxy-init:latest",
+			ProxyInit: "ghcr.io/kagenti/kagenti-extensions/proxy-init:latest",
 			PullPolicy: corev1.PullIfNotPresent,
 		},
 		Proxy: ProxyConfig{

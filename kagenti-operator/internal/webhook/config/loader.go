@@ -190,6 +190,7 @@ func logConfig(cfg *PlatformConfig, source string) {
 	log.Info("[config] images",
 		"envoyProxy", cfg.Images.EnvoyProxy,
 		"authBridge", cfg.Images.AuthBridge,
+		"authBridgeLite", cfg.Images.AuthBridgeLite,
 		"proxyInit", cfg.Images.ProxyInit,
 		"pullPolicy", cfg.Images.PullPolicy,
 	)

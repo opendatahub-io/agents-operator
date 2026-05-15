@@ -141,14 +141,18 @@ featureGates:
 # These are the lowest-priority layer — overridden by feature gates,
 # namespace labels/ConfigMaps, and workload labels/AgentRuntime CRs.
 #
-# Two combined images, selected per workload by deployment mode:
-#   * envoyProxy (envoy-sidecar mode): Envoy + ext_proc authbridge + spiffe-helper.
-#   * authbridge (proxy-sidecar mode, default): authbridge proxy + spiffe-helper.
+# Three combined images, selected per workload by deployment mode:
+#   * envoyProxy     (envoy-sidecar mode):     Envoy + ext_proc authbridge + spiffe-helper.
+#   * authbridge     (proxy-sidecar mode, default): authbridge-proxy (full plugin set) + spiffe-helper.
+#   * authbridgeLite (lite mode):              authbridge-lite (jwt-validation + token-exchange only,
+#                                              parsers dropped) + spiffe-helper. Same listener layout
+#                                              as authbridge; for size-constrained deployments.
 # proxy-init applies to envoy-sidecar mode only.
 defaults:
   images:
     envoyProxy: ghcr.io/kagenti/kagenti-extensions/authbridge-envoy:latest
     authbridge: ghcr.io/kagenti/kagenti-extensions/authbridge:latest
+    authbridgeLite: ghcr.io/kagenti/kagenti-extensions/authbridge-lite:latest
     proxyInit: ghcr.io/kagenti/kagenti-extensions/proxy-init:latest
     pullPolicy: IfNotPresent
 

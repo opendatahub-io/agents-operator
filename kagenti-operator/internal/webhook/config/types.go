@@ -27,6 +27,12 @@ type ImageConfig struct {
 	// Spiffe-helper starts conditionally based on SPIRE_ENABLED.
 	AuthBridge string `json:"authbridge" yaml:"authbridge"`
 
+	// AuthBridgeLite is the size-optimized variant of AuthBridge:
+	// authbridge-lite (jwt-validation + token-exchange only, parsers
+	// dropped) + spiffe-helper bundled. Same listener layout as
+	// AuthBridge, used for the "lite" mode.
+	AuthBridgeLite string `json:"authbridgeLite" yaml:"authbridgeLite"`
+
 	// ProxyInit is the iptables init container, used by envoy-sidecar
 	// mode only.
 	ProxyInit string `json:"proxyInit" yaml:"proxyInit"`
@@ -118,6 +124,9 @@ func (c *PlatformConfig) Validate() error {
 	}
 	if c.Images.AuthBridge == "" {
 		return fmt.Errorf("images.authbridge is required")
+	}
+	if c.Images.AuthBridgeLite == "" {
+		return fmt.Errorf("images.authbridgeLite is required")
 	}
 	if c.Images.ProxyInit == "" {
 		return fmt.Errorf("images.proxyInit is required")
