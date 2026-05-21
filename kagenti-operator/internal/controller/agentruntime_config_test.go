@@ -257,6 +257,37 @@ var _ = Describe("AgentRuntime Config", func() {
 			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
 			Expect(r1.Hash).NotTo(Equal(r2.Hash))
 		})
+
+		It("should change when authbridge-runtime-config edits", func() {
+			// Edits to the namespace authbridge-runtime-config (which the
+			// admission webhook reads at pod creation) must roll
+			// affected workloads. The hash captures its config.yaml
+			// content as a raw string so any byte change registers.
+			abCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      AuthBridgeRuntimeConfigMapName,
+					Namespace: namespace,
+				},
+				Data: map[string]string{
+					"config.yaml": "mode: proxy-sidecar\n",
+				},
+			}
+			Expect(k8sClient.Create(ctx, abCM)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, abCM) }()
+
+			spec := &agentv1alpha1.AgentRuntimeSpec{
+				Type:      agentv1alpha1.RuntimeTypeAgent,
+				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-abruntime"},
+			}
+
+			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+
+			abCM.Data["config.yaml"] = "mode: proxy-sidecar\nmtls:\n  mode: strict\n"
+			Expect(k8sClient.Update(ctx, abCM)).To(Succeed())
+
+			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			Expect(r1.Hash).NotTo(Equal(r2.Hash))
+		})
 	})
 
 	Context("ComputeDefaultsOnlyHash", func() {
@@ -548,7 +579,19 @@ var _ = Describe("AgentRuntime Config", func() {
 			requests := r.mapNamespaceConfigMapToAgentRuntimes(ctx, cm)
 			Expect(requests).NotTo(BeEmpty())
 
-			// Should not match ConfigMap without label
+			// Should also match authbridge-runtime-config (matched by name,
+			// no label required). Editing this CM is the operator-facing
+			// way to change mtls / mode / pipeline plugins for the whole
+			// namespace; without this watch the rollout never fires.
+			abCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: AuthBridgeRuntimeConfigMapName, Namespace: namespace,
+				},
+			}
+			Expect(r.mapNamespaceConfigMapToAgentRuntimes(ctx, abCM)).NotTo(BeEmpty())
+
+			// Should not match ConfigMap without label and not named
+			// authbridge-runtime-config (random unrelated CM).
 			noLabel := &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: "no-label", Namespace: namespace},
 			}

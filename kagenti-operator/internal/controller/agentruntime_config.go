@@ -43,6 +43,12 @@ const (
 
 	// LabelNamespaceDefaults identifies namespace-level defaults ConfigMaps.
 	LabelNamespaceDefaults = "kagenti.io/defaults"
+
+	// AuthBridgeRuntimeConfigMapName is the namespace-scoped ConfigMap that
+	// holds the authbridge runtime config (config.yaml). Edits to this
+	// ConfigMap are watched by AgentRuntimeReconciler so the resolved-config
+	// hash picks them up and rolls affected workloads.
+	AuthBridgeRuntimeConfigMapName = "authbridge-runtime-config"
 )
 
 // resolvedConfig is the canonical representation used for hash computation.
@@ -64,14 +70,16 @@ type resolvedConfig struct {
 	// effect. Including them here folds CR-edit changes into the
 	// config-hash so applyWorkloadConfig stamps a new hash on the pod
 	// template and the Deployment rolls.
-	//
-	// Namespace-level changes to the authbridge-runtime-config ConfigMap
-	// are NOT captured here today — that ConfigMap is consumed by the
-	// admission webhook, not the hash path. Operators editing the
-	// namespace ConfigMap should kubectl rollout restart the affected
-	// workload manually.
 	AuthBridgeMode string `json:"authBridgeMode,omitempty"`
 	MTLSMode       string `json:"mtlsMode,omitempty"`
+
+	// AuthBridgeRuntime captures the namespace authbridge-runtime-config
+	// ConfigMap's config.yaml content so namespace-level edits flow into
+	// the hash. Stored as the raw string (not parsed) because authbridge
+	// pipelines/listener/mtls config drift through here in any shape and
+	// we want any byte change to roll the workload. Empty string when
+	// the ConfigMap doesn't exist in the namespace.
+	AuthBridgeRuntime string `json:"authBridgeRuntime,omitempty"`
 }
 
 type traceConfig struct {
@@ -125,9 +133,19 @@ func resolveConfig(ctx context.Context, c client.Reader, namespace string, spec 
 	}
 	merged := mergeMaps(clusterDefaults, nsDefaults)
 
+	// Layer 2b: namespace authbridge-runtime-config (config.yaml).
+	// Captured raw so any byte change rolls the workload. The CM may
+	// not exist in every agent namespace; absence is normal and the
+	// admission webhook falls back to its own defaults.
+	abRuntime := ""
+	if data := readConfigMapData(ctx, c, namespace, AuthBridgeRuntimeConfigMapName); len(data) > 0 {
+		abRuntime = data["config.yaml"]
+	}
+
 	resolved := resolvedConfig{
-		FeatureGates: featureGates,
-		Defaults:     merged,
+		FeatureGates:      featureGates,
+		Defaults:          merged,
+		AuthBridgeRuntime: abRuntime,
 	}
 
 	if spec == nil {
