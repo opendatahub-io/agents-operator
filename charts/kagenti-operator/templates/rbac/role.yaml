@@ -141,6 +141,15 @@ rules:
   - list
   - watch
 - apiGroups:
+  - mlflow.opendatahub.io
+  resources:
+  - mlflowexperiments
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+- apiGroups:
   - networking.k8s.io
   resources:
   - networkpolicies
@@ -164,6 +173,7 @@ rules:
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:
+  - roles
   - rolebindings
   verbs:
   - create

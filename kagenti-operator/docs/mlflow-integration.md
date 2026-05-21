@@ -80,15 +80,19 @@ The following annotations are set on the Deployment's PodTemplateSpec:
 | `mlflow.kagenti.io/tracking-uri`     | MLflow tracking URI     |
 | `mlflow.kagenti.io/tracking-auth`    | `kubernetes-namespaced` |
 
-## Authentication
+## Authentication & RBAC
 
-The MLflow controller uses Kubernetes namespace-scoped authentication:
+The MLflow controller uses Kubernetes namespace-scoped authentication with least-privilege agent access:
 
-1. The controller's own ServiceAccount token is used to call the MLflow REST API to create experiments. The `X-MLFLOW-WORKSPACE` header is set to the agent's namespace, scoping the experiment to that workspace.
+1. **Operator access**: The controller-manager's ServiceAccount is bound (via a ClusterRoleBinding shipped in the Helm chart / kustomize) to the broad `mlflow-operator-mlflow-integration` ClusterRole. This lets the operator call the MLflow REST API to create experiments. The `X-MLFLOW-WORKSPACE` header is set to the agent's namespace, scoping the experiment to that workspace.
 
-2. For agent-side access, the controller creates a **RoleBinding** named `kagenti-mlflow-<deployment-name>` in the agent's namespace. This binds the agent's ServiceAccount to the `mlflow-operator-mlflow-integration` ClusterRole (created by the RHOAI MLflow operator). The agent authenticates to MLflow using its projected SA token at `/var/run/secrets/kubernetes.io/serviceaccount/token`.
+2. **Agent access (scoped)**: For each agent Deployment the controller creates:
+   - A **Role** named `kagenti-mlflow-<deployment-name>` with `get` and `update` on the `mlflowexperiments` resource, scoped to the agent's own experiment via `resourceNames`. This means agents **cannot** create/delete experiments or access `registeredmodels` or `gatewayendpoints`.
+   - A **RoleBinding** with the same name that binds the agent's ServiceAccount to the scoped Role.
 
-3. The RoleBinding is owned by the Deployment — deleting the Deployment garbage-collects the RoleBinding automatically.
+   The agent authenticates to MLflow using its projected SA token at `/var/run/secrets/kubernetes.io/serviceaccount/token`.
+
+3. Both the Role and RoleBinding are owned by the Deployment — deleting the Deployment garbage-collects them automatically.
 
 ## Verification
 

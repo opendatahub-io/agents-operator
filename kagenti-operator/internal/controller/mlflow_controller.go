@@ -40,9 +40,13 @@ import (
 )
 
 const (
-	// DefaultMLflowClusterRole is the ClusterRole managed by the MLflow operator
-	// for agent access to MLflow resources (RHOAI 3.4+).
-	DefaultMLflowClusterRole = "mlflow-operator-mlflow-integration"
+	// MLflowExperimentsAPIGroup is the API group used by the MLflow Kubernetes
+	// authorization plugin for SubjectAccessReview checks.
+	MLflowExperimentsAPIGroup = "mlflow.opendatahub.io"
+
+	// MLflowExperimentsResource is the virtual resource the MLflow gateway checks
+	// when authorizing experiment-level operations.
+	MLflowExperimentsResource = "mlflowexperiments"
 
 	// MLflow annotation keys stored on the PodTemplateSpec.
 	AnnotationMLflowExperimentID   = "mlflow.kagenti.io/experiment-id"
@@ -53,14 +57,15 @@ const (
 
 // MLflowReconciler reconciles Deployments labelled kagenti.io/type=agent.
 // It auto-discovers MLflow availability via the mlflows.mlflow.opendatahub.io CRD.
+//
+// For each agent Deployment the reconciler creates a scoped Role granting only
+// get+update on the agent's specific experiment (via resourceNames), and a
+// RoleBinding for the agent SA. This ensures agents cannot access other
+// experiments, registered models, or gateway endpoints.
 type MLflowReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
-
-	// MLflowClusterRole is the ClusterRole to bind agent SAs to.
-	// Defaults to DefaultMLflowClusterRole if empty.
-	MLflowClusterRole string
 
 	// NewMLflowClient creates an MLflow client for the given base URL.
 	// If nil, a default client is used.
@@ -72,6 +77,8 @@ type MLflowReconciler struct {
 }
 
 // +kubebuilder:rbac:groups=mlflow.opendatahub.io,resources=mlflows,verbs=get;list;watch
+// +kubebuilder:rbac:groups=mlflow.opendatahub.io,resources=mlflowexperiments,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=create;get;list;watch;update
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=create;get;list;watch;update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
 
@@ -129,8 +136,8 @@ func (r *MLflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		logger.Info("deployment has no explicit serviceAccountName, falling back to 'default'", "deployment", dep.Name)
 	}
 
-	if err := r.ensureRoleBinding(ctx, dep, saName); err != nil {
-		logger.Error(err, "Failed to ensure MLflow RoleBinding")
+	if err := r.ensureScopedRBAC(ctx, dep, saName, experimentName); err != nil {
+		logger.Error(err, "Failed to ensure scoped MLflow RBAC")
 		return ctrl.Result{}, err
 	}
 
@@ -146,13 +153,6 @@ func (r *MLflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	return ctrl.Result{}, nil
-}
-
-func (r *MLflowReconciler) clusterRoleName() string {
-	if r.MLflowClusterRole != "" {
-		return r.MLflowClusterRole
-	}
-	return DefaultMLflowClusterRole
 }
 
 func (r *MLflowReconciler) mlflowClient(baseURL string) *mlflow.Client {
@@ -246,29 +246,55 @@ func (r *MLflowReconciler) configureDeployment(ctx context.Context, dep *appsv1.
 	})
 }
 
-// ensureRoleBinding creates or updates the RoleBinding for the agent SA.
-func (r *MLflowReconciler) ensureRoleBinding(ctx context.Context, dep *appsv1.Deployment, saName string) error {
-	rbName := fmt.Sprintf("kagenti-mlflow-%s", dep.Name)
-	rb := &rbacv1.RoleBinding{
+// ensureScopedRBAC creates a Role scoped to a single experiment (by resourceName)
+// and a RoleBinding that grants the agent SA only get+update on that experiment.
+// Both resources are owned by the Deployment so they are garbage-collected on deletion.
+func (r *MLflowReconciler) ensureScopedRBAC(ctx context.Context, dep *appsv1.Deployment, saName, experimentName string) error {
+	roleName := fmt.Sprintf("kagenti-mlflow-%s", dep.Name)
+
+	role := &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      rbName,
+			Name:      roleName,
 			Namespace: dep.Namespace,
 		},
 	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error {
+		role.Labels = map[string]string{
+			LabelManagedBy: LabelManagedByValue,
+		}
+		if err := controllerutil.SetOwnerReference(dep, role, r.Scheme); err != nil {
+			return err
+		}
+		role.Rules = []rbacv1.PolicyRule{
+			{
+				APIGroups:     []string{MLflowExperimentsAPIGroup},
+				Resources:     []string{MLflowExperimentsResource},
+				ResourceNames: []string{experimentName},
+				Verbs:         []string{"get", "update"},
+			},
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("ensuring scoped Role: %w", err)
+	}
 
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, rb, func() error {
+	rb := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      roleName,
+			Namespace: dep.Namespace,
+		},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, rb, func() error {
 		rb.Labels = map[string]string{
 			LabelManagedBy: LabelManagedByValue,
 		}
-
 		if err := controllerutil.SetOwnerReference(dep, rb, r.Scheme); err != nil {
 			return err
 		}
-
 		rb.RoleRef = rbacv1.RoleRef{
 			APIGroup: rbacv1.GroupName,
-			Kind:     "ClusterRole",
-			Name:     r.clusterRoleName(),
+			Kind:     "Role",
+			Name:     roleName,
 		}
 		rb.Subjects = []rbacv1.Subject{
 			{
@@ -278,8 +304,11 @@ func (r *MLflowReconciler) ensureRoleBinding(ctx context.Context, dep *appsv1.De
 			},
 		}
 		return nil
-	})
-	return err
+	}); err != nil {
+		return fmt.Errorf("ensuring scoped RoleBinding: %w", err)
+	}
+
+	return nil
 }
 
 // setEnvVar sets an env var on a container, returning true if a change was made.
@@ -302,6 +331,7 @@ func setEnvVar(container *corev1.Container, name, value string) bool {
 func (r *MLflowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&appsv1.Deployment{}, builder.WithPredicates(agentLabelPredicate())).
+		Owns(&rbacv1.Role{}).
 		Owns(&rbacv1.RoleBinding{}).
 		Named("mlflow").
 		Complete(r)

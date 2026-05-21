@@ -228,7 +228,7 @@ var _ = Describe("MLflow Controller", func() {
 			cleanup()
 		})
 
-		It("should create RoleBinding and inject env vars", func() {
+		It("should create scoped Role, RoleBinding, and inject env vars", func() {
 			dep := newAgentDeployment("mlflow-full", namespace)
 			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, dep) }()
@@ -236,13 +236,24 @@ var _ = Describe("MLflow Controller", func() {
 			r := newReconcilerWithServer(server.URL, tokenPath)
 			reconcileAndExpectNoOp(r, "mlflow-full", namespace)
 
+			role := &rbacv1.Role{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "kagenti-mlflow-mlflow-full", Namespace: namespace,
+			}, role)).To(Succeed())
+			Expect(role.Rules).To(HaveLen(1))
+			Expect(role.Rules[0].APIGroups).To(Equal([]string{MLflowExperimentsAPIGroup}))
+			Expect(role.Rules[0].Resources).To(Equal([]string{MLflowExperimentsResource}))
+			Expect(role.Rules[0].ResourceNames).To(Equal([]string{"mlflow-full"}))
+			Expect(role.Rules[0].Verbs).To(Equal([]string{"get", "update"}))
+
 			rb := &rbacv1.RoleBinding{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: "kagenti-mlflow-mlflow-full", Namespace: namespace,
 			}, rb)).To(Succeed())
 			Expect(rb.Subjects).To(HaveLen(1))
 			Expect(rb.Subjects[0].Name).To(Equal("test-sa"))
-			Expect(rb.RoleRef.Name).To(Equal(DefaultMLflowClusterRole))
+			Expect(rb.RoleRef.Kind).To(Equal("Role"))
+			Expect(rb.RoleRef.Name).To(Equal("kagenti-mlflow-mlflow-full"))
 
 			updated := &appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "mlflow-full", Namespace: namespace}, updated)).To(Succeed())
@@ -270,11 +281,18 @@ var _ = Describe("MLflow Controller", func() {
 			r := newReconcilerWithServer(server.URL, tokenPath)
 			reconcileAndExpectNoOp(r, "mlflow-default-sa", namespace)
 
+			role := &rbacv1.Role{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "kagenti-mlflow-mlflow-default-sa", Namespace: namespace,
+			}, role)).To(Succeed())
+			Expect(role.Rules[0].ResourceNames).To(Equal([]string{"mlflow-default-sa"}))
+
 			rb := &rbacv1.RoleBinding{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: "kagenti-mlflow-mlflow-default-sa", Namespace: namespace,
 			}, rb)).To(Succeed())
 			Expect(rb.Subjects[0].Name).To(Equal("default"))
+			Expect(rb.RoleRef.Kind).To(Equal("Role"))
 		})
 	})
 
@@ -327,18 +345,6 @@ var _ = Describe("MLflow Controller", func() {
 })
 
 var _ = Describe("MLflow Controller helpers", func() {
-	Describe("clusterRoleName", func() {
-		It("should return the default when MLflowClusterRole is empty", func() {
-			r := &MLflowReconciler{}
-			Expect(r.clusterRoleName()).To(Equal(DefaultMLflowClusterRole))
-		})
-
-		It("should return the custom value when set", func() {
-			r := &MLflowReconciler{MLflowClusterRole: "custom-role"}
-			Expect(r.clusterRoleName()).To(Equal("custom-role"))
-		})
-	})
-
 	Describe("setEnvVar", func() {
 		It("should add a new env var", func() {
 			container := &corev1.Container{Name: "test"}
