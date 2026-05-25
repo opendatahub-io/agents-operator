@@ -134,7 +134,7 @@ When the `perWorkloadConfigResolution` feature gate is enabled, the webhook reso
 ```
 ┌──────────────────────────────────────┐
 │ Layer 3: AgentRuntime CR overrides   │  ← highest precedence
-│   (spec.identity, spec.trace)        │
+│   (spec.identity)                    │
 ├──────────────────────────────────────┤
 │ Layer 2: Namespace ConfigMaps        │
 │   (authbridge-config, envoy-config,  │
@@ -178,9 +178,6 @@ When the `perWorkloadConfigResolution` feature gate is enabled, the webhook reso
 |-------------------|---------------------|-------------|
 | `spec.identity.spiffe.trustDomain` | `SpiffeTrustDomain` | SPIFFE trust domain |
 | `spec.identity.clientRegistration.realm` | `KeycloakRealm` | Keycloak realm (future — not yet in CRD) |
-| `spec.trace.endpoint` | `TraceEndpoint` | OpenTelemetry collector endpoint |
-| `spec.trace.protocol` | `TraceProtocol` | `grpc` or `http` |
-| `spec.trace.sampling.rate` | `TraceSamplingRate` | 0.0–1.0 sampling rate |
 
 **Non-overridable fields** (always from PlatformConfig or namespace CMs):
 - Container images, resource limits, proxy ports

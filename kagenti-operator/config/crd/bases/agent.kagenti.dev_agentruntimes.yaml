@@ -43,8 +43,8 @@ spec:
       openAPIV3Schema:
         description: |-
           AgentRuntime attaches runtime configuration to a backing workload classified as an
-          agent or tool, providing per-workload overrides for SPIFFE identity and OpenTelemetry
-          tracing. The controller reports pod configuration coverage and phase in status.
+          agent or tool, providing per-workload overrides for SPIFFE identity.
+          The controller reports pod configuration coverage and phase in status.
         properties:
           apiVersion:
             description: |-
@@ -227,30 +227,6 @@ spec:
                 - apiVersion
                 - kind
                 - name
-                type: object
-              trace:
-                description: Trace specifies optional per-workload observability overrides
-                properties:
-                  endpoint:
-                    description: Endpoint is the OTEL collector endpoint override
-                    type: string
-                  protocol:
-                    description: Protocol is the OTEL export protocol (grpc or http)
-                    enum:
-                    - grpc
-                    - http
-                    type: string
-                  sampling:
-                    description: Sampling specifies trace sampling configuration
-                    properties:
-                      rate:
-                        description: Rate is the sampling rate (0.0-1.0)
-                        maximum: 1
-                        minimum: 0
-                        type: number
-                    required:
-                    - rate
-                    type: object
                 type: object
               type:
                 description: Type classifies the workload as an agent or tool

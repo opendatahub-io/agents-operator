@@ -48,11 +48,6 @@ type AgentRuntimeOverrides struct {
 	// Identity — from .spec.identity.allowedAudiences
 	AllowedAudiences []string
 
-	// Observability — from .spec.trace
-	TraceEndpoint     *string
-	TraceProtocol     *string  // "grpc" or "http"
-	TraceSamplingRate *float64 // 0.0–1.0
-
 	// AuthBridge deployment shape — from .spec.authBridgeMode
 	// Nil = no per-workload override; the namespace's
 	// authbridge-runtime-config mode (if set) or the cluster fallback
@@ -118,24 +113,6 @@ func extractOverrides(rt *agentv1alpha1.AgentRuntime) *AgentRuntimeOverrides {
 		overrides.AllowedAudiences = slices.Clone(rt.Spec.Identity.AllowedAudiences)
 	}
 
-	// .spec.trace.endpoint
-	if rt.Spec.Trace != nil && rt.Spec.Trace.Endpoint != "" {
-		ep := rt.Spec.Trace.Endpoint
-		overrides.TraceEndpoint = &ep
-	}
-
-	// .spec.trace.protocol
-	if rt.Spec.Trace != nil && rt.Spec.Trace.Protocol != "" {
-		p := string(rt.Spec.Trace.Protocol)
-		overrides.TraceProtocol = &p
-	}
-
-	// .spec.trace.sampling.rate
-	if rt.Spec.Trace != nil && rt.Spec.Trace.Sampling != nil {
-		rate := rt.Spec.Trace.Sampling.Rate
-		overrides.TraceSamplingRate = &rate
-	}
-
 	// .spec.authBridgeMode
 	if rt.Spec.AuthBridgeMode != "" {
 		mode := rt.Spec.AuthBridgeMode
@@ -151,7 +128,6 @@ func extractOverrides(rt *agentv1alpha1.AgentRuntime) *AgentRuntimeOverrides {
 	arConfigLog.Info("AgentRuntime overrides extracted",
 		"hasSpiffeTrustDomain", overrides.SpiffeTrustDomain != nil,
 		"hasClientRegistration", overrides.ClientRegistrationProvider != nil,
-		"hasTrace", overrides.TraceEndpoint != nil,
 		"hasAuthBridgeMode", overrides.AuthBridgeMode != nil,
 		"hasMTLSMode", overrides.MTLSMode != nil)
 

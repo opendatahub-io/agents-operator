@@ -53,11 +53,6 @@ type ResolvedConfig struct {
 
 	// AuthBridge runtime config — from namespace "authbridge-runtime-config" ConfigMap
 	AuthBridgeRuntimeYAML string // raw config.yaml (base for per-agent ConfigMap)
-
-	// Observability — from AgentRuntime .spec.trace (optional)
-	TraceEndpoint     string
-	TraceProtocol     string   // "grpc" or "http"
-	TraceSamplingRate *float64 // nil = not set
 }
 
 // ResolveConfig merges all three configuration layers into a single ResolvedConfig.
@@ -94,7 +89,7 @@ func ResolveConfig(platform *config.PlatformConfig, ns *NamespaceConfig, ar *Age
 		AuthBridgeRuntimeYAML:      ns.AuthBridgeRuntimeYAML,
 	}
 
-	// Apply AgentRuntime overrides (highest precedence)
+	// Apply AgentRuntime identity overrides (highest precedence)
 	if ar != nil {
 		if len(ar.AllowedAudiences) > 0 {
 			resolved.AllowedAudiences = ar.AllowedAudiences
@@ -104,18 +99,6 @@ func ResolveConfig(platform *config.PlatformConfig, ns *NamespaceConfig, ar *Age
 		}
 		if ar.ClientRegistrationRealm != nil {
 			resolved.KeycloakRealm = *ar.ClientRegistrationRealm
-		}
-		// TODO: AdminCredentialsSecretName/Namespace overrides require reading a
-		// different Secret at namespace-config time (not a simple value override).
-		// Deferred until AgentRuntime CRD is merged and the full flow is testable.
-		if ar.TraceEndpoint != nil {
-			resolved.TraceEndpoint = *ar.TraceEndpoint
-		}
-		if ar.TraceProtocol != nil {
-			resolved.TraceProtocol = *ar.TraceProtocol
-		}
-		if ar.TraceSamplingRate != nil {
-			resolved.TraceSamplingRate = ar.TraceSamplingRate
 		}
 	}
 

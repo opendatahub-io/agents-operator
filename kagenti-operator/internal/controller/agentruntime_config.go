@@ -54,14 +54,13 @@ const (
 // resolvedConfig is the canonical representation used for hash computation.
 // It captures the merged result of cluster defaults → namespace defaults → CR overrides.
 //
-// Structured fields (Type, TrustDomain, Trace) hold CR-level overrides.
+// Structured fields (Type, TrustDomain) hold CR-level overrides.
 // FeatureGates and Defaults hold the raw ConfigMap data. The hash is computed
 // from the full struct — the webhook performs the same merge independently
 // at Pod CREATE time.
 type resolvedConfig struct {
 	Type         string            `json:"type"`
 	TrustDomain  string            `json:"trustDomain,omitempty"`
-	Trace        *traceConfig      `json:"trace,omitempty"`
 	FeatureGates map[string]string `json:"featureGates,omitempty"`
 	Defaults     map[string]string `json:"defaults,omitempty"`
 	// AuthBridgeMode and MTLSMode change the injected sidecar shape /
@@ -87,8 +86,8 @@ type resolvedConfig struct {
 	// (single-digit agents) this is fine; in larger deployments,
 	// formatting / whitespace edits to this CM during peak hours will
 	// trigger a noticeable rollout fan-out.
-	AuthBridgeRuntime string `json:"authBridgeRuntime,omitempty"`
-	Skills            []skillConfig     `json:"skills,omitempty"`
+	AuthBridgeRuntime string        `json:"authBridgeRuntime,omitempty"`
+	Skills            []skillConfig `json:"skills,omitempty"`
 }
 
 type skillConfig struct {
@@ -96,12 +95,6 @@ type skillConfig struct {
 	Image      string `json:"image"`
 	MountPath  string `json:"mountPath"`
 	PullPolicy string `json:"pullPolicy,omitempty"`
-}
-
-type traceConfig struct {
-	Endpoint string  `json:"endpoint,omitempty"`
-	Protocol string  `json:"protocol,omitempty"`
-	Rate     float64 `json:"rate,omitempty"`
 }
 
 // ConfigResult holds the computed hash and any warnings from the config resolution.
@@ -176,19 +169,6 @@ func resolveConfig(ctx context.Context, c client.Reader, namespace string, spec 
 
 	if spec.Identity != nil && spec.Identity.SPIFFE != nil && spec.Identity.SPIFFE.TrustDomain != "" {
 		resolved.TrustDomain = spec.Identity.SPIFFE.TrustDomain
-	}
-
-	if spec.Trace != nil {
-		resolved.Trace = &traceConfig{}
-		if spec.Trace.Endpoint != "" {
-			resolved.Trace.Endpoint = spec.Trace.Endpoint
-		}
-		if spec.Trace.Protocol != "" {
-			resolved.Trace.Protocol = string(spec.Trace.Protocol)
-		}
-		if spec.Trace.Sampling != nil {
-			resolved.Trace.Rate = spec.Trace.Sampling.Rate
-		}
 	}
 
 	resolved.AuthBridgeMode = spec.AuthBridgeMode

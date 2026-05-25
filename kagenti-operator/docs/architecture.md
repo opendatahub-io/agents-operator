@@ -41,7 +41,7 @@ The Kagenti Operator is a Kubernetes controller that implements the [Operator Pa
 #### AgentRuntime CRD
 - The declarative way to enroll a workload into the Kagenti platform
 - Developer creates an AgentRuntime CR with `targetRef` — the controller applies labels and triggers injection
-- Configures identity (SPIFFE) and observability (OTEL traces) per workload via 3-layer defaults (cluster → namespace → CR)
+- Configures identity (SPIFFE) per workload via 3-layer defaults (cluster → namespace → CR)
 - Uses `targetRef` to reference backing workloads (Deployment, StatefulSet)
 - The `kagenti.io/type` label applied by the controller triggers the webhook's `objectSelector`
 - Developer workloads only need a `protocol.kagenti.io/a2a` label — the controller applies `kagenti.io/type` and `managed-by` labels automatically
