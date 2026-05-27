@@ -4,7 +4,7 @@
 
 ## Why This Change
 
-PR #372 merged the card discovery feature (fetching A2A agent cards into AgentRuntime status). The implementation diverges from the RHAIENG-4948 refinement document on naming, condition semantics, and transport security visibility. Since the PR just merged and no external consumers exist yet, we have a narrow window to align the API with the refinement doc before the field names and condition types become locked. A live cluster test also revealed that platform engineers cannot tell whether a card was fetched securely (mTLS) or over plain HTTP without reading operator logs.
+PR #372 merged the card discovery feature (fetching A2A agent cards into AgentRuntime status). The implementation diverges from the community refinement document on naming, condition semantics, and transport security visibility. Since the PR just merged and no external consumers exist yet, we have a narrow window to align the API before the field names and condition types become locked. A live cluster test also revealed that platform engineers cannot tell whether a card was fetched securely (mTLS) or over plain HTTP without reading operator logs.
 
 ## What Changes
 
@@ -67,7 +67,7 @@ The changes modify four layers:
 ## Open Questions
 
 1. Should `transportSecurity` values be documented as a formal enum in the CRD description, or left as free-form strings for extensibility (e.g., future `"ztunnel"` value)?
-2. Waiting on Ian Miller's response on RHAIENG-4948 regarding whether to align upstream with the refinement doc or update the doc to match. This PR assumes alignment with the doc is the direction.
+2. Pending feedback from the refinement document author on whether to align the implementation with the doc or update the doc to match. This PR assumes alignment with the doc is the direction.
 
 ## Review Checklist
 

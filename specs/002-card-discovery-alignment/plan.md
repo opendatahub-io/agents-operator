@@ -5,7 +5,7 @@
 
 ## Summary
 
-Align the card discovery implementation (merged in PR #372) with the RHAIENG-4948 refinement document. Six changes: add `transportSecurity` field, rename condition type `CardSynced` to `CardFetched` with transport-aware reasons, rename `cardId` to `cardHash` and `fetchedAt` to `lastCardFetchTime`, implement protocol-aware port resolution with annotation override, and add workload readiness check. All changes are breaking but acceptable since the API has no external consumers yet.
+Align the card discovery implementation (merged in PR #372) with the community refinement document. Six changes: add `transportSecurity` field, rename condition type `CardSynced` to `CardFetched` with transport-aware reasons, rename `cardId` to `cardHash` and `fetchedAt` to `lastCardFetchTime`, implement protocol-aware port resolution with annotation override, and add workload readiness check. All changes are breaking but acceptable since the API has no external consumers yet.
 
 ## Technical Context
 
