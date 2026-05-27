@@ -65,7 +65,8 @@ const (
 	// MLflowClusterRoleIntegration is the ClusterRole created by the MLflow operator.
 	MLflowClusterRoleIntegration = "mlflow-operator-mlflow-integration"
 
-	// MLflowClusterRoleEdit is the newer ClusterRole name (preferred).
+	// MLflowClusterRoleEdit is the newer ClusterRole name; lacks
+	// gatewayendpoints/use needed for OTLP trace ingestion.
 	MLflowClusterRoleEdit = "mlflow-operator-mlflow-edit"
 
 	// requeueMLflowNotReady is the requeue delay when MLflow is not yet available.
@@ -328,14 +329,15 @@ func (r *MLflowOperandReconciler) ensureOTELRoleBinding(ctx context.Context, nam
 	return nil
 }
 
-// resolveMLflowClusterRole finds the MLflow ClusterRole, preferring the newer
-// "edit" name, falling back to "integration".
+// resolveMLflowClusterRole finds the MLflow ClusterRole, preferring
+// "integration" which includes the gatewayendpoints/use verb required for
+// OTLP trace ingestion.
 func (r *MLflowOperandReconciler) resolveMLflowClusterRole(ctx context.Context) string {
 	if r.ResolveMLflowClusterRole != nil {
 		return r.ResolveMLflowClusterRole(ctx)
 	}
 
-	for _, name := range []string{MLflowClusterRoleEdit, MLflowClusterRoleIntegration} {
+	for _, name := range []string{MLflowClusterRoleIntegration, MLflowClusterRoleEdit} {
 		cr := &rbacv1.ClusterRole{}
 		if err := r.Get(ctx, types.NamespacedName{Name: name}, cr); err == nil {
 			return name

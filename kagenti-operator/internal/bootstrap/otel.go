@@ -19,8 +19,12 @@ package bootstrap
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -75,10 +79,18 @@ type OtelBootstrapRunnable struct {
 	Namespace string
 	Log       logr.Logger
 
+	// MLflowWorkspace is the Kubernetes namespace used as the x-mlflow-workspace
+	// header value (RHOAI only). When empty, workspace/experiment headers are skipped.
+	MLflowWorkspace string
+	// MLflowExperimentName is the MLflow experiment name to create/lookup.
+	MLflowExperimentName string
+
 	// IsOpenShift overrides OCP detection when non-nil (for testing).
 	IsOpenShift func(ctx context.Context) (bool, error)
 	// MLflowCRDExists overrides CRD discovery when non-nil (for testing).
 	MLflowCRDExists func(ctx context.Context) (bool, error)
+	// EnsureExperiment overrides MLflow experiment creation when non-nil (for testing).
+	EnsureExperiment func(ctx context.Context, baseURL, workspace string) (string, error)
 }
 
 // Start runs the bootstrap sequence. Called by the manager after leader election
@@ -225,6 +237,25 @@ func (r *OtelBootstrapRunnable) reconcileCollectorConfig(ctx context.Context, lo
 		return err
 	}
 
+	if mf.available && isOCP && r.MLflowWorkspace != "" {
+		mf.workspaceNS = r.MLflowWorkspace
+		baseURL := strings.TrimSuffix(mf.tracesURL, "/v1/traces")
+		if baseURL != "" && baseURL != mf.tracesURL {
+			expID, expErr := r.ensureMLflowExperiment(ctx, log, baseURL, mf.workspaceNS)
+			if expErr != nil {
+				log.Error(expErr, "Could not create MLflow experiment, traces may not be routed correctly",
+					"workspace", mf.workspaceNS)
+			} else {
+				mf.experimentID = expID
+				log.Info("MLflow workspace and experiment ready",
+					"workspace", mf.workspaceNS, "experimentID", expID)
+			}
+		}
+	} else if mf.available && isOCP && r.MLflowWorkspace == "" {
+		log.Info("mlflow.workspace not configured, skipping workspace and experiment headers. " +
+			"Set mlflow.workspace in Helm values for RHOAI deployments.")
+	}
+
 	phoenixAvailable := r.discoverPhoenix(ctx, log)
 
 	config, err := assembleCollectorConfig(isOCP, mf, phoenixAvailable)
@@ -300,11 +331,12 @@ func (r *OtelBootstrapRunnable) reconcileCollectorConfig(ctx context.Context, lo
 	return r.rolloutRestartCollector(ctx, log, configHash)
 }
 
-// mlflowInfo holds the discovered MLflow endpoint and workspace namespace.
+// mlflowInfo holds the discovered MLflow endpoint and workspace config.
 type mlflowInfo struct {
-	available   bool
-	tracesURL   string // in-cluster traces endpoint (e.g. https://mlflow.ns.svc:8443/v1/traces)
-	workspaceNS string // namespace for x-mlflow-workspace header
+	available    bool
+	tracesURL    string // in-cluster traces endpoint (e.g. https://mlflow.ns.svc:8443/v1/traces)
+	workspaceNS  string // agent namespace for x-mlflow-workspace header (RHOAI only)
+	experimentID string // MLflow experiment ID for x-mlflow-experiment-id header
 }
 
 // discoverMLflow checks for the MLflow CRD and, if present, discovers the
@@ -347,25 +379,17 @@ func (r *OtelBootstrapRunnable) discoverMLflow(ctx context.Context, log logr.Log
 	return info, nil
 }
 
-// mlflowInfoFromCR extracts the in-cluster endpoint and workspace namespace
-// from an MLflow CR. The MLflow CRD is cluster-scoped, so cr.Namespace is
-// always empty; we derive the namespace from status.address.url instead
-// (e.g. "https://mlflow.redhat-ods-applications.svc:8443").
+// mlflowInfoFromCR extracts the in-cluster traces endpoint from an MLflow CR.
 func mlflowInfoFromCR(cr *mlflow.MLflow, log logr.Logger) *mlflowInfo {
 	info := &mlflowInfo{available: true}
 
 	if cr.Status.Address != nil && cr.Status.Address.URL != "" {
 		parsed, err := url.Parse(cr.Status.Address.URL)
 		if err == nil && parsed.Scheme != "" && parsed.Host != "" {
-			hostname := parsed.Hostname()
-			parts := strings.SplitN(hostname, ".", 3)
-			if len(parts) >= 2 {
-				info.workspaceNS = parts[1]
-			}
 			info.tracesURL = fmt.Sprintf("%s://%s/v1/traces", parsed.Scheme, parsed.Host)
 			log.Info("Found available MLflow CR",
 				"name", cr.Name, "addressURL", cr.Status.Address.URL,
-				"tracesURL", info.tracesURL, "workspaceNS", info.workspaceNS)
+				"tracesURL", info.tracesURL)
 			return info
 		}
 		log.Info("MLflow address URL missing scheme or host, falling back",
@@ -456,6 +480,56 @@ func (r *OtelBootstrapRunnable) discoverPhoenix(ctx context.Context, log logr.Lo
 	return true
 }
 
+// ensureMLflowExperiment creates or retrieves the configured experiment in the
+// given workspace and returns the experiment ID.
+func (r *OtelBootstrapRunnable) ensureMLflowExperiment(ctx context.Context, log logr.Logger, baseURL, workspace string) (string, error) {
+	if r.EnsureExperiment != nil {
+		return r.EnsureExperiment(ctx, baseURL, workspace)
+	}
+
+	httpClient, err := newServiceCAHTTPClient()
+	if err != nil {
+		return "", fmt.Errorf("creating TLS HTTP client: %w", err)
+	}
+
+	c := &mlflow.Client{
+		BaseURL:    baseURL,
+		HTTPClient: httpClient,
+	}
+
+	expName := r.MLflowExperimentName
+	if expName == "" {
+		expName = "kagenti-traces"
+	}
+
+	expID, err := c.CreateExperiment(ctx, expName, workspace)
+	if err != nil {
+		return "", fmt.Errorf("creating MLflow experiment %q: %w", expName, err)
+	}
+
+	log.Info("Created/found MLflow experiment", "name", expName, "workspace", workspace, "experimentID", expID)
+	return expID, nil
+}
+
+// newServiceCAHTTPClient returns an HTTP client configured to trust the
+// OpenShift service-serving CA certificate.
+func newServiceCAHTTPClient() (*http.Client, error) {
+	caCert, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt")
+	if err != nil {
+		return nil, fmt.Errorf("reading service-ca.crt: %w", err)
+	}
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(caCert)
+	return &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				RootCAs: pool,
+			},
+		},
+	}, nil
+}
+
 // rolloutRestartCollector patches the OTel collector Deployment's pod template
 // annotation to trigger a rollout restart.
 func (r *OtelBootstrapRunnable) rolloutRestartCollector(ctx context.Context, log logr.Logger, configHash string) error {
@@ -524,8 +598,12 @@ func assembleCollectorConfig(isOCP bool, mf *mlflowInfo, phoenixAvailable bool) 
 			}
 			mergeDeep(config, rhoaiAuth)
 
-			clearMLflowExporterTLS(config)
-			setMLflowBearerTokenAuth(config, mf.workspaceNS)
+			setMLflowExporterServiceCATLS(config)
+			setMLflowBearerTokenAuth(config)
+
+			if mf.workspaceNS != "" {
+				setMLflowHeaders(config, mf.workspaceNS, mf.experimentID)
+			}
 		} else {
 			mlflowAuth, err := parsePreset(mlflowAuthPreset)
 			if err != nil {
@@ -595,9 +673,11 @@ func mergeDeep(dst, src map[string]any) {
 	}
 }
 
-// clearMLflowExporterTLS clears the TLS config on the MLflow exporter for RHOAI
-// (RHOAI uses service-ca.crt from the SA token projection).
-func clearMLflowExporterTLS(config map[string]any) {
+// setMLflowExporterServiceCATLS replaces the mlflow preset's tls.insecure config
+// with the OpenShift service-serving CA cert used to verify the MLflow TLS
+// certificate. Without this, the collector rejects the MLflow cert as
+// "x509: certificate signed by unknown authority."
+func setMLflowExporterServiceCATLS(config map[string]any) {
 	exporters, ok := config["exporters"].(map[string]any)
 	if !ok {
 		return
@@ -606,12 +686,37 @@ func clearMLflowExporterTLS(config map[string]any) {
 	if !ok {
 		return
 	}
-	mlflowExp["tls"] = map[string]any{}
+	mlflowExp["tls"] = map[string]any{
+		"ca_file": "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt",
+	}
 }
 
-// setMLflowBearerTokenAuth sets bearer token auth and workspace headers on the
-// MLflow exporter for RHOAI deployments.
-func setMLflowBearerTokenAuth(config map[string]any, mlflowNamespace string) {
+// setMLflowHeaders sets the workspace and experiment-id headers on the MLflow
+// exporter. RHOAI requires both: x-mlflow-workspace scopes to a namespace, and
+// x-mlflow-experiment-id routes traces to a specific experiment.
+func setMLflowHeaders(config map[string]any, workspace, experimentID string) {
+	exporters, ok := config["exporters"].(map[string]any)
+	if !ok {
+		return
+	}
+	mlflowExp, ok := exporters["otlphttp/mlflow"].(map[string]any)
+	if !ok {
+		return
+	}
+	headers, ok := mlflowExp["headers"].(map[string]any)
+	if !ok {
+		headers = map[string]any{}
+		mlflowExp["headers"] = headers
+	}
+	headers["x-mlflow-workspace"] = workspace
+	if experimentID != "" {
+		headers["x-mlflow-experiment-id"] = experimentID
+	}
+}
+
+// setMLflowBearerTokenAuth sets bearer token auth on the MLflow exporter for
+// RHOAI deployments.
+func setMLflowBearerTokenAuth(config map[string]any) {
 	exporters, ok := config["exporters"].(map[string]any)
 	if !ok {
 		return
@@ -621,13 +726,6 @@ func setMLflowBearerTokenAuth(config map[string]any, mlflowNamespace string) {
 		return
 	}
 	mlflowExp["auth"] = map[string]any{"authenticator": "bearertokenauth/mlflow"}
-
-	headers, ok := mlflowExp["headers"].(map[string]any)
-	if !ok {
-		headers = map[string]any{}
-		mlflowExp["headers"] = headers
-	}
-	headers["x-mlflow-workspace"] = mlflowNamespace
 }
 
 // setMLflowOAuthAuth sets OAuth2 client authentication on the MLflow exporter

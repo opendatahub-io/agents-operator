@@ -113,6 +113,11 @@ authbridgeConfig:
 # [MLFLOW]: MLflow experiment tracking integration
 mlflow:
   enable: false
+  # Kubernetes namespace used as the x-mlflow-workspace header value (RHOAI only).
+  # Required for RHOAI MLflow; leave empty for vanilla MLflow deployments.
+  workspace: ""
+  # MLflow experiment name. Created automatically if it doesn't exist.
+  experimentName: "kagenti-traces"
 
 # [OTEL BOOTSTRAP]: OTel collector bootstrap at operator startup.
 # When enabled, the operator assembles the OTel collector ConfigMap from

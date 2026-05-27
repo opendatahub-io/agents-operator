@@ -37,6 +37,12 @@ spec:
             {{- if .Values.otelBootstrap.enable }}
             - "--enable-otel-bootstrap=true"
             {{- end }}
+            {{- if .Values.mlflow.workspace }}
+            - "--mlflow-workspace={{ .Values.mlflow.workspace }}"
+            {{- end }}
+            {{- if .Values.mlflow.experimentName }}
+            - "--mlflow-experiment-name={{ .Values.mlflow.experimentName }}"
+            {{- end }}
             {{- if .Values.verifiedFetch.enabled }}
             - "--enable-verified-fetch=true"
             - "--verified-fetch-spiffe-socket={{ .Values.verifiedFetch.spiffeEndpointSocket }}"

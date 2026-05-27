@@ -302,7 +302,50 @@ func TestMLflowCRDPresent_OCP_UsesRHOAIAuth(t *testing.T) {
 
 	config := cm.Data[configMapDataKey]
 	assertContains(t, config, "bearertokenauth/mlflow", "Expected RHOAI bearer token auth on OCP")
-	assertContains(t, config, "x-mlflow-workspace", "Expected RHOAI workspace header on OCP")
+	assertNotContains(t, config, "x-mlflow-workspace",
+		"Workspace header should not be set when mlflow.workspace is not configured")
+	assertContains(t, config, "ca_file", "Expected service-ca.crt TLS config on OCP")
+}
+
+func TestMLflowCRDPresent_OCP_WithWorkspace_SetsHeaders(t *testing.T) {
+	scheme := testScheme()
+	dep := otelCollectorDeployment()
+	cr := mlflowCR("mlflow", "redhat-ods-applications", true, "")
+	cr.Status.Address = &mlflow.MLflowAddress{URL: "https://mlflow.redhat-ods-applications.svc:8443"}
+
+	ingressCertCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ingressCertConfigMap,
+			Namespace: ingressCertNamespace,
+		},
+		Data: map[string]string{caBundleKey: "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----"},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(dep, cr, ingressCertCM).Build()
+	r := newRunnable(cl, isOpenShift, mlflowCRDPresent)
+	r.MLflowWorkspace = "team1"
+	r.MLflowExperimentName = "kagenti-traces"
+	r.EnsureExperiment = func(_ context.Context, _, _ string) (string, error) {
+		return "42", nil
+	}
+
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	cm := &corev1.ConfigMap{}
+	if err := cl.Get(context.Background(), types.NamespacedName{
+		Name: collectorConfigMapName, Namespace: testNamespace,
+	}, cm); err != nil {
+		t.Fatalf("Expected collector ConfigMap to exist: %v", err)
+	}
+
+	config := cm.Data[configMapDataKey]
+	assertContains(t, config, "x-mlflow-workspace", "Expected workspace header when workspace configured")
+	assertContains(t, config, "team1", "Expected workspace to match configured value")
+	assertContains(t, config, "x-mlflow-experiment-id", "Expected experiment-id header")
+	assertContains(t, config, "42", "Expected experiment ID from MLflow API")
 }
 
 func TestMLflowCRDPresent_NonOCP_UsesOAuthAuth(t *testing.T) {
@@ -555,7 +598,7 @@ func TestAssembleConfig_DefaultOnly(t *testing.T) {
 }
 
 func TestAssembleConfig_PhoenixAndMLflow(t *testing.T) {
-	cfg, err := assembleCollectorConfig(false, &mlflowInfo{available: true, tracesURL: "http://mlflow.mlflow-ns.svc:5000/v1/traces", workspaceNS: "mlflow-ns"}, true)
+	cfg, err := assembleCollectorConfig(false, &mlflowInfo{available: true, tracesURL: "http://mlflow.mlflow-ns.svc:5000/v1/traces"}, true)
 	if err != nil {
 		t.Fatalf("assembleCollectorConfig failed: %v", err)
 	}
@@ -574,8 +617,8 @@ func TestAssembleConfig_PhoenixAndMLflow(t *testing.T) {
 	}
 }
 
-func TestAssembleConfig_OCP_MLflow_IngressCATLS(t *testing.T) {
-	cfg, err := assembleCollectorConfig(true, &mlflowInfo{available: true, tracesURL: "https://mlflow.rhoai-ns.svc:8443/v1/traces", workspaceNS: "rhoai-ns"}, false)
+func TestAssembleConfig_OCP_MLflow_ServiceCATLS(t *testing.T) {
+	cfg, err := assembleCollectorConfig(true, &mlflowInfo{available: true, tracesURL: "https://mlflow.rhoai-ns.svc:8443/v1/traces"}, false)
 	if err != nil {
 		t.Fatalf("assembleCollectorConfig failed: %v", err)
 	}
@@ -599,12 +642,48 @@ func TestAssembleConfig_OCP_MLflow_IngressCATLS(t *testing.T) {
 		t.Error("Expected bearertokenauth/mlflow authenticator on OCP")
 	}
 
+	tlsCfg, ok := mlflowExp["tls"].(map[string]any)
+	if !ok {
+		t.Fatal("Expected tls config on MLflow exporter")
+	}
+	if tlsCfg["ca_file"] != "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt" {
+		t.Errorf("Expected service-ca.crt ca_file, got %v", tlsCfg["ca_file"])
+	}
+	if _, hasInsecure := tlsCfg["insecure"]; hasInsecure {
+		t.Error("Expected insecure flag to be cleared on OCP")
+	}
+
+	// No workspace/experiment headers when mlflowInfo has no workspaceNS
+	if headers, ok := mlflowExp["headers"].(map[string]any); ok {
+		if _, hasWorkspace := headers["x-mlflow-workspace"]; hasWorkspace {
+			t.Error("x-mlflow-workspace should not be set when no workspace is configured")
+		}
+	}
+}
+
+func TestAssembleConfig_OCP_MLflow_WithWorkspace(t *testing.T) {
+	cfg, err := assembleCollectorConfig(true, &mlflowInfo{
+		available:    true,
+		tracesURL:    "https://mlflow.rhoai-ns.svc:8443/v1/traces",
+		workspaceNS:  "team1",
+		experimentID: "5",
+	}, false)
+	if err != nil {
+		t.Fatalf("assembleCollectorConfig failed: %v", err)
+	}
+
+	exporters := cfg["exporters"].(map[string]any)
+	mlflowExp := exporters["otlphttp/mlflow"].(map[string]any)
+
 	headers, ok := mlflowExp["headers"].(map[string]any)
 	if !ok {
-		t.Fatal("Expected headers on MLflow exporter")
+		t.Fatal("Expected headers on MLflow exporter when workspace is set")
 	}
-	if headers["x-mlflow-workspace"] != "rhoai-ns" {
-		t.Errorf("Expected workspace header 'rhoai-ns', got %v", headers["x-mlflow-workspace"])
+	if headers["x-mlflow-workspace"] != "team1" {
+		t.Errorf("Expected x-mlflow-workspace=team1, got %v", headers["x-mlflow-workspace"])
+	}
+	if headers["x-mlflow-experiment-id"] != "5" {
+		t.Errorf("Expected x-mlflow-experiment-id=5, got %v", headers["x-mlflow-experiment-id"])
 	}
 }
 
