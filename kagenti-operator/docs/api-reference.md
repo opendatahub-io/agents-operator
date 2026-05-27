@@ -378,7 +378,7 @@ For Deployments and StatefulSets to be automatically discovered by the operator,
 
 ## AgentRuntime
 
-The `AgentRuntime` Custom Resource configures identity (SPIFFE) and observability (OTEL traces) for agent and tool workloads. Unlike AgentCard, which handles discovery and metadata fetching, AgentRuntime provides runtime configuration for workload identity and telemetry.
+The `AgentRuntime` Custom Resource configures identity (SPIFFE) for agent and tool workloads. Unlike AgentCard, which handles discovery and metadata fetching, AgentRuntime provides runtime configuration for workload identity.
 
 ### API Group and Version
 
@@ -392,7 +392,7 @@ The `AgentRuntime` Custom Resource configures identity (SPIFFE) and observabilit
 AgentRuntime and AgentCard serve complementary purposes:
 
 - **AgentCard**: Fetches and stores agent metadata (capabilities, skills, endpoints) for dynamic discovery. Handles signature verification and identity binding validation.
-- **AgentRuntime**: Configures identity (SPIFFE trust domain) and observability (OTEL trace endpoints, sampling) for running workloads.
+- **AgentRuntime**: Configures identity (SPIFFE trust domain) for running workloads.
 
 Both resources use the shared `TargetRef` type to reference the backing workload (Deployment, StatefulSet, etc.).
 
@@ -400,7 +400,7 @@ Both resources use the shared `TargetRef` type to reference the backing workload
 
 The controller merges configuration from three layers (highest priority wins):
 
-1. **AgentRuntime CR spec** — per-workload overrides (trust domain, trace endpoint, etc.)
+1. **AgentRuntime CR spec** — per-workload overrides (trust domain, etc.)
 2. **Namespace defaults** — ConfigMap with `kagenti.io/defaults=true` label in the workload's namespace
 3. **Cluster defaults** — `kagenti-platform-config` ConfigMap in `kagenti-system`
 
@@ -413,7 +413,6 @@ The controller merges configuration from three layers (highest priority wins):
 | `type` | string | Yes | Classifies the workload as `agent` or `tool` |
 | `targetRef` | [TargetRef](#targetref) | Yes | Identifies the workload backing this runtime (uses the same TargetRef type as AgentCard) |
 | `identity` | [IdentitySpec](#identityspec) | No | Optional per-workload identity overrides |
-| `trace` | [TraceSpec](#tracespec) | No | Optional per-workload observability overrides |
 | `skills` | [][SkillImageRef](#skillimageref) | No | OCI skill images to mount into the agent pod as Kubernetes ImageVolumes. Requires the `skillImageVolumes` feature gate and Kubernetes 1.31+. Max 20 items. |
 
 #### IdentitySpec
@@ -429,22 +428,6 @@ Configures workload identity for an AgentRuntime.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `trustDomain` | string | No | Overrides the operator-level `--spire-trust-domain` for this workload. If empty, the operator flag value is used. Must match pattern: `^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$` |
-
-#### TraceSpec
-
-Configures observability for an AgentRuntime.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `endpoint` | string | No | OTEL collector endpoint override |
-| `protocol` | string | No | OTEL export protocol (`grpc` or `http`) |
-| `sampling` | [SamplingSpec](#samplingspec) | No | Trace sampling configuration |
-
-#### SamplingSpec
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `rate` | float | Yes | Sampling rate (0.0-1.0, inclusive) |
 
 #### SkillImageRef
 
@@ -551,7 +534,7 @@ spec:
     name: weather-agent
 ```
 
-#### Agent Runtime with Identity and Trace Overrides
+#### Agent Runtime with Identity Overrides
 
 ```yaml
 apiVersion: agent.kagenti.dev/v1alpha1
@@ -568,11 +551,6 @@ spec:
   identity:
     spiffe:
       trustDomain: custom.example.com
-  trace:
-    endpoint: otel-collector.observability.svc.cluster.local:4317
-    protocol: grpc
-    sampling:
-      rate: 0.1
 ```
 
 #### Tool Runtime
@@ -589,11 +567,6 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: calculator-tool
-  trace:
-    endpoint: otel-collector.observability.svc.cluster.local:4318
-    protocol: http
-    sampling:
-      rate: 1.0
 ```
 
 #### Agent Runtime with OCI Skill Images

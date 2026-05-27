@@ -156,16 +156,14 @@ kubectl get pods -n team1 -l kagenti.io/type=agent -o jsonpath='{.items[0].spec.
 
 ### Updating Configuration
 
-When you update the AgentRuntime CR (e.g., changing the trust domain or trace endpoint), the controller recomputes the config hash and triggers a rolling update automatically:
+When you update the AgentRuntime CR (e.g., changing the trust domain), the controller recomputes the config hash and triggers a rolling update automatically:
 
 ```bash
 kubectl patch agentruntime weather-agent-runtime -n team1 --type merge -p '
 spec:
-  trace:
-    endpoint: otel-collector.observability.svc.cluster.local:4317
-    protocol: grpc
-    sampling:
-      rate: 0.5
+  identity:
+    spiffe:
+      trustDomain: custom.example.com
 '
 ```
 

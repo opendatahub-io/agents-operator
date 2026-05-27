@@ -59,7 +59,7 @@ sequenceDiagram
     participant WH as AuthBridge Webhook
     participant K8s as Kubernetes (ReplicaSet)
 
-    User->>API: kubectl patch AgentRuntime (e.g., change trace endpoint)
+    User->>API: kubectl patch AgentRuntime (e.g., change trust domain)
     API-->>Ctrl: Reconcile event
 
     Ctrl->>API: Get target Deployment
@@ -144,7 +144,7 @@ Both the controller and webhook perform the same 3-layer configuration merge ind
 ```
 ┌──────────────────────────────────────┐
 │ Layer 3: AgentRuntime CR overrides   │  ← highest precedence
-│   (spec.identity, spec.trace)        │
+│   (spec.identity)                    │
 ├──────────────────────────────────────┤
 │ Layer 2: Namespace defaults          │
 │   (ConfigMap with                    │
@@ -209,11 +209,11 @@ When a workload has `kagenti.io/type` labels applied manually (without an AgentR
 - The AgentRuntime override layer (layer 3) is skipped — configuration comes from PlatformConfig (layer 1) and namespace ConfigMaps (layer 2) only
 - No controller manages the config hash — configuration drift is not detected automatically, and changes to cluster/namespace defaults do not trigger rolling updates
 - The controller does not watch or reconcile these workloads
-- Per-workload identity (SPIFFE trust domain) and trace overrides are not available
+- Per-workload identity (SPIFFE trust domain) overrides are not available
 
 The AgentRuntime CR is the recommended approach because it provides:
 - Automatic rolling updates on config change (any layer)
-- Per-workload identity and trace overrides
+- Per-workload identity overrides
 - Status reporting (phase, conditions, configured pod count)
 - Graceful cleanup via finalizer
 

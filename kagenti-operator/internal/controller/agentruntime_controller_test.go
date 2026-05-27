@@ -467,7 +467,7 @@ var _ = Describe("AgentRuntime Controller", func() {
 		})
 	})
 
-	Context("When the AgentRuntime has identity and trace overrides", func() {
+	Context("When the AgentRuntime has identity overrides", func() {
 		var dep *appsv1.Deployment
 		var rt *agentv1alpha1.AgentRuntime
 
@@ -489,11 +489,6 @@ var _ = Describe("AgentRuntime Controller", func() {
 					},
 					Identity: &agentv1alpha1.IdentitySpec{
 						SPIFFE: &agentv1alpha1.SPIFFEIdentity{TrustDomain: "custom.org"},
-					},
-					Trace: &agentv1alpha1.TraceSpec{
-						Endpoint: "custom-collector:4317",
-						Protocol: agentv1alpha1.TraceProtocolGRPC,
-						Sampling: &agentv1alpha1.SamplingSpec{Rate: 0.5},
 					},
 				},
 			}

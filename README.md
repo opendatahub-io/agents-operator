@@ -274,7 +274,7 @@ kubectl logs -l app.kubernetes.io/name=weather-agent
 See the [config/samples](./kagenti-operator/config/samples) directory for AgentRuntime examples:
 
 - [`agent_v1alpha1_agentruntime_basic.yaml`](./kagenti-operator/config/samples/agent_v1alpha1_agentruntime_basic.yaml) — Minimal AgentRuntime with type + targetRef
-- [`agent_v1alpha1_agentruntime_full.yaml`](./kagenti-operator/config/samples/agent_v1alpha1_agentruntime_full.yaml) — With SPIFFE trust domain and OTEL trace overrides
+- [`agent_v1alpha1_agentruntime_full.yaml`](./kagenti-operator/config/samples/agent_v1alpha1_agentruntime_full.yaml) — With SPIFFE trust domain override and OCI skill images
 - [`agent_v1alpha1_agentruntime_tool.yaml`](./kagenti-operator/config/samples/agent_v1alpha1_agentruntime_tool.yaml) — Tool-type workload (MCP server)
 
 ## Contributing

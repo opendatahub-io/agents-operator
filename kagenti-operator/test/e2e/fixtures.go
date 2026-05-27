@@ -812,7 +812,7 @@ spec:
 `
 }
 
-// runtimeOverridesCRFixture returns YAML for an AgentRuntime CR with identity and trace overrides.
+// runtimeOverridesCRFixture returns YAML for an AgentRuntime CR with identity overrides.
 func runtimeOverridesCRFixture() string {
 	return `apiVersion: agent.kagenti.dev/v1alpha1
 kind: AgentRuntime
@@ -828,11 +828,6 @@ spec:
   identity:
     spiffe:
       trustDomain: custom.example.com
-  trace:
-    endpoint: "custom-collector.observability:4317"
-    protocol: grpc
-    sampling:
-      rate: 0.5
 `
 }
 

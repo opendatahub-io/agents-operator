@@ -37,14 +37,6 @@ const (
 	RuntimePhaseError   RuntimePhase = "Error"
 )
 
-// +kubebuilder:validation:Enum=grpc;http
-type TraceProtocol string
-
-const (
-	TraceProtocolGRPC TraceProtocol = "grpc"
-	TraceProtocolHTTP TraceProtocol = "http"
-)
-
 // AgentRuntimeSpec defines the desired state of AgentRuntime.
 type AgentRuntimeSpec struct {
 	// Type classifies the workload as an agent or tool
@@ -56,10 +48,6 @@ type AgentRuntimeSpec struct {
 	// Identity specifies optional per-workload identity overrides
 	// +optional
 	Identity *IdentitySpec `json:"identity,omitempty"`
-
-	// Trace specifies optional per-workload observability overrides
-	// +optional
-	Trace *TraceSpec `json:"trace,omitempty"`
 
 	// AuthBridgeMode selects the deployment shape for this workload's
 	// authbridge sidecar. When unset, the namespace-level
@@ -157,29 +145,6 @@ type SPIFFEIdentity struct {
 	// +optional
 	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$`
 	TrustDomain string `json:"trustDomain,omitempty"`
-}
-
-// TraceSpec configures observability for an AgentRuntime.
-type TraceSpec struct {
-	// Endpoint is the OTEL collector endpoint override
-	// +optional
-	Endpoint string `json:"endpoint,omitempty"`
-
-	// Protocol is the OTEL export protocol (grpc or http)
-	// +optional
-	Protocol TraceProtocol `json:"protocol,omitempty"`
-
-	// Sampling specifies trace sampling configuration
-	// +optional
-	Sampling *SamplingSpec `json:"sampling,omitempty"`
-}
-
-// SamplingSpec configures trace sampling for an AgentRuntime.
-type SamplingSpec struct {
-	// Rate is the sampling rate (0.0-1.0)
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=1
-	Rate float64 `json:"rate"`
 }
 
 // CardStatus holds the fetched A2A agent card data along with fetch metadata
@@ -281,8 +246,8 @@ type AgentRuntimeStatus struct {
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // AgentRuntime attaches runtime configuration to a backing workload classified as an
-// agent or tool, providing per-workload overrides for SPIFFE identity and OpenTelemetry
-// tracing. The controller reports pod configuration coverage and phase in status.
+// agent or tool, providing per-workload overrides for SPIFFE identity.
+// The controller reports pod configuration coverage and phase in status.
 type AgentRuntime struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

@@ -94,27 +94,6 @@ func TestResolveConfig_SpiffeTrustDomain_AROverride(t *testing.T) {
 	}
 }
 
-func TestResolveConfig_TraceOverrides(t *testing.T) {
-	samplingRate := 0.75
-	ar := &AgentRuntimeOverrides{
-		TraceEndpoint:     ptr.To("http://otel:4317"),
-		TraceProtocol:     ptr.To("grpc"),
-		TraceSamplingRate: &samplingRate,
-	}
-
-	resolved := ResolveConfig(config.CompiledDefaults(), &NamespaceConfig{}, ar)
-
-	if resolved.TraceEndpoint != "http://otel:4317" {
-		t.Errorf("TraceEndpoint = %q", resolved.TraceEndpoint)
-	}
-	if resolved.TraceProtocol != "grpc" {
-		t.Errorf("TraceProtocol = %q", resolved.TraceProtocol)
-	}
-	if resolved.TraceSamplingRate == nil || *resolved.TraceSamplingRate != 0.75 {
-		t.Errorf("TraceSamplingRate = %v", resolved.TraceSamplingRate)
-	}
-}
-
 func TestResolveConfig_SidecarConfigs_NotOverridable(t *testing.T) {
 	ns := &NamespaceConfig{
 		SpiffeHelperConf:    "helper.conf content",

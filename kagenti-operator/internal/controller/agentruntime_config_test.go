@@ -133,24 +133,6 @@ var _ = Describe("AgentRuntime Config", func() {
 			Expect(r1.Hash).NotTo(Equal(r2.Hash))
 		})
 
-		It("should change when trace config changes", func() {
-			spec1 := &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeAgent,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-trace"},
-				Trace:     &agentv1alpha1.TraceSpec{Endpoint: "otel:4317", Protocol: agentv1alpha1.TraceProtocolGRPC},
-			}
-			spec2 := &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeAgent,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-trace"},
-				Trace:     &agentv1alpha1.TraceSpec{Endpoint: "otel:4318", Protocol: agentv1alpha1.TraceProtocolHTTP},
-			}
-
-			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec1)
-			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec2)
-
-			Expect(r1.Hash).NotTo(Equal(r2.Hash))
-		})
-
 		It("should change when identity changes", func() {
 			spec1 := &agentv1alpha1.AgentRuntimeSpec{
 				Type:      agentv1alpha1.RuntimeTypeAgent,
@@ -376,7 +358,6 @@ var _ = Describe("AgentRuntime Config", func() {
 				Type:      agentv1alpha1.RuntimeTypeAgent,
 				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "merge-test"},
 				Identity:  &agentv1alpha1.IdentitySpec{SPIFFE: &agentv1alpha1.SPIFFEIdentity{TrustDomain: "my-domain.org"}},
-				Trace:     &agentv1alpha1.TraceSpec{Endpoint: "cr-collector:4317", Protocol: agentv1alpha1.TraceProtocolGRPC},
 			}
 
 			resolved, _ := resolveConfig(ctx, k8sClient, namespace, spec)
@@ -384,9 +365,6 @@ var _ = Describe("AgentRuntime Config", func() {
 			// CR overrides
 			Expect(resolved.Type).To(Equal("agent"))
 			Expect(resolved.TrustDomain).To(Equal("my-domain.org"))
-			Expect(resolved.Trace).NotTo(BeNil())
-			Expect(resolved.Trace.Endpoint).To(Equal("cr-collector:4317"))
-			Expect(resolved.Trace.Protocol).To(Equal("grpc"))
 
 			// Namespace overrides cluster
 			Expect(resolved.Defaults["otel-endpoint"]).To(Equal("ns-collector:4317"))
@@ -406,7 +384,6 @@ var _ = Describe("AgentRuntime Config", func() {
 
 			Expect(resolved.Type).To(BeEmpty())
 			Expect(resolved.TrustDomain).To(BeEmpty())
-			Expect(resolved.Trace).To(BeNil())
 		})
 
 		It("should not duplicate CR overrides in Defaults map", func() {
@@ -418,14 +395,9 @@ var _ = Describe("AgentRuntime Config", func() {
 			spec := &agentv1alpha1.AgentRuntimeSpec{
 				Type:      agentv1alpha1.RuntimeTypeAgent,
 				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "no-dup"},
-				Trace:     &agentv1alpha1.TraceSpec{Endpoint: "cr-collector:4317"},
 			}
 
 			resolved, _ := resolveConfig(ctx, k8sClient, namespace, spec)
-
-			// CR trace endpoint is in structured field
-			Expect(resolved.Trace).NotTo(BeNil())
-			Expect(resolved.Trace.Endpoint).To(Equal("cr-collector:4317"))
 
 			// ConfigMap value untouched in Defaults
 			Expect(resolved.Defaults["otel-endpoint"]).To(Equal("cluster-collector:4317"))

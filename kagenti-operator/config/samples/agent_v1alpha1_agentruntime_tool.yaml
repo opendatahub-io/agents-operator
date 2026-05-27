@@ -13,8 +13,3 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: calculator-tool
-  trace:
-    endpoint: otel-collector.observability.svc.cluster.local:4318
-    protocol: http
-    sampling:
-      rate: 1.0
