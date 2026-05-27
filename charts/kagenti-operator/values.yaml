@@ -1,3 +1,6 @@
+# operatorNamespace is set by the ODH/RHOAI platform when installing via modular handler.
+operatorNamespace: ""
+
 # [MANAGER]: Manager Deployment Configurations
 controllerManager:
   replicas: 1
