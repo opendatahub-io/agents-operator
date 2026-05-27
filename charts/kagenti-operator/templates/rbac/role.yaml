@@ -52,6 +52,30 @@ rules:
   - get
   - update
 - apiGroups:
+  - components.platform.opendatahub.io
+  resources:
+  - agentsoperators
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - components.platform.opendatahub.io
+  resources:
+  - agentsoperators/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - components.platform.opendatahub.io
+  resources:
+  - agentsoperators/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - agent.kagenti.dev
   resources:
   - agentcards

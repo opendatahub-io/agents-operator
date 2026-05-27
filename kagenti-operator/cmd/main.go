@@ -43,6 +43,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
+	platformv1alpha1 "github.com/kagenti/operator/api/platform/v1alpha1"
 	"github.com/kagenti/operator/internal/agentcard"
 	"github.com/kagenti/operator/internal/controller"
 	"github.com/kagenti/operator/internal/keycloak"
@@ -63,6 +64,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(agentv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(platformv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(mlflow.AddToScheme(scheme))
 	utilruntime.Must(tekton.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
@@ -316,6 +318,14 @@ func main() {
 			"provider", "x5c",
 			"trustDomain", spireTrustDomain,
 			"auditMode", signatureAuditMode)
+	}
+
+	if err = (&controller.AgentsOperatorReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AgentsOperator")
+		os.Exit(1)
 	}
 
 	if err = (&controller.AgentCardReconciler{
