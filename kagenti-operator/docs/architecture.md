@@ -72,7 +72,7 @@ The Kagenti Operator is a Kubernetes controller that implements the [Operator Pa
 - Computes config hash from 3-layer merged configuration (cluster defaults → namespace defaults → CR overrides)
 - Discovers linked skills by reading the `kagenti.io/skills` annotation from target workloads when the `skillDiscovery` feature gate is enabled
 - Triggers rolling updates when configuration changes
-- On CR deletion: preserves type label, updates config-hash to defaults-only, removes managed-by label
+- On CR deletion: removes type label, managed-by label and config-hash annotation (causing the workload to lose sidecars)
 - Coordinates with the AuthBridge mutating webhook (in-process) which injects sidecars at Pod CREATE time
 
 ### Supporting Components
@@ -194,8 +194,8 @@ The AgentRuntime Controller reconciles AgentRuntime CRs by resolving the target 
 ```
 1. Fetch AgentRuntime CR
 2. Handle deletion (if marked for deletion):
-   a. Preserve kagenti.io/type label on workload
-   b. Update config-hash to defaults-only (triggers rollback)
+   a. Remove kagenti.io/type label from workload metadata and PodTemplateSpec
+   b. Remove kagenti.io/config-hash annotation from PodTemplateSpec (triggers rolling update)
    c. Remove managed-by label
    d. Remove finalizer
 3. Ensure kagenti.io/cleanup finalizer is present
