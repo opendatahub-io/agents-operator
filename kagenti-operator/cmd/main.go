@@ -47,6 +47,7 @@ import (
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
+	platformv1alpha1 "github.com/kagenti/operator/api/platform/v1alpha1"
 	"github.com/kagenti/operator/internal/agentcard"
 	"github.com/kagenti/operator/internal/bootstrap"
 	"github.com/kagenti/operator/internal/controller"
@@ -69,6 +70,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(agentv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(platformv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(mlflow.AddToScheme(scheme))
 	utilruntime.Must(tekton.AddToScheme(scheme))
 	utilruntime.Must(cmv1.AddToScheme(scheme))
@@ -405,6 +407,14 @@ func main() {
 			"provider", "x5c",
 			"trustDomain", spireTrustDomain,
 			"auditMode", signatureAuditMode)
+	}
+
+	if err = (&controller.AgentsOperatorReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AgentsOperator")
+		os.Exit(1)
 	}
 
 	agentFetcher := agentcard.NewConfigMapFetcher(mgr.GetAPIReader())

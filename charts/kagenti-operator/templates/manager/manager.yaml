@@ -1,8 +1,12 @@
+{{- $deployNamespace := .Release.Namespace }}
+{{- if .Values.operatorNamespace }}
+{{- $deployNamespace = .Values.operatorNamespace }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: kagenti-controller-manager
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ $deployNamespace }}
   labels:
     {{- include "chart.labels" . | nindent 4 }}
     control-plane: controller-manager
