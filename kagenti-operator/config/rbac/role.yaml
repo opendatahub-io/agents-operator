@@ -11,6 +11,7 @@ rules:
   - secrets
   verbs:
   - create
+  - delete
   - get
   - list
   - patch
@@ -106,6 +107,7 @@ rules:
 - apiGroups:
   - apps
   resources:
+  - daemonsets
   - deployments
   - statefulsets
   verbs:
@@ -121,6 +123,15 @@ rules:
   - statefulsets/finalizers
   verbs:
   - update
+- apiGroups:
+  - cert-manager.io
+  resources:
+  - certificates
+  - clusterissuers
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - mlflow.opendatahub.io
   resources:

@@ -42,6 +42,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
@@ -68,6 +69,7 @@ func init() {
 	utilruntime.Must(agentv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(mlflow.AddToScheme(scheme))
 	utilruntime.Must(tekton.AddToScheme(scheme))
+	utilruntime.Must(cmv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -484,6 +486,16 @@ func main() {
 			Client: mgr.GetClient(),
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "TektonConfig")
+			os.Exit(1)
+		}
+	}
+
+	if controller.CertManagerCRDExists(mgr.GetConfig()) {
+		if err = (&controller.SharedTrustReconciler{
+			Client:   mgr.GetClient(),
+			Recorder: mgr.GetEventRecorderFor("shared-trust-controller"),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "SharedTrust")
 			os.Exit(1)
 		}
 	}
