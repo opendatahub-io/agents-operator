@@ -34,7 +34,7 @@
 
 **Implementation**:
 - Add a `checkWorkloadReady` helper that gets the Deployment/StatefulSet and checks `status.readyReplicas > 0`
-- For Sandboxes (unstructured), skip the check (return true)
+- For Sandboxes (unstructured), skip the check (return true). Sandboxes are unstructured resources without a standard `readyReplicas` field; their lifecycle is managed by the sandbox controller, not by Deployment/StatefulSet rollout semantics.
 - Call before `resolveServiceForWorkload` in `fetchAndUpdateCard`
 
 ## R-004: Printer column rename

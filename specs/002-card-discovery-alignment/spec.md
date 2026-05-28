@@ -81,6 +81,7 @@ A platform engineer deploys an agent with a multi-port Service (e.g., an admin H
 - What happens when the ConfigMap fetch path (signed card from init-container) is used? `transportSecurity` is set to `"configMap"` to distinguish it from live HTTP fetches.
 - What happens when a Service has the `kagenti.io/port` annotation with an invalid value (non-numeric, port 0)? The controller falls back to port name resolution and logs a warning.
 - What happens when the `cardHash` changes but the card payload fields are semantically identical (e.g., JSON key ordering difference)? The hash is computed from the serialized JSON, so ordering differences produce different hashes. This is intentional: any byte-level change triggers a re-fetch timestamp update.
+- What happens when a workload is intentionally scaled to zero (KEDA, Knative, manual `replicas: 0`)? `WorkloadNotReady` is set and remains until pods return. This is correct: the card cannot be fetched from a workload with no running pods, and the condition accurately reflects that the card data is stale.
 
 ## Clarifications
 
@@ -92,7 +93,7 @@ A platform engineer deploys an agent with a multi-port Service (e.g., an admin H
 
 ### Functional Requirements
 
-- **FR-001**: The system MUST add a `transportSecurity` field to `CardStatus` that records the transport layer used for the card fetch (`"mTLS"`, `"plainHTTP"`, or `"configMap"`).
+- **FR-001**: The system MUST add a `transportSecurity` field to `CardStatus` that records the transport layer used for the card fetch. The field MUST be a validated enum with values `"mTLS"`, `"plainHTTP"`, or `"configMap"` (enforced via `+kubebuilder:validation:Enum`).
 - **FR-002**: The system MUST rename the condition type from `CardSynced` to `CardFetched`.
 - **FR-003**: The `CardFetched` condition MUST use these reasons: `Fetched` (mTLS success), `FetchedInsecure` (plain HTTP success), `FetchSkipped` (pod template unchanged), `FetchFailed` (fetch error), `ServiceNotFound` (no matching Service), `WorkloadNotReady` (no Ready pods), `DiscoveryDisabled` (feature flag off).
 - **FR-004**: The system MUST rename the `cardId` field to `cardHash` in `CardStatus`.
@@ -120,7 +121,7 @@ A platform engineer deploys an agent with a multi-port Service (e.g., an admin H
 ## Assumptions
 
 - The PR #372 merged recently enough that no external consumers depend on the current field names or condition type. Breaking changes are acceptable.
-- The `transportSecurity` values `"mTLS"`, `"plainHTTP"`, and `"configMap"` are sufficient. If new transport mechanisms are added later (e.g., Istio ztunnel), new values can be added without breaking existing consumers since the field is a string, not an enum.
+- The `transportSecurity` values `"mTLS"`, `"plainHTTP"`, and `"configMap"` are sufficient for v1alpha1. New values (e.g., `"ztunnel"`) can be added via normal CRD schema evolution. The field uses a kubebuilder validated enum to prevent silent divergence in consumer comparisons.
 - The `kagenti.io/port` annotation is a new API surface. No existing workloads use it, so there is no migration concern.
 - The ConfigMap fetch path (init-container signing) is being deprecated but still exists during the coexistence period. Setting `transportSecurity: "configMap"` accurately represents this path.
 - Workload readiness can be determined by checking for pods matching the workload's selector with a Ready condition. This reuses existing pod listing logic.
