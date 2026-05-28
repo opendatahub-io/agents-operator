@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -33,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
+	"github.com/kagenti/operator/internal/agentcard"
 	webhookconfig "github.com/kagenti/operator/internal/webhook/config"
 )
 
@@ -43,6 +45,15 @@ type stubCardFetcher struct {
 
 func (f *stubCardFetcher) Fetch(_ context.Context, _, _, _, _ string) (*agentv1alpha1.AgentCardData, error) {
 	return f.card, f.err
+}
+
+type stubAuthenticatedFetcher struct {
+	result *agentcard.FetchResult
+	err    error
+}
+
+func (f *stubAuthenticatedFetcher) FetchAuthenticated(_ context.Context, _, _ string) (*agentcard.FetchResult, error) {
+	return f.result, f.err
 }
 
 var _ = Describe("AgentRuntime Controller", func() {
@@ -94,6 +105,18 @@ var _ = Describe("AgentRuntime Controller", func() {
 				},
 			},
 		}
+	}
+
+	setDeploymentReady := func(name, ns string) {
+		Eventually(func() error {
+			cur := &appsv1.Deployment{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, cur); err != nil {
+				return err
+			}
+			cur.Status.Replicas = 1
+			cur.Status.ReadyReplicas = 1
+			return k8sClient.Status().Update(ctx, cur)
+		}).Should(Succeed())
 	}
 
 	newReconciler := func() *AgentRuntimeReconciler {
@@ -852,12 +875,12 @@ var _ = Describe("AgentRuntime Controller", func() {
 
 			var cardCond *metav1.Condition
 			for i := range rt.Status.Conditions {
-				if rt.Status.Conditions[i].Type == ConditionTypeCardSynced {
+				if rt.Status.Conditions[i].Type == ConditionTypeCardFetched {
 					cardCond = &rt.Status.Conditions[i]
 					break
 				}
 			}
-			Expect(cardCond).To(BeNil(), "No CardSynced condition should be set when card was already nil")
+			Expect(cardCond).To(BeNil(), "No CardFetched condition should be set when card was already nil")
 		})
 
 		It("should clear existing card data when feature flag is disabled", func() {
@@ -866,8 +889,8 @@ var _ = Describe("AgentRuntime Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "clear-card-rt", Namespace: namespace},
 				Status: agentv1alpha1.AgentRuntimeStatus{
 					Card: &agentv1alpha1.CardStatus{
-						AgentCardData: agentv1alpha1.AgentCardData{Name: "old-agent"},
-						FetchedAt:     &now,
+						AgentCardData:     agentv1alpha1.AgentCardData{Name: "old-agent"},
+						LastCardFetchTime: &now,
 					},
 				},
 			}
@@ -881,20 +904,21 @@ var _ = Describe("AgentRuntime Controller", func() {
 
 			var cardCond *metav1.Condition
 			for i := range rt.Status.Conditions {
-				if rt.Status.Conditions[i].Type == ConditionTypeCardSynced {
+				if rt.Status.Conditions[i].Type == ConditionTypeCardFetched {
 					cardCond = &rt.Status.Conditions[i]
 					break
 				}
 			}
 			Expect(cardCond).NotTo(BeNil())
 			Expect(cardCond.Status).To(Equal(metav1.ConditionFalse))
-			Expect(cardCond.Reason).To(Equal("CardDiscoveryDisabled"))
+			Expect(cardCond.Reason).To(Equal("DiscoveryDisabled"))
 		})
 
 		It("should set ServiceNotFound condition when no service exists", func() {
 			dep := newDeployment("card-no-svc-deploy", namespace)
 			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+			setDeploymentReady("card-no-svc-deploy", namespace)
 
 			rt := &agentv1alpha1.AgentRuntime{
 				ObjectMeta: metav1.ObjectMeta{Name: "card-no-svc-rt", Namespace: namespace},
@@ -913,7 +937,7 @@ var _ = Describe("AgentRuntime Controller", func() {
 
 			var cardCond *metav1.Condition
 			for i := range rt.Status.Conditions {
-				if rt.Status.Conditions[i].Type == ConditionTypeCardSynced {
+				if rt.Status.Conditions[i].Type == ConditionTypeCardFetched {
 					cardCond = &rt.Status.Conditions[i]
 					break
 				}
@@ -935,9 +959,9 @@ var _ = Describe("AgentRuntime Controller", func() {
 				},
 				Status: agentv1alpha1.AgentRuntimeStatus{
 					Card: &agentv1alpha1.CardStatus{
-						AgentCardData: agentv1alpha1.AgentCardData{Name: "previous-agent", Version: "1.0"},
-						FetchedAt:     &now,
-						CardID:        "abc123",
+						AgentCardData:     agentv1alpha1.AgentCardData{Name: "previous-agent", Version: "1.0"},
+						LastCardFetchTime: &now,
+						CardHash:          "abc123",
 					},
 				},
 			}
@@ -950,11 +974,11 @@ var _ = Describe("AgentRuntime Controller", func() {
 
 			Expect(rt.Status.Card).NotTo(BeNil(), "existing card data should be retained on fetch failure")
 			Expect(rt.Status.Card.Name).To(Equal("previous-agent"))
-			Expect(rt.Status.Card.CardID).To(Equal("abc123"))
+			Expect(rt.Status.Card.CardHash).To(Equal("abc123"))
 
 			var cardCond *metav1.Condition
 			for i := range rt.Status.Conditions {
-				if rt.Status.Conditions[i].Type == ConditionTypeCardSynced {
+				if rt.Status.Conditions[i].Type == ConditionTypeCardFetched {
 					cardCond = &rt.Status.Conditions[i]
 					break
 				}
@@ -973,7 +997,7 @@ var _ = Describe("AgentRuntime Controller", func() {
 			r := &AgentRuntimeReconciler{Client: k8sClient, EnableCardDiscovery: false}
 			r.fetchAndUpdateCard(ctx, rt)
 			Expect(rt.Status.Card).To(BeNil())
-			// No CardSynced condition should be set when card was already nil
+			// No CardFetched condition should be set when card was already nil
 		})
 
 		It("should clear populated card data when flag is toggled off", func() {
@@ -982,8 +1006,8 @@ var _ = Describe("AgentRuntime Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "toggle-off-populated-rt", Namespace: namespace},
 				Status: agentv1alpha1.AgentRuntimeStatus{
 					Card: &agentv1alpha1.CardStatus{
-						AgentCardData: agentv1alpha1.AgentCardData{Name: "stale-agent"},
-						FetchedAt:     &now,
+						AgentCardData:     agentv1alpha1.AgentCardData{Name: "stale-agent"},
+						LastCardFetchTime: &now,
 					},
 				},
 			}
@@ -994,12 +1018,13 @@ var _ = Describe("AgentRuntime Controller", func() {
 	})
 
 	Context("Card annotation patch must not wipe in-memory status", func() {
-		It("should persist CardSynced condition and card data after annotation patch", func() {
+		It("should persist CardFetched condition and card data after annotation patch", func() {
 			depName := "card-patch-deploy"
 			svcName := depName
 			dep := newDeployment(depName, namespace)
 			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+			setDeploymentReady(depName, namespace)
 
 			svc := &corev1.Service{
 				ObjectMeta: metav1.ObjectMeta{Name: svcName, Namespace: namespace},
@@ -1043,19 +1068,446 @@ var _ = Describe("AgentRuntime Controller", func() {
 			Expect(rt.Status.Card).NotTo(BeNil(), "card data must not be wiped by annotation patch")
 			Expect(rt.Status.Card.Name).To(Equal("Test Agent"))
 			Expect(rt.Status.Card.Version).To(Equal("2.0"))
-			Expect(rt.Status.Card.CardID).NotTo(BeEmpty())
+			Expect(rt.Status.Card.CardHash).NotTo(BeEmpty())
 
-			// CardSynced condition must survive
-			cardCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeCardSynced)
-			Expect(cardCond).NotTo(BeNil(), "CardSynced condition must not be wiped by annotation patch")
+			// CardFetched condition must survive (stub fetcher uses plain HTTP path)
+			cardCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeCardFetched)
+			Expect(cardCond).NotTo(BeNil(), "CardFetched condition must not be wiped by annotation patch")
 			Expect(cardCond.Status).To(Equal(metav1.ConditionTrue))
-			Expect(cardCond.Reason).To(Equal("CardSynced"))
+			Expect(cardCond.Reason).To(Equal("FetchedInsecure"))
 
 			// Conditions set before fetchAndUpdateCard must also survive
 			targetCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeTargetResolved)
 			Expect(targetCond).NotTo(BeNil(), "TargetResolved condition must not be wiped by annotation patch")
 			configCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeConfigResolved)
 			Expect(configCond).NotTo(BeNil(), "ConfigResolved condition must not be wiped by annotation patch")
+		})
+	})
+
+	Context("Transport security visibility (US1)", func() {
+		It("should set transportSecurity plainHTTP and reason FetchedInsecure for stub fetcher", func() {
+			depName := "transport-plain-deploy"
+			dep := newDeployment(depName, namespace)
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+			setDeploymentReady(depName, namespace)
+
+			svc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: depName, Namespace: namespace},
+				Spec: corev1.ServiceSpec{
+					Selector: map[string]string{"app": depName},
+					Ports:    []corev1.ServicePort{{Name: "http", Port: 8080, Protocol: corev1.ProtocolTCP}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, svc)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, svc) }()
+
+			rt := newAgentRuntime("transport-plain-rt", namespace, depName, agentv1alpha1.RuntimeTypeAgent)
+			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, rt) }()
+
+			r := &AgentRuntimeReconciler{
+				Client:              k8sClient,
+				EnableCardDiscovery: true,
+				AgentFetcher: &stubCardFetcher{
+					card: &agentv1alpha1.AgentCardData{Name: "Plain Agent", Version: "1.0"},
+				},
+			}
+			r.fetchAndUpdateCard(ctx, rt)
+
+			Expect(rt.Status.Card).NotTo(BeNil())
+			Expect(rt.Status.Card.TransportSecurity).To(Equal("plainHTTP"))
+
+			cardCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeCardFetched)
+			Expect(cardCond).NotTo(BeNil())
+			Expect(cardCond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cardCond.Reason).To(Equal("FetchedInsecure"))
+		})
+
+		It("should set transportSecurity mTLS and reason Fetched for authenticated fetcher", func() {
+			depName := "transport-mtls-deploy"
+			dep := newDeployment(depName, namespace)
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+			setDeploymentReady(depName, namespace)
+
+			svc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: depName, Namespace: namespace},
+				Spec: corev1.ServiceSpec{
+					Selector: map[string]string{"app": depName},
+					Ports: []corev1.ServicePort{
+						{Name: "http", Port: 8080, Protocol: corev1.ProtocolTCP},
+						{Name: AgentTLSPortName, Port: 8443, Protocol: corev1.ProtocolTCP},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, svc)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, svc) }()
+
+			rt := newAgentRuntime("transport-mtls-rt", namespace, depName, agentv1alpha1.RuntimeTypeAgent)
+			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, rt) }()
+
+			r := &AgentRuntimeReconciler{
+				Client:              k8sClient,
+				EnableCardDiscovery: true,
+				AuthenticatedFetcher: &stubAuthenticatedFetcher{
+					result: &agentcard.FetchResult{
+						CardData:      &agentv1alpha1.AgentCardData{Name: "Secure Agent", Version: "2.0"},
+						AgentSpiffeID: "spiffe://trust.domain/agent",
+					},
+				},
+			}
+			r.fetchAndUpdateCard(ctx, rt)
+
+			Expect(rt.Status.Card).NotTo(BeNil())
+			Expect(rt.Status.Card.TransportSecurity).To(Equal("mTLS"))
+			Expect(rt.Status.Card.AttestedAgentSpiffeID).To(Equal("spiffe://trust.domain/agent"))
+
+			cardCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeCardFetched)
+			Expect(cardCond).NotTo(BeNil())
+			Expect(cardCond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cardCond.Reason).To(Equal("Fetched"))
+		})
+
+		It("should update transport security when transport changes on re-fetch", func() {
+			depName := "transport-change-deploy"
+			dep := newDeployment(depName, namespace)
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+			setDeploymentReady(depName, namespace)
+
+			svc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: depName, Namespace: namespace},
+				Spec: corev1.ServiceSpec{
+					Selector: map[string]string{"app": depName},
+					Ports: []corev1.ServicePort{
+						{Name: "http", Port: 8080, Protocol: corev1.ProtocolTCP},
+						{Name: AgentTLSPortName, Port: 8443, Protocol: corev1.ProtocolTCP},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, svc)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, svc) }()
+
+			rt := newAgentRuntime("transport-change-rt", namespace, depName, agentv1alpha1.RuntimeTypeAgent)
+			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, rt) }()
+
+			// First fetch: mTLS
+			r := &AgentRuntimeReconciler{
+				Client:              k8sClient,
+				EnableCardDiscovery: true,
+				AuthenticatedFetcher: &stubAuthenticatedFetcher{
+					result: &agentcard.FetchResult{
+						CardData: &agentv1alpha1.AgentCardData{Name: "Agent", Version: "1.0"},
+					},
+				},
+			}
+			r.fetchAndUpdateCard(ctx, rt)
+			Expect(rt.Status.Card).NotTo(BeNil())
+			Expect(rt.Status.Card.TransportSecurity).To(Equal("mTLS"))
+
+			// Clear the change key annotation to force a re-fetch
+			annotations := rt.GetAnnotations()
+			delete(annotations, AnnotationLastCardFetchHash)
+			rt.SetAnnotations(annotations)
+
+			// Second fetch: plain HTTP (no authenticated fetcher)
+			r2 := &AgentRuntimeReconciler{
+				Client:              k8sClient,
+				EnableCardDiscovery: true,
+				AgentFetcher: &stubCardFetcher{
+					card: &agentv1alpha1.AgentCardData{Name: "Agent", Version: "1.0"},
+				},
+			}
+			r2.fetchAndUpdateCard(ctx, rt)
+			Expect(rt.Status.Card).NotTo(BeNil())
+			Expect(rt.Status.Card.TransportSecurity).To(Equal("plainHTTP"))
+
+			cardCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeCardFetched)
+			Expect(cardCond).NotTo(BeNil())
+			Expect(cardCond.Reason).To(Equal("FetchedInsecure"))
+		})
+	})
+
+	Context("Unified condition model (US2)", func() {
+		It("should set WorkloadNotReady when Deployment has zero readyReplicas", func() {
+			depName := "unready-deploy"
+			dep := newDeployment(depName, namespace)
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+
+			// Deployment starts with 0 readyReplicas (default)
+
+			svc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: depName, Namespace: namespace},
+				Spec: corev1.ServiceSpec{
+					Selector: map[string]string{"app": depName},
+					Ports:    []corev1.ServicePort{{Name: "http", Port: 8080, Protocol: corev1.ProtocolTCP}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, svc)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, svc) }()
+
+			rt := newAgentRuntime("unready-rt", namespace, depName, agentv1alpha1.RuntimeTypeAgent)
+			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, rt) }()
+
+			r := &AgentRuntimeReconciler{
+				Client:              k8sClient,
+				EnableCardDiscovery: true,
+				AgentFetcher: &stubCardFetcher{
+					card: &agentv1alpha1.AgentCardData{Name: "Agent", Version: "1.0"},
+				},
+			}
+			r.fetchAndUpdateCard(ctx, rt)
+
+			Expect(rt.Status.Card).To(BeNil())
+			cardCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeCardFetched)
+			Expect(cardCond).NotTo(BeNil())
+			Expect(cardCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cardCond.Reason).To(Equal("WorkloadNotReady"))
+		})
+
+		It("should set ServiceNotFound when workload is ready but no Service exists", func() {
+			depName := "ready-no-svc-deploy"
+			dep := newDeployment(depName, namespace)
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+
+			setDeploymentReady(depName, namespace)
+
+			rt := newAgentRuntime("ready-no-svc-rt", namespace, depName, agentv1alpha1.RuntimeTypeAgent)
+			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, rt) }()
+
+			r := &AgentRuntimeReconciler{
+				Client:              k8sClient,
+				EnableCardDiscovery: true,
+				AgentFetcher: &stubCardFetcher{
+					card: &agentv1alpha1.AgentCardData{Name: "Agent", Version: "1.0"},
+				},
+			}
+			r.fetchAndUpdateCard(ctx, rt)
+
+			Expect(rt.Status.Card).To(BeNil())
+			cardCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeCardFetched)
+			Expect(cardCond).NotTo(BeNil())
+			Expect(cardCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cardCond.Reason).To(Equal("ServiceNotFound"))
+		})
+
+		It("should set DiscoveryDisabled when feature flag is off", func() {
+			now := metav1.Now()
+			rt := &agentv1alpha1.AgentRuntime{
+				ObjectMeta: metav1.ObjectMeta{Name: "us2-disabled-rt", Namespace: namespace},
+				Status: agentv1alpha1.AgentRuntimeStatus{
+					Card: &agentv1alpha1.CardStatus{
+						AgentCardData:     agentv1alpha1.AgentCardData{Name: "old"},
+						LastCardFetchTime: &now,
+					},
+				},
+			}
+			r := &AgentRuntimeReconciler{Client: k8sClient, EnableCardDiscovery: false}
+			r.fetchAndUpdateCard(ctx, rt)
+
+			Expect(rt.Status.Card).To(BeNil())
+			cardCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeCardFetched)
+			Expect(cardCond).NotTo(BeNil())
+			Expect(cardCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cardCond.Reason).To(Equal("DiscoveryDisabled"))
+		})
+	})
+
+	Context("FetchSkipped and FetchFailed conditions (US2)", func() {
+		It("should set FetchSkipped when pod template has not changed", func() {
+			depName := "skip-fetch-deploy"
+			dep := newDeployment(depName, namespace)
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+			setDeploymentReady(depName, namespace)
+
+			svc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: depName, Namespace: namespace},
+				Spec: corev1.ServiceSpec{
+					Selector: map[string]string{"app": depName},
+					Ports:    []corev1.ServicePort{{Name: "http", Port: 8080, Protocol: corev1.ProtocolTCP}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, svc)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, svc) }()
+
+			rt := newAgentRuntime("skip-fetch-rt", namespace, depName, agentv1alpha1.RuntimeTypeAgent)
+			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, rt) }()
+
+			r := &AgentRuntimeReconciler{
+				Client:              k8sClient,
+				EnableCardDiscovery: true,
+				AgentFetcher: &stubCardFetcher{
+					card: &agentv1alpha1.AgentCardData{Name: "Agent", Version: "1.0"},
+				},
+			}
+
+			// First fetch succeeds and persists the change key annotation
+			r.fetchAndUpdateCard(ctx, rt)
+			Expect(rt.Status.Card).NotTo(BeNil())
+
+			// Second fetch with unchanged template should skip
+			r.fetchAndUpdateCard(ctx, rt)
+
+			cardCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeCardFetched)
+			Expect(cardCond).NotTo(BeNil())
+			Expect(cardCond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cardCond.Reason).To(Equal("FetchSkipped"))
+		})
+
+		It("should set FetchFailed when fetcher returns an error", func() {
+			depName := "fetch-fail-deploy"
+			dep := newDeployment(depName, namespace)
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+			setDeploymentReady(depName, namespace)
+
+			svc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: depName, Namespace: namespace},
+				Spec: corev1.ServiceSpec{
+					Selector: map[string]string{"app": depName},
+					Ports:    []corev1.ServicePort{{Name: "http", Port: 8080, Protocol: corev1.ProtocolTCP}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, svc)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, svc) }()
+
+			rt := newAgentRuntime("fetch-fail-rt", namespace, depName, agentv1alpha1.RuntimeTypeAgent)
+			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, rt) }()
+
+			r := &AgentRuntimeReconciler{
+				Client:              k8sClient,
+				EnableCardDiscovery: true,
+				AgentFetcher: &stubCardFetcher{
+					err: fmt.Errorf("connection refused"),
+				},
+			}
+			r.fetchAndUpdateCard(ctx, rt)
+
+			Expect(rt.Status.Card).To(BeNil())
+			cardCond := meta.FindStatusCondition(rt.Status.Conditions, ConditionTypeCardFetched)
+			Expect(cardCond).NotTo(BeNil())
+			Expect(cardCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cardCond.Reason).To(Equal("FetchFailed"))
+			Expect(cardCond.Message).To(ContainSubstring("connection refused"))
+		})
+	})
+
+	Context("Accurate field names (US3)", func() {
+		It("should populate cardHash as SHA-256 hex and lastCardFetchTime as RFC 3339 via envtest", func() {
+			depName := "field-names-deploy"
+			dep := newDeployment(depName, namespace)
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+			setDeploymentReady(depName, namespace)
+
+			svc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: depName, Namespace: namespace},
+				Spec: corev1.ServiceSpec{
+					Selector: map[string]string{"app": depName},
+					Ports:    []corev1.ServicePort{{Name: "http", Port: 8080, Protocol: corev1.ProtocolTCP}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, svc)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, svc) }()
+
+			rt := newAgentRuntime("field-names-rt", namespace, depName, agentv1alpha1.RuntimeTypeAgent)
+			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, rt) }()
+
+			r := &AgentRuntimeReconciler{
+				Client:              k8sClient,
+				EnableCardDiscovery: true,
+				AgentFetcher: &stubCardFetcher{
+					card: &agentv1alpha1.AgentCardData{Name: "Field Test Agent", Version: "1.0"},
+				},
+			}
+			r.fetchAndUpdateCard(ctx, rt)
+
+			Expect(rt.Status.Card).NotTo(BeNil())
+			Expect(rt.Status.Card.CardHash).To(HaveLen(64), "cardHash should be a 64-char SHA-256 hex string")
+			Expect(rt.Status.Card.CardHash).To(MatchRegexp("^[a-f0-9]{64}$"))
+			Expect(rt.Status.Card.LastCardFetchTime).NotTo(BeNil())
+			Expect(rt.Status.Card.LastCardFetchTime.UTC().Format("2006-01-02T15:04:05Z07:00")).To(MatchRegexp(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$`))
+		})
+	})
+
+	Context("Protocol-aware port resolution (US4)", func() {
+		It("should use kagenti.io/port annotation when present", func() {
+			svc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "port-anno-svc",
+					Namespace:   namespace,
+					Annotations: map[string]string{"kagenti.io/port": "9090"},
+				},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{
+						{Name: "http", Port: 8080, Protocol: corev1.ProtocolTCP},
+						{Name: "a2a", Port: 8888, Protocol: corev1.ProtocolTCP},
+					},
+				},
+			}
+			port := serviceHTTPPort(ctx, svc)
+			Expect(port).To(Equal(int32(9090)))
+		})
+
+		It("should use port named a2a when no annotation", func() {
+			svc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: "port-a2a-svc", Namespace: namespace},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{
+						{Name: "grpc", Port: 50051, Protocol: corev1.ProtocolTCP},
+						{Name: "a2a", Port: 8888, Protocol: corev1.ProtocolTCP},
+						{Name: "http", Port: 8080, Protocol: corev1.ProtocolTCP},
+					},
+				},
+			}
+			port := serviceHTTPPort(ctx, svc)
+			Expect(port).To(Equal(int32(8888)))
+		})
+
+		It("should fall back to port name resolution on invalid annotation", func() {
+			svc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "port-invalid-anno-svc",
+					Namespace:   namespace,
+					Annotations: map[string]string{"kagenti.io/port": "not-a-number"},
+				},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{
+						{Name: "a2a", Port: 8888, Protocol: corev1.ProtocolTCP},
+					},
+				},
+			}
+			port := serviceHTTPPort(ctx, svc)
+			Expect(port).To(Equal(int32(8888)))
+		})
+
+		It("should prefer annotation over a2a port name", func() {
+			svc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "port-anno-vs-a2a-svc",
+					Namespace:   namespace,
+					Annotations: map[string]string{"kagenti.io/port": "7777"},
+				},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{
+						{Name: "a2a", Port: 8888, Protocol: corev1.ProtocolTCP},
+						{Name: "http", Port: 8080, Protocol: corev1.ProtocolTCP},
+					},
+				},
+			}
+			port := serviceHTTPPort(ctx, svc)
+			Expect(port).To(Equal(int32(7777)))
 		})
 	})
 

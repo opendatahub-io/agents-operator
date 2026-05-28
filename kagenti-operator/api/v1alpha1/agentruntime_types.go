@@ -153,17 +153,22 @@ type SPIFFEIdentity struct {
 type CardStatus struct {
 	AgentCardData `json:",inline"`
 
-	// FetchedAt is the timestamp of the last successful card fetch.
+	// LastCardFetchTime is the timestamp of the last successful card fetch.
 	// +optional
-	FetchedAt *metav1.Time `json:"fetchedAt,omitempty"`
+	LastCardFetchTime *metav1.Time `json:"lastCardFetchTime,omitempty"`
 
-	// CardID is a SHA-256 content hash of the fetched card data.
+	// CardHash is a SHA-256 content hash of the fetched card data.
 	// +optional
-	CardID string `json:"cardId,omitempty"`
+	CardHash string `json:"cardHash,omitempty"`
 
 	// Protocol is the detected agent protocol (e.g., "a2a").
 	// +optional
 	Protocol string `json:"protocol,omitempty"`
+
+	// TransportSecurity indicates the transport layer used for the card fetch.
+	// +optional
+	// +kubebuilder:validation:Enum=mTLS;plainHTTP;configMap
+	TransportSecurity string `json:"transportSecurity,omitempty"`
 
 	// ValidSignature is the result of JWS signature verification.
 	// +optional
@@ -242,7 +247,7 @@ type AgentRuntimeStatus struct {
 // +kubebuilder:printcolumn:name="Type",type="string",JSONPath=".spec.type",description="Workload Type"
 // +kubebuilder:printcolumn:name="Target",type="string",JSONPath=".spec.targetRef.name",description="Target Workload"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="Runtime Phase"
-// +kubebuilder:printcolumn:name="CardSynced",type="string",JSONPath=".status.conditions[?(@.type=='CardSynced')].status",description="Card Sync Status",priority=1
+// +kubebuilder:printcolumn:name="CardFetched",type="string",JSONPath=".status.conditions[?(@.type=='CardFetched')].status",description="Card Fetch Status",priority=1
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // AgentRuntime attaches runtime configuration to a backing workload classified as an

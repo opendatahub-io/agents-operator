@@ -30,9 +30,9 @@ spec:
       jsonPath: .status.phase
       name: Phase
       type: string
-    - description: Card Sync Status
-      jsonPath: .status.conditions[?(@.type=='CardSynced')].status
-      name: CardSynced
+    - description: Card Fetch Status
+      jsonPath: .status.conditions[?(@.type=='CardFetched')].status
+      name: CardFetched
       priority: 1
       type: string
     - jsonPath: .metadata.creationTimestamp
@@ -287,9 +287,9 @@ spec:
                         description: Indicates if the agent supports streaming responses.
                         type: boolean
                     type: object
-                  cardId:
-                    description: CardID is a SHA-256 content hash of the fetched card
-                      data.
+                  cardHash:
+                    description: CardHash is a SHA-256 content hash of the fetched
+                      card data.
                     type: string
                   defaultInputModes:
                     description: |-
@@ -312,13 +312,13 @@ spec:
                     description: A URL providing additional documentation about the
                       agent.
                     type: string
-                  fetchedAt:
-                    description: FetchedAt is the timestamp of the last successful
-                      card fetch.
-                    format: date-time
-                    type: string
                   iconUrl:
                     description: A URL to an icon for the agent.
+                    type: string
+                  lastCardFetchTime:
+                    description: LastCardFetchTime is the timestamp of the last successful
+                      card fetch.
+                    format: date-time
                     type: string
                   name:
                     description: A human-readable name for the agent.
@@ -445,6 +445,14 @@ spec:
                       Indicates if the agent supports providing an extended agent card when
                       authenticated.
                     type: boolean
+                  transportSecurity:
+                    description: TransportSecurity indicates the transport layer used
+                      for the card fetch.
+                    enum:
+                    - mTLS
+                    - plainHTTP
+                    - configMap
+                    type: string
                   url:
                     description: The URL of the agent's endpoint.
                     type: string

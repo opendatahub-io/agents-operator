@@ -486,8 +486,8 @@ func (in *BindingStatus) DeepCopy() *BindingStatus {
 func (in *CardStatus) DeepCopyInto(out *CardStatus) {
 	*out = *in
 	in.AgentCardData.DeepCopyInto(&out.AgentCardData)
-	if in.FetchedAt != nil {
-		in, out := &in.FetchedAt, &out.FetchedAt
+	if in.LastCardFetchTime != nil {
+		in, out := &in.LastCardFetchTime, &out.LastCardFetchTime
 		*out = (*in).DeepCopy()
 	}
 	if in.ValidSignature != nil {
