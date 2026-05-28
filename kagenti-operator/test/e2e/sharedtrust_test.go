@@ -75,9 +75,13 @@ var _ = Describe("SharedTrust E2E", Ordered, func() {
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 
 		By("creating intermediate Certificates")
-		_, err = utils.KubectlApplyStdin(intermediateCertificateYAML("istio-cacerts-default", "istio-cacerts-default-cert", "istio-system"), "")
+		defaultCertYAML := intermediateCertificateYAML(
+			"istio-cacerts-default", "istio-cacerts-default-cert", "istio-system")
+		_, err = utils.KubectlApplyStdin(defaultCertYAML, "")
 		Expect(err).NotTo(HaveOccurred())
-		_, err = utils.KubectlApplyStdin(intermediateCertificateYAML("istio-cacerts-openshift-gateway", "istio-cacerts-og-cert", "openshift-ingress"), "")
+		gatewayCertYAML := intermediateCertificateYAML(
+			"istio-cacerts-openshift-gateway", "istio-cacerts-og-cert", "openshift-ingress")
+		_, err = utils.KubectlApplyStdin(gatewayCertYAML, "")
 		Expect(err).NotTo(HaveOccurred())
 
 		By("waiting for intermediate secrets to be created")

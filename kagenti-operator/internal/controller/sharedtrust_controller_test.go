@@ -256,8 +256,8 @@ func TestReconcile_FingerprintMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.Requeue {
-		t.Error("expected Requeue=true after fingerprint mismatch")
+	if result.RequeueAfter == 0 {
+		t.Error("expected RequeueAfter > 0 after fingerprint mismatch")
 	}
 
 	// Verify the mismatched secret was deleted
@@ -287,7 +287,7 @@ func TestReconcile_HappyPath_CreatesCacerts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.RequeueAfter != 0 || result.Requeue {
+	if result.RequeueAfter != 0 {
 		t.Errorf("expected no requeue, got %+v", result)
 	}
 
@@ -341,7 +341,7 @@ func TestReconcile_UpdatesCacertsOnChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Requeue || result.RequeueAfter != 0 {
+	if result.RequeueAfter != 0 {
 		t.Errorf("unexpected requeue: %+v", result)
 	}
 

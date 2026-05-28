@@ -493,7 +493,7 @@ func main() {
 	if controller.CertManagerCRDExists(mgr.GetConfig()) {
 		if err = (&controller.SharedTrustReconciler{
 			Client:   mgr.GetClient(),
-			Recorder: mgr.GetEventRecorderFor("shared-trust-controller"),
+			Recorder: mgr.GetEventRecorderFor("shared-trust-controller"), //nolint:staticcheck
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "SharedTrust")
 			os.Exit(1)

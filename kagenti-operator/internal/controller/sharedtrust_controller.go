@@ -53,10 +53,10 @@ const (
 
 	CacertsSecretName = "cacerts"
 
-	IstiodDeployment              = "istiod"
+	IstiodDeployment                 = "istiod"
 	IstiodOpenShiftIngressDeployment = "istiod-openshift-gateway"
-	ZtunnelDaemonSet   = "ztunnel"
-	ZtunnelNamespace   = "istio-ztunnel"
+	ZtunnelDaemonSet                 = "ztunnel"
+	ZtunnelNamespace                 = "istio-ztunnel"
 
 	StaleConfigMapName = "istio-ca-root-cert"
 
@@ -108,7 +108,7 @@ func (r *SharedTrustReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (
 		return result, err
 	}
 
-	if result, err := r.verifyFingerprints(ctx); err != nil || result.RequeueAfter > 0 || result.Requeue {
+	if result, err := r.verifyFingerprints(ctx); err != nil || result.RequeueAfter > 0 {
 		return result, err
 	}
 
@@ -191,7 +191,7 @@ func (r *SharedTrustReconciler) verifyFingerprints(ctx context.Context) (ctrl.Re
 			if err := r.Delete(ctx, intSecret); err != nil {
 				return ctrl.Result{}, fmt.Errorf("deleting mismatched secret %s: %w", nn, err)
 			}
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
 	}
 
