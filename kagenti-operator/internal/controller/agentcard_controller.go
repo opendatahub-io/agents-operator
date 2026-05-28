@@ -260,7 +260,6 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
 	}
-	cardData := fetchResult.Card
 
 	var sigstoreResult *signature.BundleVerificationResult
 	if r.EnableSigstoreVerification && r.BundleVerifier != nil {
@@ -331,7 +330,7 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := r.updateAgentCardStatus(ctx, agentCard, cardData, protocol, cardID,
 		resolvedTargetRef, trust.verificationResult, trust.binding, trust.identityMatch,
 		trust.isMTLSVerified, trust.verifiedReason, trust.verifiedStatus,
-		trust.verifiedMessage, trust.attestedSpiffeID); err != nil {
+		trust.verifiedMessage, trust.attestedSpiffeID, sigstoreResult); err != nil {
 		agentCardLogger.Error(err, "Failed to update AgentCard status")
 		return ctrl.Result{}, err
 	}
@@ -418,7 +417,7 @@ func (r *AgentCardReconciler) fetchCardData(
 				fmt.Sprintf("Service %s has no %s port; fetch is unverified",
 					workload.ServiceName, AgentTLSPortName))
 		}
-		cardData, err := r.AgentFetcher.Fetch(
+		fetchResult, err := r.AgentFetcher.Fetch(
 			ctx, protocol, serviceURL, workload.ServiceName, agentCard.Namespace)
 		if err != nil {
 			agentCardLogger.Error(err, "Failed to fetch agent card",
@@ -429,10 +428,10 @@ func (r *AgentCardReconciler) fetchCardData(
 			}
 			return nil, nil, err
 		}
-		return cardData, nil, nil
+		return fetchResult.CardData, fetchResult, nil
 	}
 
-	cardData, err := r.AgentFetcher.Fetch(
+	fetchResult, err := r.AgentFetcher.Fetch(
 		ctx, protocol, serviceURL, workload.ServiceName, agentCard.Namespace)
 	if err != nil {
 		agentCardLogger.Error(err, "Failed to fetch agent card",
@@ -446,7 +445,7 @@ func (r *AgentCardReconciler) fetchCardData(
 	if err := r.cleanupVerifiedFetchFields(ctx, agentCard); err != nil {
 		agentCardLogger.Error(err, "Failed to cleanup verified fetch fields", "agentCard", agentCard.Name)
 	}
-	return cardData, nil, nil
+	return fetchResult.CardData, fetchResult, nil
 }
 
 // evaluateTrust performs signature verification, binding computation, and

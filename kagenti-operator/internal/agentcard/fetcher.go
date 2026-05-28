@@ -64,7 +64,8 @@ func ConfigMapName(agentName string) string {
 
 // FetchResult is the outcome of fetching agent card content from ConfigMap and/or HTTP.
 type FetchResult struct {
-	Card *agentv1alpha1.AgentCardData
+	CardData               *agentv1alpha1.AgentCardData
+	AgentSpiffeID          string
 	// RawSignedAgentCardJSON is non-nil when the source document was a SignedAgentCard
 	// (agentCard + attestations). Used for Sigstore bundle verification.
 	RawSignedAgentCardJSON []byte
@@ -121,7 +122,7 @@ func (f *DefaultFetcher) fetchA2ACard(ctx context.Context, serviceURL string) (*
 		"deprecated", true,
 		"migrateTo", A2AAgentCardPath,
 		"legacyPath", A2ALegacyAgentCardPath,
-		"agentName", res.Card.Name)
+		"agentName", res.CardData.Name)
 
 	return res, nil
 }
@@ -167,7 +168,7 @@ func doHTTPFetch(ctx context.Context, httpClient *http.Client, fetchURL string) 
 
 func (f *DefaultFetcher) fetchAgentCardFromPath(
 	ctx context.Context, serviceURL, path string,
-) (*agentv1alpha1.AgentCardData, error) {
+) (*FetchResult, error) {
 	agentCardURL := serviceURL + path
 	fetcherLogger.Info("Fetching A2A agent card", "url", agentCardURL)
 
@@ -197,7 +198,7 @@ func decodeAgentCardPayload(body []byte) (*FetchResult, error) {
 		fetcherLogger.Info("Fetched SignedAgentCard envelope over HTTP",
 			"name", inner.Name,
 			"version", inner.Version)
-		return &FetchResult{Card: &inner, RawSignedAgentCardJSON: append([]byte(nil), body...)}, nil
+		return &FetchResult{CardData: &inner, RawSignedAgentCardJSON: append([]byte(nil), body...)}, nil
 	}
 
 	var agentCardData agentv1alpha1.AgentCardData
@@ -210,7 +211,7 @@ func decodeAgentCardPayload(body []byte) (*FetchResult, error) {
 		"version", agentCardData.Version,
 		"url", agentCardData.URL)
 
-	return &FetchResult{Card: &agentCardData}, nil
+	return &FetchResult{CardData: &agentCardData}, nil
 }
 
 // ConfigMapFetcher reads signed agent cards from a ConfigMap before falling
@@ -249,7 +250,7 @@ func (f *ConfigMapFetcher) Fetch(
 				result, decErr := decodeAgentCardPayload([]byte(raw))
 				if decErr == nil {
 					fetcherLogger.Info("Fetched agent card from ConfigMap",
-						"configMap", cmName, "namespace", namespace, "key", keyUsed, "agentName", result.Card.Name)
+						"configMap", cmName, "namespace", namespace, "key", keyUsed, "agentName", result.CardData.Name)
 					return result, nil
 				}
 				fetcherLogger.Info("ConfigMap contains invalid JSON, falling back to HTTP",
@@ -271,13 +272,6 @@ func GetServiceURL(agentName, namespace string, port int32) string {
 // GetSecureServiceURL returns an HTTPS URL for the agent's TLS port.
 func GetSecureServiceURL(agentName, namespace string, port int32) string {
 	return fmt.Sprintf("https://%s.%s.svc.cluster.local:%d", agentName, namespace, port)
-}
-
-// FetchResult contains the result of an authenticated fetch including
-// the agent's verified SPIFFE ID extracted from the TLS peer certificate.
-type FetchResult struct {
-	CardData      *agentv1alpha1.AgentCardData
-	AgentSpiffeID string
 }
 
 // AuthenticatedFetcher performs mTLS-authenticated fetches and returns

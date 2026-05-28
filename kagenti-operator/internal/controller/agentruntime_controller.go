@@ -925,14 +925,14 @@ func (r *AgentRuntimeReconciler) fetchCard(
 	}
 
 	serviceURL := agentcard.GetServiceURL(svc.Name, rt.Namespace, port)
-	cardData, err := r.AgentFetcher.Fetch(ctx, protocol, serviceURL, ref.Name, rt.Namespace)
+	fetchResult, err := r.AgentFetcher.Fetch(ctx, protocol, serviceURL, ref.Name, rt.Namespace)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("fetch failed for %s: %w", ref.Name, err)
 	}
-	if cardData == nil {
+	if fetchResult.CardData == nil {
 		return nil, nil, "", fmt.Errorf("fetch returned nil card data for %s", ref.Name)
 	}
-	return cardData, nil, agentv1alpha1.TransportSecurityHTTP, nil
+	return fetchResult.CardData, fetchResult, agentv1alpha1.TransportSecurityHTTP, nil
 }
 
 // workloadChangeKey returns a string that changes when the workload's pod
