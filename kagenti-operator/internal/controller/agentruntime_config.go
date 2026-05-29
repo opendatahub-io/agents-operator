@@ -36,8 +36,8 @@ const (
 	// ClusterFeatureGatesConfigMapName is the ConfigMap containing feature gate settings.
 	ClusterFeatureGatesConfigMapName = "kagenti-feature-gates"
 
-	// ClusterDefaultsNamespace is the namespace where cluster-level ConfigMaps live.
-	ClusterDefaultsNamespace = "kagenti-system"
+	// clusterDefaultsNamespaceDefault is the fallback namespace when POD_NAMESPACE is not set.
+	clusterDefaultsNamespaceDefault = "kagenti-system"
 
 	// LabelNamespaceDefaults identifies namespace-level defaults ConfigMaps.
 	LabelNamespaceDefaults = "kagenti.io/defaults"
@@ -48,6 +48,17 @@ const (
 	// hash picks them up and rolls affected workloads.
 	AuthBridgeRuntimeConfigMapName = "authbridge-runtime-config"
 )
+
+// ClusterDefaultsNamespace is the namespace where cluster-level ConfigMaps
+// and template ConfigMaps live. Defaults to "kagenti-system"; set to the
+// operator's own namespace by main() via SetClusterDefaultsNamespace
+var ClusterDefaultsNamespace = clusterDefaultsNamespaceDefault
+
+func SetClusterDefaultsNamespace(ns string) {
+	if ns != "" {
+		ClusterDefaultsNamespace = ns
+	}
+}
 
 // resolvedConfig is the canonical representation used for hash computation.
 // It captures the 2-layer merge of cluster defaults → namespace defaults.
