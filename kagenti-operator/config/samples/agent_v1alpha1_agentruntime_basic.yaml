@@ -1,6 +1,8 @@
 # Basic AgentRuntime: enroll a Deployment as an agent with default configuration.
 # The controller applies kagenti.io/type label and triggers sidecar injection.
-# Identity and trace settings come from cluster and namespace defaults.
+# Identity settings come from cluster and namespace defaults.
+# Note: The target Deployment should have a protocol.kagenti.io/a2a label
+# for automatic AgentCard creation and agent discovery.
 apiVersion: agent.kagenti.dev/v1alpha1
 kind: AgentRuntime
 metadata:

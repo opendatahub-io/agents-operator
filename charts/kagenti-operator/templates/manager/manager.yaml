@@ -34,6 +34,19 @@ spec:
             {{- if .Values.mlflow.enable }}
             - "--enable-mlflow=true"
             {{- end }}
+            {{- if .Values.otelBootstrap.enable }}
+            - "--enable-otel-bootstrap=true"
+            {{- end }}
+            {{- if .Values.verifiedFetch.enabled }}
+            - "--enable-verified-fetch=true"
+            - "--verified-fetch-spiffe-socket={{ .Values.verifiedFetch.spiffeEndpointSocket }}"
+            {{- if and .Values.verifiedFetch.spireTrustDomain (not .Values.signatureVerification.enabled) }}
+            - "--spire-trust-domain={{ .Values.verifiedFetch.spireTrustDomain }}"
+            {{- end }}
+            {{- end }}
+            {{- if or .Values.enforceNetworkPolicies .Values.signatureVerification.enforceNetworkPolicies }}
+            - "--enforce-network-policies=true"
+            {{- end }}
             {{- if .Values.signatureVerification.enabled }}
             - "--require-a2a-signature=true"
             {{- if .Values.signatureVerification.auditMode }}
@@ -61,17 +74,36 @@ spec:
             - "--svid-expiry-grace-period={{ .Values.signatureVerification.svidExpiryGracePeriod }}"
             {{- end }}
             {{- end }}
+            {{/*
+              --spire-trust-domain is rendered independently of
+              signatureVerification.enabled. The flag is also consumed by the
+              ClientRegistrationReconciler, which resolves SPIFFE client IDs of
+              the form spiffe://<trust-domain>/ns/<ns>/sa/<sa> when
+              authbridge-config has SPIRE_ENABLED=true. Gating it on signature
+              verification would break operator-managed client registration in
+              clusters that use SPIRE for workload identity but do not enable
+              A2A signature enforcement.
+            */}}
+            {{- if .Values.signatureVerification.spireTrustDomain }}
+            - "--spire-trust-domain={{ .Values.signatureVerification.spireTrustDomain }}"
+            {{- end }}
           command:
             - {{ .Values.controllerManager.container.cmd }}
           image: {{ .Values.controllerManager.container.image.repository }}:{{ .Values.controllerManager.container.image.tag }}
           imagePullPolicy: {{ .Values.controllerManager.container.image.pullPolicy | default "IfNotPresent" }}
-          {{- if .Values.controllerManager.container.env }}
           env:
+            # POD_NAMESPACE is used by the client registration controller to locate
+            # keycloak-admin-secret in the operator's namespace
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- if .Values.controllerManager.container.env }}
             {{- range $key, $value := .Values.controllerManager.container.env }}
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
-          {{- end }}
+            {{- end }}
           livenessProbe:
             {{- toYaml .Values.controllerManager.container.livenessProbe | nindent 12 }}
           readinessProbe:
@@ -105,6 +137,11 @@ spec:
               mountPath: /tmp/k8s-metrics-server/metrics-certs
               readOnly: true
             {{- end }}
+            {{- if .Values.verifiedFetch.enabled }}
+            - name: spiffe-workload-api
+              mountPath: /spiffe-workload-api
+              readOnly: true
+            {{- end }}
       securityContext:
         {{- toYaml .Values.controllerManager.securityContext | nindent 8 }}
       serviceAccountName: {{ .Values.controllerManager.serviceAccountName }}
@@ -127,4 +164,10 @@ spec:
         - name: metrics-certs
           secret:
             secretName: kagenti-operator-metrics-server-cert
+        {{- end }}
+        {{- if .Values.verifiedFetch.enabled }}
+        - name: spiffe-workload-api
+          csi:
+            driver: "csi.spiffe.io"
+            readOnly: true
         {{- end }}

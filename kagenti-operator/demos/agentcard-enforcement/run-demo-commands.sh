@@ -59,6 +59,7 @@ echo "Waiting for reconciliation..."
 sleep 20
 get_status
 get_label
+get_netpol
 echo ""
 
 # ── 3. Wrong trust domain with strict: false ─────────────────────────────────
@@ -75,15 +76,11 @@ echo "Waiting for reconciliation..."
 sleep 20
 get_status
 get_label
-echo ""
-
-# ── 4. NetworkPolicy after binding failure ───────────────────────────────────
-echo "=== 4. NetworkPolicy After Binding Failure ==="
 get_netpol
 echo ""
 
-# ── 5. Restore correct binding ──────────────────────────────────────────────
-echo "=== 5. Restoring correct binding ==="
+# ── 4. Restore correct binding ──────────────────────────────────────────────
+echo "=== 4. Restoring correct binding ==="
 kubectl patch agentcard "$AGENTCARD" -n "$NAMESPACE" --type=json -p '[
   {"op": "remove", "path": "/spec/identityBinding"}
 ]'
@@ -97,7 +94,7 @@ kubectl patch agentcard "$AGENTCARD" -n "$NAMESPACE" --type=merge -p '{
 echo "Waiting for reconciliation..."
 sleep 20
 echo ""
-echo "=== 5. Restored ==="
+echo "=== 4. Restored ==="
 get_status
 get_label
 get_netpol

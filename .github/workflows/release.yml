@@ -22,8 +22,21 @@ env:
   CHARTS_PATH: ./charts
 
 jobs:
+  # Build the two images in parallel, one matrix instance per image.
+  # Each instance carries its own buildx cache scope so warm builds
+  # only re-pull what changed for that image.
   build-and-push:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image_config:
+          - name: kagenti-operator
+            context: ./kagenti-operator
+            dockerfile: ./kagenti-operator/Dockerfile
+          - name: agentcard-signer
+            context: ./kagenti-operator
+            dockerfile: ./kagenti-operator/cmd/agentcard-signer/Dockerfile
     steps:
     - name: Checkout
       uses: actions/checkout@v6
@@ -41,61 +54,56 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    # --- kagenti-operator image ---
-    - name: Extract Docker metadata (kagenti-operator)
-      id: operator-meta
+    - name: Extract Docker metadata
+      id: meta
       uses: docker/metadata-action@v6
       with:
-        images: ${{ env.REGISTRY }}/${{ github.repository }}/kagenti-operator
+        images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image_config.name }}
         tags: |
           type=sha,prefix={{branch}}-,enable={{is_default_branch}}
           type=raw,value=latest,enable={{is_default_branch}}
           type=semver,pattern={{version}}
 
-    - name: Build and push kagenti-operator
+    - name: Build and push ${{ matrix.image_config.name }}
       uses: docker/build-push-action@v7
       with:
-        context: ./kagenti-operator
-        file: ./kagenti-operator/Dockerfile
+        context: ${{ matrix.image_config.context }}
+        file: ${{ matrix.image_config.dockerfile }}
         push: true
         platforms: linux/amd64,linux/arm64
-        tags: ${{ steps.operator-meta.outputs.tags }}
-        labels: ${{ steps.operator-meta.outputs.labels }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        # GitHub Actions cache, scoped per image so the two parallel
+        # matrix jobs don't trample each other.
+        cache-from: type=gha,scope=${{ matrix.image_config.name }}
+        cache-to: type=gha,mode=max,scope=${{ matrix.image_config.name }}
 
-    # --- agentcard-signer image ---
-    - name: Extract Docker metadata (agentcard-signer)
-      id: signer-meta
-      uses: docker/metadata-action@v6
-      with:
-        images: ${{ env.REGISTRY }}/${{ github.repository }}/agentcard-signer
-        tags: |
-          type=sha,prefix={{branch}}-,enable={{is_default_branch}}
-          type=raw,value=latest,enable={{is_default_branch}}
-          type=semver,pattern={{version}}
+  # Release-only steps (helm chart packaging + GitHub Release). Runs
+  # once after both image builds complete, only on tag pushes.
+  release:
+    needs: build-and-push
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
 
-    - name: Build and push agentcard-signer
-      uses: docker/build-push-action@v7
-      with:
-        context: ./kagenti-operator
-        file: ./kagenti-operator/cmd/agentcard-signer/Dockerfile
-        push: true
-        platforms: linux/amd64,linux/arm64
-        tags: ${{ steps.signer-meta.outputs.tags }}
-        labels: ${{ steps.signer-meta.outputs.labels }}
-
-    # --- Release-only steps (tag pushes) ---
     - name: Set up Helm
-      if: github.ref_type == 'tag'
       uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Install yq
-      if: github.ref_type == 'tag'
       uses: mikefarah/yq@v4
 
+    - name: Log in to ghcr.io
+      uses: docker/login-action@v4
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
     - name: Package and push Helm chart
-      if: github.ref_type == 'tag'
       run: |
         chartVersion=$(echo "${{ github.ref_name }}" | cut -c 2-)
         chartPackageName="kagenti-operator-chart-${chartVersion}.tgz"
@@ -106,8 +114,18 @@ jobs:
         helm push "./${chartPackageName}" oci://${{ env.REGISTRY }}/${{ env.REPO }}
 
     - name: Create GitHub Release
-      if: github.ref_type == 'tag'
-      run: gh release create "${{ github.ref_name }}" --generate-notes
+      run: |
+        # Idempotent: the release may have been pre-created out of band
+        # (e.g., a maintainer ran `gh release create` before pushing the
+        # tag for custom notes). Use `gh release view` to short-circuit
+        # rather than grepping stderr from `gh release create` — that
+        # text is locale-dependent and a moving target across gh
+        # versions.
+        if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+          echo "Release ${{ github.ref_name }} already exists; skipping create."
+        else
+          gh release create "${{ github.ref_name }}" --generate-notes
+        fi
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -130,8 +148,13 @@ jobs:
         kubectl -n cert-manager rollout status deployment/cert-manager-cainjector --timeout=90s
 
     - name: Install Helm chart
+      # The chart's values.yaml ships with `tag: __PLACEHOLDER__`, which
+      # the release job substitutes only on tag pushes. On main pushes
+      # we override to `:latest` (which the build-and-push job just
+      # tagged) so the rendered Deployment can actually pull an image.
       run: |
-        helm install kagenti-operator ./charts/kagenti-operator
+        helm install kagenti-operator ./charts/kagenti-operator \
+          --set controllerManager.container.image.tag=latest
 
     - name: Wait for deployment rollout
       run: |

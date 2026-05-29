@@ -23,6 +23,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
+	"time"
 
 	"github.com/kagenti/operator/internal/mlflow"
 	. "github.com/onsi/ginkgo/v2"
@@ -91,6 +93,17 @@ var _ = Describe("MLflow Controller", func() {
 		Expect(result).To(Equal(ctrl.Result{}))
 	}
 
+	// newTempTokenPath creates a temporary SA token file and returns its path
+	// along with a cleanup function.
+	newTempTokenPath := func() (string, func()) {
+		tmpDir, err := os.MkdirTemp("", "mlflow-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		tokenPath := filepath.Join(tmpDir, "token")
+		err = os.WriteFile(tokenPath, []byte("test-token"), 0600)
+		Expect(err).NotTo(HaveOccurred())
+		return tokenPath, func() { _ = os.RemoveAll(tmpDir) }
+	}
+
 	// newMLflowTestServer creates an httptest server that responds to MLflow API calls.
 	// It also creates a temporary SA token file and returns a cleanup function.
 	newMLflowTestServer := func(experimentID string) (*httptest.Server, string, func()) {
@@ -114,15 +127,24 @@ var _ = Describe("MLflow Controller", func() {
 			}
 		}))
 
-		tmpDir, err := os.MkdirTemp("", "mlflow-test-*")
-		Expect(err).NotTo(HaveOccurred())
-		tokenPath := filepath.Join(tmpDir, "token")
-		err = os.WriteFile(tokenPath, []byte("test-token"), 0600)
-		Expect(err).NotTo(HaveOccurred())
-
+		tokenPath, cleanupToken := newTempTokenPath()
 		cleanup := func() {
 			server.Close()
-			_ = os.RemoveAll(tmpDir)
+			cleanupToken()
+		}
+		return server, tokenPath, cleanup
+	}
+
+	// newMLflowFailServer creates an httptest server that always returns 500.
+	newMLflowFailServer := func() (*httptest.Server, string, func()) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+		}))
+
+		tokenPath, cleanupToken := newTempTokenPath()
+		cleanup := func() {
+			server.Close()
+			cleanupToken()
 		}
 		return server, tokenPath, cleanup
 	}
@@ -138,7 +160,7 @@ var _ = Describe("MLflow Controller", func() {
 				return serverURL
 			},
 			NewMLflowClient: func(baseURL string) *mlflow.Client {
-				return &mlflow.Client{BaseURL: baseURL, TokenPath: tokenPath}
+				return &mlflow.Client{BaseURL: baseURL, TokenPath: tokenPath, MaxRetries: -1}
 			},
 		}
 	}
@@ -206,7 +228,7 @@ var _ = Describe("MLflow Controller", func() {
 			cleanup()
 		})
 
-		It("should create RoleBinding and inject env vars", func() {
+		It("should create scoped Role, RoleBinding, and inject env vars", func() {
 			dep := newAgentDeployment("mlflow-full", namespace)
 			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, dep) }()
@@ -214,13 +236,24 @@ var _ = Describe("MLflow Controller", func() {
 			r := newReconcilerWithServer(server.URL, tokenPath)
 			reconcileAndExpectNoOp(r, "mlflow-full", namespace)
 
+			role := &rbacv1.Role{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "kagenti-mlflow-mlflow-full", Namespace: namespace,
+			}, role)).To(Succeed())
+			Expect(role.Rules).To(HaveLen(1))
+			Expect(role.Rules[0].APIGroups).To(Equal([]string{MLflowExperimentsAPIGroup}))
+			Expect(role.Rules[0].Resources).To(Equal([]string{MLflowExperimentsResource}))
+			Expect(role.Rules[0].ResourceNames).To(Equal([]string{"mlflow-full"}))
+			Expect(role.Rules[0].Verbs).To(Equal([]string{"get", "update"}))
+
 			rb := &rbacv1.RoleBinding{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: "kagenti-mlflow-mlflow-full", Namespace: namespace,
 			}, rb)).To(Succeed())
 			Expect(rb.Subjects).To(HaveLen(1))
 			Expect(rb.Subjects[0].Name).To(Equal("test-sa"))
-			Expect(rb.RoleRef.Name).To(Equal(DefaultMLflowClusterRole))
+			Expect(rb.RoleRef.Kind).To(Equal("Role"))
+			Expect(rb.RoleRef.Name).To(Equal("kagenti-mlflow-mlflow-full"))
 
 			updated := &appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "mlflow-full", Namespace: namespace}, updated)).To(Succeed())
@@ -232,7 +265,6 @@ var _ = Describe("MLflow Controller", func() {
 			Expect(envMap["MLFLOW_TRACKING_AUTH"]).To(Equal("kubernetes-namespaced"))
 			Expect(envMap["MLFLOW_EXPERIMENT_ID"]).To(Equal("exp-123"))
 			Expect(envMap["MLFLOW_EXPERIMENT_NAME"]).To(Equal("mlflow-full"))
-			Expect(envMap["MLFLOW_TRACKING_SERVER_CERT_PATH"]).To(Equal("/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt"))
 
 			Expect(updated.Spec.Template.Annotations[AnnotationMLflowExperimentID]).To(Equal("exp-123"))
 			Expect(updated.Spec.Template.Annotations[AnnotationMLflowExperimentName]).To(Equal("mlflow-full"))
@@ -249,29 +281,70 @@ var _ = Describe("MLflow Controller", func() {
 			r := newReconcilerWithServer(server.URL, tokenPath)
 			reconcileAndExpectNoOp(r, "mlflow-default-sa", namespace)
 
+			role := &rbacv1.Role{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "kagenti-mlflow-mlflow-default-sa", Namespace: namespace,
+			}, role)).To(Succeed())
+			Expect(role.Rules[0].ResourceNames).To(Equal([]string{"mlflow-default-sa"}))
+
 			rb := &rbacv1.RoleBinding{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: "kagenti-mlflow-mlflow-default-sa", Namespace: namespace,
 			}, rb)).To(Succeed())
 			Expect(rb.Subjects[0].Name).To(Equal("default"))
+			Expect(rb.RoleRef.Kind).To(Equal("Role"))
+		})
+	})
+
+	Context("When MLflow API returns an error", func() {
+		It("should requeue after 30s", func() {
+			server, tokenPath, cleanup := newMLflowFailServer()
+			defer cleanup()
+
+			dep := newAgentDeployment("mlflow-fail", namespace)
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+
+			r := newReconcilerWithServer(server.URL, tokenPath)
+			result, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: "mlflow-fail", Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(30 * time.Second))
+		})
+	})
+
+	Context("When the Deployment is already configured", func() {
+		It("should be idempotent and not call the MLflow API", func() {
+			var apiCalls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				apiCalls.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			dep := newAgentDeployment("mlflow-idempotent", namespace)
+			dep.Spec.Template.Annotations = map[string]string{
+				AnnotationMLflowExperimentID:   "exp-100",
+				AnnotationMLflowExperimentName: "mlflow-idempotent",
+				AnnotationMLflowTrackingURI:    server.URL,
+			}
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+
+			r := &MLflowReconciler{
+				Client:             k8sClient,
+				Scheme:             scheme.Scheme,
+				ResolveTrackingURI: func(_ context.Context) string { return server.URL },
+			}
+			reconcileAndExpectNoOp(r, "mlflow-idempotent", namespace)
+			Expect(apiCalls.Load()).To(Equal(int32(0)))
 		})
 	})
 
 })
 
 var _ = Describe("MLflow Controller helpers", func() {
-	Describe("clusterRoleName", func() {
-		It("should return the default when MLflowClusterRole is empty", func() {
-			r := &MLflowReconciler{}
-			Expect(r.clusterRoleName()).To(Equal(DefaultMLflowClusterRole))
-		})
-
-		It("should return the custom value when set", func() {
-			r := &MLflowReconciler{MLflowClusterRole: "custom-role"}
-			Expect(r.clusterRoleName()).To(Equal("custom-role"))
-		})
-	})
-
 	Describe("setEnvVar", func() {
 		It("should add a new env var", func() {
 			container := &corev1.Container{Name: "test"}

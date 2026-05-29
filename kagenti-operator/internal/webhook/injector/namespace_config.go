@@ -22,17 +22,19 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/yaml"
 )
 
 var nsConfigLog = logf.Log.WithName("namespace-config")
 
 // Well-known ConfigMap/Secret names in the target namespace.
 const (
-	AuthBridgeConfigMapName      = "authbridge-config"
-	KeycloakAdminSecretName      = "keycloak-admin-secret"
-	SpiffeHelperConfigMapName    = "spiffe-helper-config"
-	EnvoyConfigMapName           = "envoy-config"
-	AuthproxyRoutesConfigMapName = "authproxy-routes"
+	AuthBridgeConfigMapName        = "authbridge-config"
+	AuthBridgeRuntimeConfigMapName = "authbridge-runtime-config"
+	KeycloakAdminSecretName        = "keycloak-admin-secret"
+	SpiffeHelperConfigMapName      = "spiffe-helper-config"
+	EnvoyConfigMapName             = "envoy-config"
+	AuthproxyRoutesConfigMapName   = "authproxy-routes"
 )
 
 // NamespaceConfig holds resolved values from namespace ConfigMaps/Secrets.
@@ -50,7 +52,6 @@ type NamespaceConfig struct {
 	DefaultOutboundPolicy string
 	ClientAuthType        string // "client-secret" or "federated-jwt"
 	SpiffeIdpAlias        string // Keycloak SPIFFE Identity Provider alias (e.g., "spire-spiffe")
-	JWTAudience           string // JWT audience for SPIFFE authentication
 
 	// From "spiffe-helper-config" ConfigMap
 	SpiffeHelperConf string // raw helper.conf content
@@ -60,6 +61,9 @@ type NamespaceConfig struct {
 
 	// From "authproxy-routes" ConfigMap
 	AuthproxyRoutesYAML string // raw routes.yaml content
+
+	// From "authbridge-runtime-config" ConfigMap
+	AuthBridgeRuntimeYAML string // raw config.yaml for unified authbridge binary
 }
 
 // ReadNamespaceConfig reads the well-known ConfigMaps/Secrets from the target
@@ -84,7 +88,6 @@ func ReadNamespaceConfig(ctx context.Context, c client.Reader, namespace string)
 		cfg.DefaultOutboundPolicy = cm.Data["DEFAULT_OUTBOUND_POLICY"]
 		cfg.ClientAuthType = cm.Data["CLIENT_AUTH_TYPE"]
 		cfg.SpiffeIdpAlias = cm.Data["SPIFFE_IDP_ALIAS"]
-		cfg.JWTAudience = cm.Data["JWT_AUDIENCE"]
 	}
 
 	// Note: keycloak-admin-secret is not read here. The resolved container builder
@@ -112,6 +115,13 @@ func ReadNamespaceConfig(ctx context.Context, c client.Reader, namespace string)
 		cfg.AuthproxyRoutesYAML = cm.Data["routes.yaml"]
 	}
 
+	// Read "authbridge-runtime-config" ConfigMap (YAML config for unified authbridge binary)
+	if cm, err := getConfigMap(ctx, c, namespace, AuthBridgeRuntimeConfigMapName); err != nil {
+		nsConfigLog.V(1).Info("ConfigMap not found", "name", AuthBridgeRuntimeConfigMapName, "namespace", namespace, "error", err)
+	} else {
+		cfg.AuthBridgeRuntimeYAML = cm.Data["config.yaml"]
+	}
+
 	return cfg, nil
 }
 
@@ -121,4 +131,56 @@ func getConfigMap(ctx context.Context, c client.Reader, namespace, name string) 
 		return nil, err
 	}
 	return cm, nil
+}
+
+// ExtractMode parses an authbridge-runtime-config config.yaml string and
+// returns the value of its top-level `mode:` key. Returns "" if the YAML
+// is empty, malformed, or has no `mode` field — in any of those cases the
+// caller should fall back to the cluster default.
+//
+// Used by pod_mutator's mode-resolution chain. Stays a small surgical
+// parse rather than a full YAML decode so it tolerates older or
+// hand-edited ConfigMaps that may have other unknown top-level keys.
+func ExtractMode(authbridgeYAML string) string {
+	if authbridgeYAML == "" {
+		return ""
+	}
+	var top struct {
+		Mode string `json:"mode"`
+	}
+	if err := yaml.Unmarshal([]byte(authbridgeYAML), &top); err != nil {
+		// Fail-safe: empty string lets the resolution chain fall through
+		// to the next layer. Log a warning so operators can spot a
+		// malformed authbridge-runtime-config — silent failure here was
+		// flagged in PR #361 review.
+		nsConfigLog.Info("WARN: failed to parse authbridge-runtime-config config.yaml; falling back to next resolution layer",
+			"error", err.Error())
+		return ""
+	}
+	return top.Mode
+}
+
+// ExtractMTLSMode parses an authbridge-runtime-config config.yaml string
+// and returns the value of its `mtls.mode` field. Returns "" if the YAML
+// is empty, malformed, has no `mtls` block, or its `mode` field is unset
+// — in any of those cases the caller should fall back to the next
+// resolution layer (or the "disabled" default).
+//
+// Same surgical-parse pattern as ExtractMode: tolerates extra top-level
+// keys so older or hand-edited ConfigMaps round-trip cleanly.
+func ExtractMTLSMode(authbridgeYAML string) string {
+	if authbridgeYAML == "" {
+		return ""
+	}
+	var top struct {
+		MTLS struct {
+			Mode string `json:"mode"`
+		} `json:"mtls"`
+	}
+	if err := yaml.Unmarshal([]byte(authbridgeYAML), &top); err != nil {
+		nsConfigLog.Info("WARN: failed to parse authbridge-runtime-config config.yaml for mtls.mode; falling back to next resolution layer",
+			"error", err.Error())
+		return ""
+	}
+	return top.MTLS.Mode
 }

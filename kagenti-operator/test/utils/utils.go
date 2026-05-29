@@ -311,6 +311,16 @@ func UninstallSpire() {
 		warnError(err)
 	}
 
+	By("deleting SPIRE CRDs left behind by Helm")
+	cmd = exec.Command("kubectl", "delete", "crd",
+		"clusterspiffeids.spire.spiffe.io",
+		"clusterfederatedtrustdomains.spire.spiffe.io",
+		"clusterstaticentries.spire.spiffe.io",
+		"--ignore-not-found")
+	if _, err := Run(cmd); err != nil {
+		warnError(err)
+	}
+
 	By("deleting spire-system namespace")
 	cmd = exec.Command("kubectl", "delete", "ns", "spire-system", "--ignore-not-found")
 	if _, err := Run(cmd); err != nil {
@@ -467,13 +477,12 @@ func RestoreControllerArgs(namespace, deploy string, origArgs []string) error {
 // DeployController installs CRDs and deploys the controller-manager.
 func DeployController(namespace, img string) error {
 	By("creating manager namespace")
-	cmd := exec.Command("kubectl", "create", "ns", namespace)
-	if _, err := Run(cmd); err != nil && !strings.Contains(err.Error(), "already exists") {
-		return err
+	if err := ensureNamespaceReady(namespace, 60*time.Second); err != nil {
+		return fmt.Errorf("namespace %s not ready: %w", namespace, err)
 	}
 
 	By("labeling the namespace to enforce the restricted security policy")
-	cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+	cmd := exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
 		"pod-security.kubernetes.io/enforce=restricted")
 	if _, err := Run(cmd); err != nil {
 		return err
@@ -494,6 +503,31 @@ func DeployController(namespace, img string) error {
 	cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", img))
 	_, err := Run(cmd)
 	return err
+}
+
+// ensureNamespaceReady creates the namespace, waiting for any Terminating
+// instance to be fully deleted first. A previous test's cleanup may have
+// triggered namespace deletion that hasn't finished yet.
+func ensureNamespaceReady(namespace string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		cmd := exec.Command("kubectl", "get", "ns", namespace, "-o", "jsonpath={.status.phase}")
+		output, err := Run(cmd)
+		if err != nil {
+			// Namespace doesn't exist — create it
+			createCmd := exec.Command("kubectl", "create", "ns", namespace)
+			_, createErr := Run(createCmd)
+			return createErr
+		}
+		phase := strings.TrimSpace(output)
+		if phase == "Active" {
+			return nil
+		}
+		// Namespace is Terminating — wait for it to be fully deleted
+		By(fmt.Sprintf("waiting for namespace %s to finish terminating (phase=%s)", namespace, phase))
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("timed out waiting for namespace %s to finish terminating", namespace)
 }
 
 // EnsureCertManagerWebhookReady waits for the cert-manager webhook to be responsive.
@@ -548,6 +582,72 @@ spec:
 `)
 	_, err := Run(cmd)
 	return err == nil
+}
+
+// EnableSkillImageVolumes creates a feature-gates ConfigMap with
+// skillImageVolumes enabled and patches the controller Deployment to mount it.
+func EnableSkillImageVolumes(namespace, deploy string) error {
+	By("creating feature-gates ConfigMap with skillImageVolumes enabled")
+	cmd := exec.Command("kubectl", "apply", "-f", "-", "-n", namespace)
+	cmd.Stdin = strings.NewReader(`apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kagenti-feature-gates
+data:
+  feature-gates.yaml: |
+    globalEnabled: true
+    envoyProxy: true
+    spiffeHelper: true
+    clientRegistration: true
+    injectTools: false
+    perWorkloadConfigResolution: false
+    skillImageVolumes: true
+`)
+	if _, err := Run(cmd); err != nil {
+		return fmt.Errorf("failed to create feature-gates ConfigMap: %w", err)
+	}
+
+	By("patching controller to mount feature-gates ConfigMap")
+	patch := `{"spec":{"template":{"spec":{` +
+		`"containers":[{"name":"manager",` +
+		`"volumeMounts":[{"name":"feature-gates","mountPath":"/etc/kagenti/feature-gates","readOnly":true}]}],` +
+		`"volumes":[{"name":"feature-gates","configMap":{"name":"kagenti-feature-gates"}}]}}}}`
+	cmd = exec.Command("kubectl", "patch", "deployment", deploy,
+		"-n", namespace,
+		"--type=strategic",
+		fmt.Sprintf("-p=%s", patch),
+	)
+	if _, err := Run(cmd); err != nil {
+		return fmt.Errorf("failed to patch controller with feature-gates volume: %w", err)
+	}
+
+	By("waiting for controller rollout after feature-gates patch")
+	return WaitForRollout(deploy, namespace, 2*time.Minute)
+}
+
+// DisableSkillImageVolumes updates the feature-gates ConfigMap to disable
+// skillImageVolumes. The feature gate loader's file watcher picks up changes.
+func DisableSkillImageVolumes(namespace string) error {
+	By("updating feature-gates ConfigMap to disable skillImageVolumes")
+	cmd := exec.Command("kubectl", "apply", "-f", "-", "-n", namespace)
+	cmd.Stdin = strings.NewReader(`apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kagenti-feature-gates
+data:
+  feature-gates.yaml: |
+    globalEnabled: true
+    envoyProxy: true
+    spiffeHelper: true
+    clientRegistration: true
+    injectTools: false
+    perWorkloadConfigResolution: false
+    skillImageVolumes: false
+`)
+	if _, err := Run(cmd); err != nil {
+		return fmt.Errorf("failed to update feature-gates ConfigMap: %w", err)
+	}
+	return nil
 }
 
 // UndeployController undeploys the controller-manager and uninstalls CRDs.

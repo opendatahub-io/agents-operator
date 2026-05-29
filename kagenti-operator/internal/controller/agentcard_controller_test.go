@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -1720,6 +1722,113 @@ var _ = Describe("AgentCard Controller - getSyncPeriod", func() {
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+		})
+	})
+
+	Context("Deprecation warning for new AgentCards", func() {
+		const (
+			deprecationNS     = "default"
+			deprecationDeploy = "deprecation-deploy"
+			deprecationCard   = "deprecation-card"
+		)
+
+		ctx := context.Background()
+
+		It("should emit deprecation event for recently created AgentCard", func() {
+			replicas := int32(1)
+			dep := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deprecationDeploy,
+					Namespace: deprecationNS,
+					Labels: map[string]string{
+						LabelAgentType:              LabelValueAgent,
+						ProtocolLabelPrefix + "a2a": "",
+					},
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: &replicas,
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": deprecationDeploy},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{
+								"app":                       deprecationDeploy,
+								LabelAgentType:              LabelValueAgent,
+								ProtocolLabelPrefix + "a2a": "",
+							},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Name: "agent", Image: "test:latest"}},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+
+			Eventually(func() error {
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: deprecationDeploy, Namespace: deprecationNS}, dep); err != nil {
+					return err
+				}
+				dep.Status.Conditions = []appsv1.DeploymentCondition{
+					{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue},
+				}
+				return k8sClient.Status().Update(ctx, dep)
+			}).Should(Succeed())
+
+			svc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: deprecationDeploy, Namespace: deprecationNS},
+				Spec: corev1.ServiceSpec{
+					Ports:    []corev1.ServicePort{{Name: "http", Port: 8000, Protocol: corev1.ProtocolTCP}},
+					Selector: map[string]string{"app": deprecationDeploy},
+				},
+			}
+			Expect(k8sClient.Create(ctx, svc)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, svc) }()
+
+			ac := &agentv1alpha1.AgentCard{
+				ObjectMeta: metav1.ObjectMeta{Name: deprecationCard, Namespace: deprecationNS},
+				Spec: agentv1alpha1.AgentCardSpec{
+					TargetRef: &agentv1alpha1.TargetRef{
+						APIVersion: "apps/v1",
+						Kind:       "Deployment",
+						Name:       deprecationDeploy,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ac)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, ac) }()
+
+			fetcher := &mockFetcher{
+				cardData: &agentv1alpha1.AgentCardData{
+					Name:    "deprecation-agent",
+					Version: "1.0.0",
+					URL:     "http://deprecation-deploy.default.svc.cluster.local:8000",
+				},
+			}
+			fakeRecorder := record.NewFakeRecorder(10)
+			reconciler := &AgentCardReconciler{
+				Client:       k8sClient,
+				Scheme:       k8sClient.Scheme(),
+				AgentFetcher: fetcher,
+				Recorder:     fakeRecorder,
+			}
+
+			nn := types.NamespacedName{Name: deprecationCard, Namespace: deprecationNS}
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			var foundDeprecation bool
+			for len(fakeRecorder.Events) > 0 {
+				evt := <-fakeRecorder.Events
+				if strings.Contains(evt, "Deprecated") {
+					foundDeprecation = true
+					break
+				}
+			}
+			Expect(foundDeprecation).To(BeTrue(), "expected a Deprecated event to be emitted")
 		})
 	})
 })

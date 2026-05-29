@@ -9,6 +9,17 @@ rules:
   - ""
   resources:
   - configmaps
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - endpoints
   - namespaces
   - services
   verbs:
@@ -81,6 +92,30 @@ rules:
   - patch
   - update
 - apiGroups:
+  - agents.x-k8s.io
+  resources:
+  - sandboxes
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - agents.x-k8s.io
+  resources:
+  - sandboxes/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - agents.x-k8s.io
+  resources:
+  - sandboxes/scale
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - apps
   resources:
   - deployments
@@ -92,6 +127,13 @@ rules:
   - update
   - watch
 - apiGroups:
+  - apps
+  resources:
+  - deployments/finalizers
+  - statefulsets/finalizers
+  verbs:
+  - update
+- apiGroups:
   - mlflow.opendatahub.io
   resources:
   - mlflows
@@ -99,6 +141,15 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - mlflow.opendatahub.io
+  resources:
+  - mlflowexperiments
+  verbs:
+  - get
+  - list
+  - watch
+  - update
 - apiGroups:
   - networking.k8s.io
   resources:
@@ -123,6 +174,7 @@ rules:
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:
+  - roles
   - rolebindings
   verbs:
   - create

@@ -65,13 +65,6 @@ func TestReadAgentRuntimeOverrides_MatchesByTargetRef(t *testing.T) {
 					TrustDomain: "override.local",
 				},
 			},
-			Trace: &agentv1alpha1.TraceSpec{
-				Endpoint: "http://otel-collector:4317",
-				Protocol: agentv1alpha1.TraceProtocolGRPC,
-				Sampling: &agentv1alpha1.SamplingSpec{
-					Rate: 0.5,
-				},
-			},
 		},
 	}
 
@@ -96,17 +89,6 @@ func TestReadAgentRuntimeOverrides_MatchesByTargetRef(t *testing.T) {
 	}
 	if overrides.ClientRegistrationRealm != nil {
 		t.Errorf("expected nil ClientRegistrationRealm, got %v", overrides.ClientRegistrationRealm)
-	}
-
-	// Trace
-	if overrides.TraceEndpoint == nil || *overrides.TraceEndpoint != "http://otel-collector:4317" {
-		t.Errorf("TraceEndpoint = %v", overrides.TraceEndpoint)
-	}
-	if overrides.TraceProtocol == nil || *overrides.TraceProtocol != "grpc" {
-		t.Errorf("TraceProtocol = %v", overrides.TraceProtocol)
-	}
-	if overrides.TraceSamplingRate == nil || *overrides.TraceSamplingRate != 0.5 {
-		t.Errorf("TraceSamplingRate = %v", overrides.TraceSamplingRate)
 	}
 }
 
@@ -148,9 +130,6 @@ func TestReadAgentRuntimeOverrides_PartialOverrides(t *testing.T) {
 	// Other fields should be nil
 	if overrides.ClientRegistrationProvider != nil {
 		t.Errorf("expected nil ClientRegistrationProvider, got %v", overrides.ClientRegistrationProvider)
-	}
-	if overrides.TraceEndpoint != nil {
-		t.Errorf("expected nil TraceEndpoint, got %v", overrides.TraceEndpoint)
 	}
 }
 

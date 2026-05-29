@@ -189,9 +189,9 @@ func logConfig(cfg *PlatformConfig, source string) {
 	log.Info("[config] source", "source", source)
 	log.Info("[config] images",
 		"envoyProxy", cfg.Images.EnvoyProxy,
+		"authBridge", cfg.Images.AuthBridge,
+		"authBridgeLite", cfg.Images.AuthBridgeLite,
 		"proxyInit", cfg.Images.ProxyInit,
-		"spiffeHelper", cfg.Images.SpiffeHelper,
-		"clientRegistration", cfg.Images.ClientRegistration,
 		"pullPolicy", cfg.Images.PullPolicy,
 	)
 	log.Info("[config] proxy",
@@ -208,13 +208,9 @@ func logConfig(cfg *PlatformConfig, source string) {
 		"requests", cfg.Resources.ProxyInit.Requests,
 		"limits", cfg.Resources.ProxyInit.Limits,
 	)
-	log.Info("[config] resources.spiffeHelper",
-		"requests", cfg.Resources.SpiffeHelper.Requests,
-		"limits", cfg.Resources.SpiffeHelper.Limits,
-	)
-	log.Info("[config] resources.clientRegistration",
-		"requests", cfg.Resources.ClientRegistration.Requests,
-		"limits", cfg.Resources.ClientRegistration.Limits,
+	log.Info("[config] resources.authBridge",
+		"requests", cfg.Resources.AuthBridge.Requests,
+		"limits", cfg.Resources.AuthBridge.Limits,
 	)
 	log.Info("[config] tokenExchange",
 		"tokenUrl", cfg.TokenExchange.TokenURL,
@@ -224,11 +220,6 @@ func logConfig(cfg *PlatformConfig, source string) {
 	log.Info("[config] spiffe",
 		"trustDomain", cfg.Spiffe.TrustDomain,
 		"socketPath", cfg.Spiffe.SocketPath,
-	)
-	log.Info("[config] sidecars",
-		"envoyProxy.enabled", cfg.Sidecars.EnvoyProxy.Enabled,
-		"spiffeHelper.enabled", cfg.Sidecars.SpiffeHelper.Enabled,
-		"clientRegistration.enabled", cfg.Sidecars.ClientRegistration.Enabled,
 	)
 	log.Info("=============================================")
 }

@@ -121,6 +121,13 @@ type AgentCardReconciler struct {
 
 	AgentFetcher agentcard.Fetcher
 
+	// AuthenticatedFetcher performs mTLS-authenticated fetches.
+	// Nil when verifiedFetch is disabled.
+	AuthenticatedFetcher agentcard.AuthenticatedFetcher
+
+	// EnableVerifiedFetch gates the mTLS authenticated fetch code path.
+	EnableVerifiedFetch bool
+
 	SignatureProvider  signature.Provider
 	RequireSignature   bool
 	SignatureAuditMode bool
@@ -140,6 +147,7 @@ type AgentCardReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups=agents.x-k8s.io,resources=sandboxes,verbs=get;list;watch
 
 func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	agentCardLogger.V(1).Info("Reconciling AgentCard", "namespacedName", req.NamespacedName)
@@ -161,6 +169,15 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
+	}
+
+	if agentCard.CreationTimestamp.After(time.Now().Add(-5 * time.Minute)) {
+		agentCardLogger.Info("AgentCard is deprecated; card data is now available via AgentRuntime status.card. Migrate to AgentRuntime-based discovery.",
+			"agentCard", agentCard.Name, "namespace", agentCard.Namespace)
+		if r.Recorder != nil {
+			r.Recorder.Event(agentCard, corev1.EventTypeWarning, "Deprecated",
+				"AgentCard is deprecated; card data is now available via AgentRuntime status.card. Migrate to AgentRuntime-based discovery.")
+		}
 	}
 
 	workload, err := r.getWorkload(ctx, agentCard)
@@ -225,29 +242,178 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	servicePort := r.getServicePort(service)
 	serviceURL := agentcard.GetServiceURL(workload.ServiceName, agentCard.Namespace, servicePort)
 
-	cardData, err := r.AgentFetcher.Fetch(ctx, protocol, serviceURL, workload.ServiceName, agentCard.Namespace)
+	cardData, fetchResult, err := r.fetchCardData(ctx, agentCard, protocol, serviceURL, workload, service)
 	if err != nil {
-		agentCardLogger.Error(err, "Failed to fetch agent card", "workload", workload.Name, "url", serviceURL)
-		if condErr := r.updateCondition(ctx, agentCard, "Synced", metav1.ConditionFalse, "FetchFailed", err.Error()); condErr != nil {
+		if condErr := r.updateCondition(ctx, agentCard,
+			"Ready", metav1.ConditionFalse, "SyncFailed", "Agent card fetch failed"); condErr != nil {
 			return ctrl.Result{}, condErr
 		}
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
 	}
 
-	var verificationResult *signature.VerificationResult
+	trust := r.evaluateTrust(ctx, agentCard, cardData, fetchResult, workload)
+
+	cardData.URL = serviceURL
+	cardID := r.computeCardID(cardData)
+	if cardID != "" && agentCard.Status.CardId != "" && agentCard.Status.CardId != cardID {
+		if r.Recorder != nil {
+			r.Recorder.Event(agentCard, corev1.EventTypeWarning, "CardContentChanged",
+				fmt.Sprintf("Agent card content changed: previous=%s, current=%s",
+					agentCard.Status.CardId, cardID))
+		}
+		agentCardLogger.Info("Card content changed",
+			"agentCard", agentCard.Name,
+			"previousCardId", agentCard.Status.CardId,
+			"newCardId", cardID)
+	}
+
+	resolvedTargetRef := &agentv1alpha1.TargetRef{
+		APIVersion: workload.APIVersion,
+		Kind:       workload.Kind,
+		Name:       workload.Name,
+	}
+
+	if err := r.updateAgentCardStatus(ctx, agentCard, cardData, protocol, cardID,
+		resolvedTargetRef, trust.verificationResult, trust.binding, trust.identityMatch,
+		trust.isMTLSVerified, trust.verifiedReason, trust.verifiedStatus,
+		trust.verifiedMessage, trust.attestedSpiffeID); err != nil {
+		agentCardLogger.Error(err, "Failed to update AgentCard status")
+		return ctrl.Result{}, err
+	}
+
+	// Label propagation: only touches workload labels, not AgentCard status.
+	if trust.isMTLSVerified {
+		if err := r.propagateVerifiedLabel(ctx, agentCard, workload, true); err != nil {
+			agentCardLogger.Error(err, "Failed to propagate verified label to workload",
+				"workload", workload.Name, "verified", true)
+			return ctrl.Result{}, err
+		}
+	} else if r.RequireSignature {
+		if err := r.propagateSignatureLabel(ctx, agentCard.Name, workload, trust.isVerified); err != nil {
+			agentCardLogger.Error(err, "Failed to propagate signature label to workload",
+				"workload", workload.Name, "verified", trust.isVerified)
+			return ctrl.Result{}, err
+		}
+		if trust.verificationResult != nil && !trust.verificationResult.Verified && !r.SignatureAuditMode {
+			agentCardLogger.Info("Signature verification failed, rejecting agent card",
+				"workload", workload.Name,
+				"details", trust.verificationResult.Details)
+			return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
+		}
+	} else if r.EnableVerifiedFetch && r.AuthenticatedFetcher != nil {
+		if err := r.propagateVerifiedLabel(ctx, agentCard, workload, false); err != nil {
+			agentCardLogger.Error(err, "Failed to propagate verified label to workload",
+				"workload", workload.Name, "verified", false)
+			return ctrl.Result{}, err
+		}
+	}
+
+	syncPeriod := r.getSyncPeriod(agentCard)
+	agentCardLogger.V(1).Info("Successfully synced agent card",
+		"workload", workload.Name, "kind", workload.Kind, "nextSync", syncPeriod)
+
+	return ctrl.Result{RequeueAfter: syncPeriod}, nil
+}
+
+// trustEvaluation holds the computed trust state for an AgentCard reconcile.
+type trustEvaluation struct {
+	verificationResult *signature.VerificationResult
+	binding            *bindingResult
+	identityMatch      *bool
+	isMTLSVerified     bool
+	isVerified         bool
+	verifiedStatus     metav1.ConditionStatus
+	verifiedReason     string
+	verifiedMessage    string
+	attestedSpiffeID   string
+}
+
+// fetchCardData retrieves the agent card, choosing mTLS or plain HTTP based on
+// configuration and service port availability. Returns an error only if the
+// fetch fails — error conditions are already written to the AgentCard status.
+func (r *AgentCardReconciler) fetchCardData(
+	ctx context.Context, agentCard *agentv1alpha1.AgentCard,
+	protocol, serviceURL string, workload *WorkloadInfo, service *corev1.Service,
+) (*agentv1alpha1.AgentCardData, *agentcard.FetchResult, error) {
+	if r.EnableVerifiedFetch && r.AuthenticatedFetcher != nil {
+		tlsPort := r.getAgentTLSPort(service)
+		if tlsPort > 0 {
+			secureURL := agentcard.GetSecureServiceURL(
+				workload.ServiceName, agentCard.Namespace, tlsPort)
+			fetchResult, err := r.AuthenticatedFetcher.FetchAuthenticated(ctx, protocol, secureURL)
+			if err != nil {
+				agentCardLogger.Error(err, "Authenticated fetch failed",
+					"workload", workload.Name, "url", secureURL)
+				if condErr := r.updateCondition(ctx, agentCard,
+					"Synced", metav1.ConditionFalse, "FetchFailed", err.Error()); condErr != nil {
+					return nil, nil, condErr
+				}
+				if condErr := r.setVerifiedCondition(ctx, agentCard,
+					metav1.ConditionFalse, "FetchFailed", err.Error()); condErr != nil {
+					return nil, nil, condErr
+				}
+				return nil, nil, err
+			}
+			return fetchResult.CardData, fetchResult, nil
+		}
+		agentCardLogger.Info("TLS port not found on service, falling back to HTTP fetch",
+			"service", workload.ServiceName, "expectedPortName", AgentTLSPortName)
+		if r.Recorder != nil {
+			r.Recorder.Event(agentCard, corev1.EventTypeWarning, "FallbackToHTTP",
+				fmt.Sprintf("Service %s has no %s port; fetch is unverified",
+					workload.ServiceName, AgentTLSPortName))
+		}
+		cardData, err := r.AgentFetcher.Fetch(
+			ctx, protocol, serviceURL, workload.ServiceName, agentCard.Namespace)
+		if err != nil {
+			agentCardLogger.Error(err, "Failed to fetch agent card",
+				"workload", workload.Name, "url", serviceURL)
+			if condErr := r.updateCondition(ctx, agentCard,
+				"Synced", metav1.ConditionFalse, "FetchFailed", err.Error()); condErr != nil {
+				return nil, nil, condErr
+			}
+			return nil, nil, err
+		}
+		return cardData, nil, nil
+	}
+
+	cardData, err := r.AgentFetcher.Fetch(
+		ctx, protocol, serviceURL, workload.ServiceName, agentCard.Namespace)
+	if err != nil {
+		agentCardLogger.Error(err, "Failed to fetch agent card",
+			"workload", workload.Name, "url", serviceURL)
+		if condErr := r.updateCondition(ctx, agentCard,
+			"Synced", metav1.ConditionFalse, "FetchFailed", err.Error()); condErr != nil {
+			return nil, nil, condErr
+		}
+		return nil, nil, err
+	}
+	if err := r.cleanupVerifiedFetchFields(ctx, agentCard); err != nil {
+		agentCardLogger.Error(err, "Failed to cleanup verified fetch fields", "agentCard", agentCard.Name)
+	}
+	return cardData, nil, nil
+}
+
+// evaluateTrust performs signature verification, binding computation, and
+// determines the final Verified status for an AgentCard.
+func (r *AgentCardReconciler) evaluateTrust( //nolint:gocyclo
+	ctx context.Context, agentCard *agentv1alpha1.AgentCard,
+	cardData *agentv1alpha1.AgentCardData, fetchResult *agentcard.FetchResult,
+	workload *WorkloadInfo,
+) *trustEvaluation {
+	eval := &trustEvaluation{}
+
 	if r.RequireSignature {
 		var verifyErr error
-		verificationResult, verifyErr = r.verifySignature(ctx, cardData)
-
+		eval.verificationResult, verifyErr = r.verifySignature(ctx, cardData)
 		if verifyErr != nil {
 			agentCardLogger.Error(verifyErr, "Signature verification error", "workload", workload.Name)
 		}
-
-		if verificationResult != nil {
-			if verificationResult.Verified {
+		if eval.verificationResult != nil {
+			if eval.verificationResult.Verified {
 				if r.Recorder != nil {
 					r.Recorder.Event(agentCard, corev1.EventTypeNormal, "SignatureEvaluated",
-						fmt.Sprintf("Signature verified successfully (keyID=%s)", verificationResult.KeyID))
+						fmt.Sprintf("Signature verified successfully (keyID=%s)", eval.verificationResult.KeyID))
 				}
 			} else {
 				reason := ReasonSignatureInvalid
@@ -257,83 +423,72 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				agentCardLogger.Info("Signature verification failed",
 					"workload", workload.Name,
 					"reason", reason,
-					"details", verificationResult.Details)
+					"details", eval.verificationResult.Details)
 				if r.Recorder != nil {
-					r.Recorder.Event(agentCard, corev1.EventTypeWarning, "SignatureFailed", verificationResult.Details)
+					r.Recorder.Event(agentCard, corev1.EventTypeWarning, "SignatureFailed", eval.verificationResult.Details)
 				}
 			}
 		}
 	}
 
-	if r.RequireSignature && verificationResult != nil && verificationResult.Verified {
-		r.maybeRestartForResign(ctx, agentCard, workload, verificationResult)
+	if r.RequireSignature && eval.verificationResult != nil && eval.verificationResult.Verified {
+		r.maybeRestartForResign(ctx, agentCard, workload, eval.verificationResult)
 	}
 
-	cardData.URL = serviceURL
+	sigVerified := eval.verificationResult != nil && eval.verificationResult.Verified
+	eval.isMTLSVerified = fetchResult != nil && fetchResult.AgentSpiffeID != ""
 
-	cardId := r.computeCardId(cardData)
-	if cardId != "" && agentCard.Status.CardId != "" && agentCard.Status.CardId != cardId {
-		if r.Recorder != nil {
-			r.Recorder.Event(agentCard, corev1.EventTypeWarning, "CardContentChanged",
-				fmt.Sprintf("Agent card content changed: previous=%s, current=%s", agentCard.Status.CardId, cardId))
-		}
-		agentCardLogger.Info("Card content changed", "agentCard", agentCard.Name, "previousCardId", agentCard.Status.CardId, "newCardId", cardId)
-	}
-
-	resolvedTargetRef := &agentv1alpha1.TargetRef{
-		APIVersion: workload.APIVersion,
-		Kind:       workload.Kind,
-		Name:       workload.Name,
-	}
-
+	// Binding evaluation (independent of verified status computation)
 	var bindingPassed bool
-	var binding *bindingResult
-	var identityMatch *bool
-	sigVerified := verificationResult != nil && verificationResult.Verified
 	if agentCard.Spec.IdentityBinding != nil {
 		var verifiedSpiffeID string
-		if verificationResult != nil && verificationResult.Verified && verificationResult.SpiffeID != "" {
-			verifiedSpiffeID = verificationResult.SpiffeID
+		if eval.isMTLSVerified {
+			verifiedSpiffeID = fetchResult.AgentSpiffeID
+		} else if eval.verificationResult != nil &&
+			eval.verificationResult.Verified && eval.verificationResult.SpiffeID != "" {
+			verifiedSpiffeID = eval.verificationResult.SpiffeID
 		}
-		binding = r.computeBinding(agentCard, verifiedSpiffeID)
-		bindingPassed = binding != nil && binding.Bound
-		match := sigVerified && bindingPassed
-		identityMatch = &match
+		eval.binding = r.computeBinding(agentCard, verifiedSpiffeID)
+		bindingPassed = eval.binding != nil && eval.binding.Bound
+		match := (sigVerified || eval.isMTLSVerified) && bindingPassed
+		eval.identityMatch = &match
 	}
 
-	var vr *signature.VerificationResult
-	if r.RequireSignature {
-		vr = verificationResult
-	}
-	if err := r.updateAgentCardStatus(ctx, agentCard, cardData, protocol, cardId, resolvedTargetRef, vr, binding, identityMatch); err != nil {
-		agentCardLogger.Error(err, "Failed to update AgentCard status")
-		return ctrl.Result{}, err
-	}
-
-	// Both signature and binding (if configured) must pass for the label.
-	if r.RequireSignature {
-		isVerified := sigVerified
+	// Compute final Verified status.
+	// mTLS takes precedence over JWS: if the agent was authenticated via mTLS,
+	// it is unconditionally Verified regardless of JWS state. This avoids
+	// ambiguity when both mechanisms succeed with different SPIFFE IDs.
+	if eval.isMTLSVerified {
+		eval.verifiedStatus = metav1.ConditionTrue
+		eval.verifiedReason = "mTLSVerified"
+		eval.verifiedMessage = fmt.Sprintf("Agent SPIFFE ID: %s", fetchResult.AgentSpiffeID)
+		eval.attestedSpiffeID = fetchResult.AgentSpiffeID
+		eval.isVerified = true
+	} else if r.RequireSignature {
+		eval.isVerified = sigVerified
 		if agentCard.Spec.IdentityBinding != nil {
-			isVerified = isVerified && bindingPassed
+			eval.isVerified = sigVerified && (bindingPassed || !agentCard.Spec.IdentityBinding.Strict)
 		}
-		if err := r.propagateSignatureLabel(ctx, agentCard.Name, workload, isVerified); err != nil {
-			agentCardLogger.Error(err, "Failed to propagate signature label to workload",
-				"workload", workload.Name, "verified", isVerified)
-			return ctrl.Result{}, err
+		if eval.isVerified {
+			eval.verifiedStatus = metav1.ConditionTrue
+			eval.verifiedReason = "SignatureVerified"
+			eval.verifiedMessage = fmt.Sprintf("JWS signature valid (keyID=%s)", eval.verificationResult.KeyID)
+		} else {
+			eval.verifiedStatus = metav1.ConditionFalse
+			eval.verifiedReason = "NotVerified"
+			eval.verifiedMessage = "No trust mechanism verified this agent"
+			if eval.verificationResult != nil && !eval.verificationResult.Verified {
+				eval.verifiedReason = ReasonSignatureInvalid
+				eval.verifiedMessage = eval.verificationResult.Details
+			}
 		}
-
-		if verificationResult != nil && !verificationResult.Verified && !r.SignatureAuditMode {
-			agentCardLogger.Info("Signature verification failed, rejecting agent card",
-				"workload", workload.Name,
-				"details", verificationResult.Details)
-			return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
-		}
+	} else if r.EnableVerifiedFetch && r.AuthenticatedFetcher != nil {
+		eval.verifiedStatus = metav1.ConditionFalse
+		eval.verifiedReason = "NotVerified"
+		eval.verifiedMessage = "No trust mechanism verified this agent"
 	}
 
-	syncPeriod := r.getSyncPeriod(agentCard)
-	agentCardLogger.V(1).Info("Successfully synced agent card", "workload", workload.Name, "kind", workload.Kind, "nextSync", syncPeriod)
-
-	return ctrl.Result{RequeueAfter: syncPeriod}, nil
+	return eval
 }
 
 func (r *AgentCardReconciler) getWorkload(ctx context.Context, agentCard *agentv1alpha1.AgentCard) (*WorkloadInfo, error) {
@@ -530,6 +685,20 @@ func (r *AgentCardReconciler) getServicePort(service *corev1.Service) int32 {
 	return 8000
 }
 
+// AgentTLSPortName is the named port convention for the agent's TLS listener.
+const AgentTLSPortName = "agent-tls"
+
+// getAgentTLSPort returns the port number for the agent-tls named port.
+// Returns 0 if the named port is not found.
+func (r *AgentCardReconciler) getAgentTLSPort(service *corev1.Service) int32 {
+	for _, port := range service.Spec.Ports {
+		if port.Name == AgentTLSPortName {
+			return port.Port
+		}
+	}
+	return 0
+}
+
 func (r *AgentCardReconciler) getSyncPeriod(agentCard *agentv1alpha1.AgentCard) time.Duration {
 	if agentCard.Spec.SyncPeriod == "" {
 		return DefaultSyncPeriod
@@ -546,7 +715,24 @@ func (r *AgentCardReconciler) getSyncPeriod(agentCard *agentv1alpha1.AgentCard) 
 }
 
 // updateAgentCardStatus persists all status fields atomically with retry.
-func (r *AgentCardReconciler) updateAgentCardStatus(ctx context.Context, agentCard *agentv1alpha1.AgentCard, cardData *agentv1alpha1.AgentCardData, protocol, cardId string, targetRef *agentv1alpha1.TargetRef, verificationResult *signature.VerificationResult, binding *bindingResult, identityMatch *bool) error {
+//
+// Condition semantics:
+//   - Verified: final trust decision used by NetworkPolicy controller and labels.
+//     True when mTLS authenticated fetch succeeds OR JWS signature + binding passes.
+//     Absent when no trust mechanism is configured.
+//   - SignatureVerified: raw JWS cryptographic outcome (informational only, not used
+//     for enforcement). Reflects whether the x5c signature is mathematically valid.
+//   - Synced: whether the agent card was successfully fetched.
+//   - Ready: composite signal — True when Synced is True AND (Verified is True or absent).
+//   - Bound: whether identity binding constraints are satisfied.
+func (r *AgentCardReconciler) updateAgentCardStatus( //nolint:gocyclo
+	ctx context.Context, agentCard *agentv1alpha1.AgentCard,
+	cardData *agentv1alpha1.AgentCardData, protocol, cardID string,
+	targetRef *agentv1alpha1.TargetRef, verificationResult *signature.VerificationResult,
+	binding *bindingResult, identityMatch *bool, mTLSVerified bool,
+	verifiedReason string, verifiedStatus metav1.ConditionStatus,
+	verifiedMessage string, attestedSpiffeID string,
+) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		latest := &agentv1alpha1.AgentCard{}
 		if err := r.Get(ctx, types.NamespacedName{
@@ -559,9 +745,9 @@ func (r *AgentCardReconciler) updateAgentCardStatus(ctx context.Context, agentCa
 		latest.Status.Card = cardData
 		latest.Status.Protocol = protocol
 		latest.Status.TargetRef = targetRef
-		if cardId != "" && cardId != latest.Status.CardId {
+		if cardID != "" && cardID != latest.Status.CardId {
 			latest.Status.LastSyncTime = &metav1.Time{Time: time.Now()}
-			latest.Status.CardId = cardId
+			latest.Status.CardId = cardID
 		} else if latest.Status.LastSyncTime == nil {
 			latest.Status.LastSyncTime = &metav1.Time{Time: time.Now()}
 		}
@@ -596,7 +782,7 @@ func (r *AgentCardReconciler) updateAgentCardStatus(ctx context.Context, agentCa
 			meta.SetStatusCondition(&latest.Status.Conditions, sigCondition)
 		}
 
-		if verificationResult != nil && !verificationResult.Verified && !r.SignatureAuditMode {
+		if verificationResult != nil && !verificationResult.Verified && !r.SignatureAuditMode && !mTLSVerified {
 			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 				Type:    "Synced",
 				Status:  metav1.ConditionFalse,
@@ -607,6 +793,8 @@ func (r *AgentCardReconciler) updateAgentCardStatus(ctx context.Context, agentCa
 			message := fmt.Sprintf("Successfully fetched agent card for %s", cardData.Name)
 			if verificationResult != nil && !verificationResult.Verified && r.SignatureAuditMode {
 				message = fmt.Sprintf("Fetched agent card for %s (signature verification failed but audit mode enabled)", cardData.Name)
+			} else if mTLSVerified && verificationResult != nil && !verificationResult.Verified {
+				message = fmt.Sprintf("Successfully fetched agent card for %s (mTLS verified, no JWS signature)", cardData.Name)
 			}
 			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 				Type:    "Synced",
@@ -616,25 +804,50 @@ func (r *AgentCardReconciler) updateAgentCardStatus(ctx context.Context, agentCa
 			})
 		}
 
+		// Verified condition: set only when a trust mechanism is active (non-empty reason).
+		if verifiedReason != "" {
+			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+				Type:    ConditionVerified,
+				Status:  verifiedStatus,
+				Reason:  verifiedReason,
+				Message: verifiedMessage,
+			})
+		}
+
+		// AttestedAgentSpiffeID from mTLS
+		if attestedSpiffeID != "" {
+			latest.Status.AttestedAgentSpiffeID = attestedSpiffeID
+		}
+
+		// Ready = Synced AND (Verified is True OR Verified was never evaluated)
+		var readyStatus metav1.ConditionStatus
+		var readyReason, readyMessage string
+		syncedCond := meta.FindStatusCondition(latest.Status.Conditions, "Synced")
+		verifiedCond := meta.FindStatusCondition(latest.Status.Conditions, ConditionVerified)
+		if syncedCond != nil && syncedCond.Status == metav1.ConditionTrue {
+			if verifiedCond == nil || verifiedCond.Status == metav1.ConditionTrue {
+				readyStatus = metav1.ConditionTrue
+				readyReason = "ReadyToServe"
+				readyMessage = "Agent index is ready for queries"
+			} else {
+				readyStatus = metav1.ConditionFalse
+				readyReason = "VerificationFailed"
+				readyMessage = "Agent synced but identity verification failed"
+			}
+		} else {
+			readyStatus = metav1.ConditionFalse
+			readyReason = "SyncFailed"
+			readyMessage = "Agent card fetch failed"
+		}
 		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 			Type:    "Ready",
-			Status:  metav1.ConditionTrue,
-			Reason:  "ReadyToServe",
-			Message: "Agent index is ready for queries",
+			Status:  readyStatus,
+			Reason:  readyReason,
+			Message: readyMessage,
 		})
 
 		if binding != nil {
 			existingBound := meta.FindStatusCondition(latest.Status.Conditions, "Bound")
-
-			if existingBound == nil {
-				agentCardLogger.Info("Identity binding is allowlist-only; SPIFFE trust bundle verification not yet available",
-					"agentCard", latest.Name)
-				if r.Recorder != nil {
-					r.Recorder.Event(agentCard, corev1.EventTypeWarning, "AllowlistOnly",
-						"Identity binding is allowlist-only; SPIFFE trust bundle verification not yet available")
-				}
-			}
-
 			newConditionStatus := metav1.ConditionFalse
 			if binding.Bound {
 				newConditionStatus = metav1.ConditionTrue
@@ -648,34 +861,7 @@ func (r *AgentCardReconciler) updateAgentCardStatus(ctx context.Context, agentCa
 					}
 				}
 			}
-
-			bindingChanged := latest.Status.BindingStatus == nil ||
-				latest.Status.BindingStatus.Bound != binding.Bound ||
-				latest.Status.BindingStatus.Reason != binding.Reason ||
-				latest.Status.BindingStatus.Message != binding.Message
-			var evalTime *metav1.Time
-			if latest.Status.BindingStatus != nil {
-				evalTime = latest.Status.BindingStatus.LastEvaluationTime
-			}
-			if bindingChanged || evalTime == nil {
-				now := metav1.Now()
-				evalTime = &now
-			}
-			latest.Status.BindingStatus = &agentv1alpha1.BindingStatus{
-				Bound:              binding.Bound,
-				Reason:             binding.Reason,
-				Message:            binding.Message,
-				LastEvaluationTime: evalTime,
-			}
-			if binding.SpiffeID != "" {
-				latest.Status.ExpectedSpiffeID = binding.SpiffeID
-			}
-			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
-				Type:    "Bound",
-				Status:  newConditionStatus,
-				Reason:  binding.Reason,
-				Message: binding.Message,
-			})
+			applyBindingToStatus(latest, binding)
 		}
 
 		latest.Status.SignatureIdentityMatch = identityMatch
@@ -860,6 +1046,58 @@ func (r *AgentCardReconciler) updateCondition(ctx context.Context, agentCard *ag
 	return nil
 }
 
+// ConditionVerified is the condition type for mTLS-verified fetch status.
+const ConditionVerified = "Verified"
+
+// setVerifiedCondition sets the Verified condition on the AgentCard status.
+func (r *AgentCardReconciler) setVerifiedCondition(
+	ctx context.Context, agentCard *agentv1alpha1.AgentCard,
+	status metav1.ConditionStatus, reason, message string,
+) error {
+	return r.updateCondition(ctx, agentCard, ConditionVerified, status, reason, message)
+}
+
+// propagateVerifiedLabel syncs the identity-verified label based on Verified status.
+// Uses per-card annotation AND-aggregation (same pattern as propagateSignatureLabel).
+func (r *AgentCardReconciler) propagateVerifiedLabel(
+	ctx context.Context, agentCard *agentv1alpha1.AgentCard,
+	workload *WorkloadInfo, verified bool,
+) error {
+	if workload == nil {
+		return nil
+	}
+	return r.propagateSignatureLabel(ctx, agentCard.Name, workload, verified)
+}
+
+// cleanupVerifiedFetchFields removes stale Phase 1 fields when verifiedFetch is disabled.
+func (r *AgentCardReconciler) cleanupVerifiedFetchFields(ctx context.Context, agentCard *agentv1alpha1.AgentCard) error {
+	latest := &agentv1alpha1.AgentCard{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      agentCard.Name,
+		Namespace: agentCard.Namespace,
+	}, latest); err != nil {
+		return err
+	}
+
+	verifiedCond := meta.FindStatusCondition(latest.Status.Conditions, ConditionVerified)
+	needsUpdate := verifiedCond != nil || latest.Status.AttestedAgentSpiffeID != ""
+	if !needsUpdate {
+		return nil
+	}
+
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      agentCard.Name,
+			Namespace: agentCard.Namespace,
+		}, latest); err != nil {
+			return err
+		}
+		meta.RemoveStatusCondition(&latest.Status.Conditions, ConditionVerified)
+		latest.Status.AttestedAgentSpiffeID = ""
+		return r.Status().Update(ctx, latest)
+	})
+}
+
 func (r *AgentCardReconciler) handleDeletion(ctx context.Context, agentCard *agentv1alpha1.AgentCard) (ctrl.Result, error) {
 	if controllerutil.ContainsFinalizer(agentCard, AgentCardFinalizer) {
 		agentCardLogger.Info("Cleaning up AgentCard", "name", agentCard.Name)
@@ -1009,7 +1247,7 @@ func (r *AgentCardReconciler) computeBinding(agentCard *agentv1alpha1.AgentCard,
 		return &bindingResult{
 			Bound:   false,
 			Reason:  ReasonNotBound,
-			Message: "No SPIFFE ID from x5c certificate chain: ensure the card is signed with a SPIRE-issued SVID",
+			Message: "No verified SPIFFE ID available: ensure the card is signed with a SPIRE-issued SVID or served over mTLS",
 		}
 	}
 
@@ -1047,6 +1285,43 @@ func (r *AgentCardReconciler) computeBinding(agentCard *agentv1alpha1.AgentCard,
 	return &bindingResult{Bound: bound, Reason: reason, Message: message, SpiffeID: verifiedSpiffeID}
 }
 
+// applyBindingToStatus writes binding fields and the Bound condition onto an AgentCard status.
+// Used by both the main status update path and the standalone error-path binding update.
+func applyBindingToStatus(latest *agentv1alpha1.AgentCard, binding *bindingResult) {
+	bindingChanged := latest.Status.BindingStatus == nil ||
+		latest.Status.BindingStatus.Bound != binding.Bound ||
+		latest.Status.BindingStatus.Reason != binding.Reason ||
+		latest.Status.BindingStatus.Message != binding.Message
+	var evalTime *metav1.Time
+	if latest.Status.BindingStatus != nil {
+		evalTime = latest.Status.BindingStatus.LastEvaluationTime
+	}
+	if bindingChanged || evalTime == nil {
+		now := metav1.Now()
+		evalTime = &now
+	}
+	latest.Status.BindingStatus = &agentv1alpha1.BindingStatus{
+		Bound:              binding.Bound,
+		Reason:             binding.Reason,
+		Message:            binding.Message,
+		LastEvaluationTime: evalTime,
+	}
+	if binding.SpiffeID != "" {
+		latest.Status.ExpectedSpiffeID = binding.SpiffeID
+	}
+
+	conditionStatus := metav1.ConditionFalse
+	if binding.Bound {
+		conditionStatus = metav1.ConditionTrue
+	}
+	meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+		Type:    "Bound",
+		Status:  conditionStatus,
+		Reason:  binding.Reason,
+		Message: binding.Message,
+	})
+}
+
 // updateBindingStatus writes binding status when the main status path is unreachable.
 func (r *AgentCardReconciler) updateBindingStatus(ctx context.Context, agentCard *agentv1alpha1.AgentCard, bound bool, reason, message, expectedSpiffeID string) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -1058,45 +1333,19 @@ func (r *AgentCardReconciler) updateBindingStatus(ctx context.Context, agentCard
 			return err
 		}
 
-		bindingChanged := latest.Status.BindingStatus == nil ||
-			latest.Status.BindingStatus.Bound != bound ||
-			latest.Status.BindingStatus.Reason != reason ||
-			latest.Status.BindingStatus.Message != message
-		var evalTime *metav1.Time
-		if latest.Status.BindingStatus != nil {
-			evalTime = latest.Status.BindingStatus.LastEvaluationTime
-		}
-		if bindingChanged || evalTime == nil {
-			now := metav1.Now()
-			evalTime = &now
-		}
-		latest.Status.BindingStatus = &agentv1alpha1.BindingStatus{
-			Bound:              bound,
-			Reason:             reason,
-			Message:            message,
-			LastEvaluationTime: evalTime,
-		}
-		if expectedSpiffeID != "" {
-			latest.Status.ExpectedSpiffeID = expectedSpiffeID
-		}
-
-		conditionStatus := metav1.ConditionFalse
-		if bound {
-			conditionStatus = metav1.ConditionTrue
-		}
-		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
-			Type:    "Bound",
-			Status:  conditionStatus,
-			Reason:  reason,
-			Message: message,
+		applyBindingToStatus(latest, &bindingResult{
+			Bound:    bound,
+			Reason:   reason,
+			Message:  message,
+			SpiffeID: expectedSpiffeID,
 		})
 
 		return r.Status().Update(ctx, latest)
 	})
 }
 
-// computeCardId returns a SHA-256 hash of the card data for drift detection.
-func (r *AgentCardReconciler) computeCardId(cardData *agentv1alpha1.AgentCardData) string {
+// computeCardID returns a SHA-256 hash of the card data for drift detection.
+func (r *AgentCardReconciler) computeCardID(cardData *agentv1alpha1.AgentCardData) string {
 	if cardData == nil {
 		return ""
 	}
@@ -1113,8 +1362,8 @@ func (r *AgentCardReconciler) computeCardId(cardData *agentv1alpha1.AgentCardDat
 //  1. The leaf SVID cert is approaching expiry (within SVIDExpiryGracePeriod).
 //  2. The trust bundle hash changed since the workload was last (re)started.
 //
-// Both feed into the same mechanism: patch the pod template annotation to trigger a rollout.
-// The init-container re-runs, fetches a fresh SVID, and re-signs the card.
+// In init-container mode, the pod template annotation is patched to trigger
+// a rollout so the init-container re-runs and fetches a fresh SVID.
 func (r *AgentCardReconciler) maybeRestartForResign(ctx context.Context, agentCard *agentv1alpha1.AgentCard, workload *WorkloadInfo, vr *signature.VerificationResult) {
 	if workload == nil || r.SignatureProvider == nil {
 		return
@@ -1281,6 +1530,16 @@ func (r *AgentCardReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.mapWorkloadToAgentCard("apps/v1", "StatefulSet")),
 			builder.WithPredicates(workloadPredicates),
 		)
+
+	if SandboxCRDExists(mgr.GetConfig()) {
+		sandboxObj := &unstructured.Unstructured{}
+		sandboxObj.SetGroupVersionKind(sandboxGVK)
+		controllerBuilder = controllerBuilder.Watches(
+			sandboxObj,
+			handler.EnqueueRequestsFromMapFunc(r.mapWorkloadToAgentCard("agents.x-k8s.io/v1alpha1", "Sandbox")),
+			builder.WithPredicates(workloadPredicates),
+		)
+	}
 
 	return controllerBuilder.
 		Named("AgentCard").

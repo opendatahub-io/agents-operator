@@ -19,6 +19,7 @@ package injector
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -44,10 +45,20 @@ type AgentRuntimeOverrides struct {
 	AdminCredentialsSecretName      *string
 	AdminCredentialsSecretNamespace *string
 
-	// Observability — from .spec.trace
-	TraceEndpoint     *string
-	TraceProtocol     *string  // "grpc" or "http"
-	TraceSamplingRate *float64 // 0.0–1.0
+	// Identity — from .spec.identity.allowedAudiences
+	AllowedAudiences []string
+
+	// AuthBridge deployment shape — from .spec.authBridgeMode
+	// Nil = no per-workload override; the namespace's
+	// authbridge-runtime-config mode (if set) or the cluster fallback
+	// applies.
+	AuthBridgeMode *string
+
+	// mTLS posture — from .spec.mtlsMode
+	// Nil = no per-workload override; the namespace's
+	// authbridge-runtime-config mtls.mode (if set) or "disabled"
+	// applies.
+	MTLSMode *string
 }
 
 // ReadAgentRuntimeOverrides reads the AgentRuntime CR for a given workload
@@ -97,28 +108,28 @@ func extractOverrides(rt *agentv1alpha1.AgentRuntime) *AgentRuntimeOverrides {
 		overrides.SpiffeTrustDomain = &td
 	}
 
-	// .spec.trace.endpoint
-	if rt.Spec.Trace != nil && rt.Spec.Trace.Endpoint != "" {
-		ep := rt.Spec.Trace.Endpoint
-		overrides.TraceEndpoint = &ep
+	// .spec.identity.allowedAudiences — clone to decouple from CR memory
+	if rt.Spec.Identity != nil && len(rt.Spec.Identity.AllowedAudiences) > 0 {
+		overrides.AllowedAudiences = slices.Clone(rt.Spec.Identity.AllowedAudiences)
 	}
 
-	// .spec.trace.protocol
-	if rt.Spec.Trace != nil && rt.Spec.Trace.Protocol != "" {
-		p := string(rt.Spec.Trace.Protocol)
-		overrides.TraceProtocol = &p
+	// .spec.authBridgeMode
+	if rt.Spec.AuthBridgeMode != "" {
+		mode := rt.Spec.AuthBridgeMode
+		overrides.AuthBridgeMode = &mode
 	}
 
-	// .spec.trace.sampling.rate
-	if rt.Spec.Trace != nil && rt.Spec.Trace.Sampling != nil {
-		rate := rt.Spec.Trace.Sampling.Rate
-		overrides.TraceSamplingRate = &rate
+	// .spec.mtlsMode
+	if rt.Spec.MTLSMode != "" {
+		mode := rt.Spec.MTLSMode
+		overrides.MTLSMode = &mode
 	}
 
 	arConfigLog.Info("AgentRuntime overrides extracted",
 		"hasSpiffeTrustDomain", overrides.SpiffeTrustDomain != nil,
 		"hasClientRegistration", overrides.ClientRegistrationProvider != nil,
-		"hasTrace", overrides.TraceEndpoint != nil)
+		"hasAuthBridgeMode", overrides.AuthBridgeMode != nil,
+		"hasMTLSMode", overrides.MTLSMode != nil)
 
 	return overrides
 }

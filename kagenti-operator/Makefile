@@ -61,6 +61,25 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd:allowDangerousTypes=true webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	$(MAKE) sync-chart-crds
+
+# sync-chart-crds keeps charts/kagenti-operator/crds/ in lockstep with
+# config/crd/bases/. Helm's crds/ directory is the install path consumers
+# get when they `helm install`; without this sync the chart copy drifts
+# silently every time a CRD field is added (which has happened multiple
+# times before — commits 677f63d, 21a2258, 4eb62af). Runs as the final
+# step of `make manifests` so the chart copy reflects the freshly
+# regenerated controller-gen output. Skips the stub `_.yaml` file
+# controller-gen sometimes emits.
+.PHONY: sync-chart-crds
+sync-chart-crds: ## Mirror config/crd/bases/ into charts/kagenti-operator/crds/.
+	@for f in $$(ls config/crd/bases/*.yaml 2>/dev/null); do \
+		base=$$(basename $$f); \
+		case $$base in \
+			_.yaml) ;; \
+			*) cp $$f ../charts/kagenti-operator/crds/$$base ;; \
+		esac; \
+	done
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.

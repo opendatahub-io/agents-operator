@@ -24,6 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -55,6 +56,8 @@ type AgentCardSyncReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets/finalizers,verbs=update
+// +kubebuilder:rbac:groups=agents.x-k8s.io,resources=sandboxes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=agents.x-k8s.io,resources=sandboxes/finalizers,verbs=update
 
 func (r *AgentCardSyncReconciler) ReconcileDeployment(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	syncLogger.V(1).Info("Reconciling Deployment for auto-sync", "namespacedName", req.NamespacedName)
@@ -93,6 +96,25 @@ func (r *AgentCardSyncReconciler) ReconcileStatefulSet(ctx context.Context, req 
 
 	gvk := appsv1.SchemeGroupVersion.WithKind("StatefulSet")
 	return r.ensureAgentCard(ctx, statefulset, gvk)
+}
+
+func (r *AgentCardSyncReconciler) ReconcileSandbox(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	syncLogger.V(1).Info("Reconciling Sandbox for auto-sync", "namespacedName", req.NamespacedName)
+
+	sbx := &unstructured.Unstructured{}
+	sbx.SetGroupVersionKind(sandboxGVK)
+	if err := r.Get(ctx, req.NamespacedName, sbx); err != nil {
+		if errors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	if !r.shouldSyncWorkload(sbx.GetLabels()) {
+		return ctrl.Result{}, nil
+	}
+
+	return r.ensureAgentCard(ctx, sbx, sandboxGVK)
 }
 
 func (r *AgentCardSyncReconciler) shouldSyncWorkload(labels map[string]string) bool {
@@ -399,6 +421,18 @@ func (r *AgentCardSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return err
 	}
 
+	if SandboxCRDExists(mgr.GetConfig()) {
+		sandboxObj := &unstructured.Unstructured{}
+		sandboxObj.SetGroupVersionKind(sandboxGVK)
+		if err := ctrl.NewControllerManagedBy(mgr).
+			Named("agentcardsync-sandbox").
+			For(sandboxObj).
+			WithEventFilter(agentLabelPredicate()).
+			Complete(&sandboxReconcilerAdapter{r}); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -416,4 +450,12 @@ type statefulSetReconcilerAdapter struct {
 
 func (a *statefulSetReconcilerAdapter) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	return a.ReconcileStatefulSet(ctx, req)
+}
+
+type sandboxReconcilerAdapter struct {
+	*AgentCardSyncReconciler
+}
+
+func (a *sandboxReconcilerAdapter) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	return a.ReconcileSandbox(ctx, req)
 }

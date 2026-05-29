@@ -411,7 +411,7 @@ func mergeDesiredClientIntoMap(m map[string]interface{}, desired *keycloakClient
 		m["attributes"] = attrs
 	}
 	for k, v := range desired.Attributes {
-		attrs[k] = []interface{}{v}
+		attrs[k] = v
 	}
 }
 

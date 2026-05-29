@@ -53,11 +53,16 @@ var (
 	// signerImage is the agentcard-signer init-container image
 	signerImage = "ghcr.io/kagenti/kagenti-operator/agentcard-signer:e2e-test"
 
-	// sidecarImages are the AuthBridge sidecar images to pull and load into Kind
+	// sidecarImages are the AuthBridge sidecar images to pull and load into Kind.
+	// kagenti-extensions ships two combined images plus proxy-init:
+	//   * authbridge-envoy: envoy-sidecar mode (Envoy + ext_proc + bundled spiffe-helper)
+	//   * authbridge:       proxy-sidecar mode (authbridge-proxy + bundled spiffe-helper)
+	//   * proxy-init:       iptables init container, envoy-sidecar mode only
+	// Spiffe-helper and client-registration are no longer separate images.
 	sidecarImages = []string{
-		"ghcr.io/kagenti/kagenti-extensions/authbridge-unified:latest",
+		"ghcr.io/kagenti/kagenti-extensions/authbridge-envoy:latest",
+		"ghcr.io/kagenti/kagenti-extensions/authbridge:latest",
 		"ghcr.io/kagenti/kagenti-extensions/proxy-init:latest",
-		"ghcr.io/kagenti/kagenti-extensions/spiffe-helper:latest",
 	}
 )
 

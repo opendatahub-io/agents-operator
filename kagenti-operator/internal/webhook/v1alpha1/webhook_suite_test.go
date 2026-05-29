@@ -123,7 +123,7 @@ var _ = BeforeSuite(func() {
 	// Create pod mutator for tests
 	podMutator := injector.NewPodMutator(
 		k8sClient,
-		true,
+		k8sClient,
 		func() *config.PlatformConfig { return config.CompiledDefaults() },
 		func() *config.FeatureGates { return config.DefaultFeatureGates() },
 	)

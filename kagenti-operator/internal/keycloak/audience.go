@@ -39,12 +39,15 @@ type clientScopeCreateRep struct {
 }
 
 type protocolMapperRep struct {
+	ID              string            `json:"id,omitempty"`
 	Name            string            `json:"name"`
 	Protocol        string            `json:"protocol"`
 	ProtocolMapper  string            `json:"protocolMapper"`
 	ConsentRequired bool              `json:"consentRequired"`
 	Config          map[string]string `json:"config"`
 }
+
+const oidcAudienceMapper = "oidc-audience-mapper"
 
 // AudienceScopeName derives the realm client-scope name from CLIENT_NAME (same as Python).
 func AudienceScopeName(clientName string) string {
@@ -63,6 +66,9 @@ func (a *Admin) EnsureAudienceScope(ctx context.Context, token string, p Audienc
 	scopeID, err := a.getOrCreateAudienceClientScope(ctx, token, p.Realm, scopeName, p.AudienceClientID)
 	if err != nil {
 		return err
+	}
+	if err := a.verifyAudienceMapper(ctx, token, p.Realm, scopeID, scopeName, p.AudienceClientID); err != nil {
+		return fmt.Errorf("verify audience mapper for scope %q: %w", scopeName, err)
 	}
 	_ = a.putRealmDefaultDefaultClientScope(ctx, token, p.Realm, scopeID)
 	for _, plat := range p.PlatformClientIDs {
@@ -85,7 +91,9 @@ func (a *Admin) getOrCreateAudienceClientScope(ctx context.Context, token, realm
 		return "", err
 	}
 	if scopeID != "" {
-		_ = a.ensureAudienceMapper(ctx, token, realm, scopeID, scopeName, audience)
+		// Scope already exists — do NOT touch its mappers here.
+		// verifyAudienceMapper handles mapper verification via GET+PUT (never POST for existing scopes).
+		// This matches the Python AuthBridge sidecar which only adds mappers during initial creation.
 		return scopeID, nil
 	}
 
@@ -103,7 +111,12 @@ func (a *Admin) getOrCreateAudienceClientScope(ctx context.Context, token, realm
 	if scopeID == "" {
 		return "", fmt.Errorf("create client scope %q returned empty id", scopeName)
 	}
-	_ = a.ensureAudienceMapper(ctx, token, realm, scopeID, scopeName, audience)
+	if err := a.ensureAudienceMapper(ctx, token, realm, scopeID, scopeName, audience); err != nil {
+		// Mapper creation failed for a brand-new scope. This can happen if createClientScope
+		// hit a 409 race and another reconcile already created the mapper. Non-fatal —
+		// verifyAudienceMapper will repair below in this reconcile.
+		return scopeID, nil
+	}
 	return scopeID, nil
 }
 
@@ -175,7 +188,7 @@ func (a *Admin) ensureAudienceMapper(ctx context.Context, token, realm, scopeID,
 	mapper := protocolMapperRep{
 		Name:            scopeName,
 		Protocol:        "openid-connect",
-		ProtocolMapper:  "oidc-audience-mapper",
+		ProtocolMapper:  oidcAudienceMapper,
 		ConsentRequired: false,
 		Config: map[string]string{
 			"included.custom.audience": audience,
@@ -202,8 +215,12 @@ func (a *Admin) ensureAudienceMapper(ctx context.Context, token, realm, scopeID,
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusConflict {
+	if resp.StatusCode == http.StatusCreated {
 		return nil
+	}
+	if resp.StatusCode == http.StatusConflict {
+		// Mapper already exists — check if its audience needs updating.
+		return a.updateAudienceMapperIfNeeded(ctx, token, realm, scopeID, scopeName, audience)
 	}
 	body, _ := io.ReadAll(resp.Body)
 	// Mapper may already exist — treat other errors as non-fatal (Python logs and continues).
@@ -211,6 +228,217 @@ func (a *Admin) ensureAudienceMapper(ctx context.Context, token, realm, scopeID,
 		return fmt.Errorf("keycloak add audience mapper: status %d: %s", resp.StatusCode, truncate(body, 256))
 	}
 	return nil
+}
+
+// listAudienceMappers fetches all protocol mappers for a client scope.
+func (a *Admin) listAudienceMappers(ctx context.Context, token, realm, scopeID string) ([]protocolMapperRep, error) {
+	base := trimBaseURL(a.BaseURL)
+	endpoint := base + "/admin/realms/" + url.PathEscape(realm) + "/client-scopes/" + url.PathEscape(scopeID) + "/protocol-mappers/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := a.httpc().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("keycloak list mappers: status %d: %s", resp.StatusCode, truncate(body, 256))
+	}
+
+	var mappers []protocolMapperRep
+	if err := json.Unmarshal(body, &mappers); err != nil {
+		return nil, fmt.Errorf("keycloak list mappers decode: %w", err)
+	}
+	return mappers, nil
+}
+
+// updateAudienceMapperIfNeeded fetches the existing mapper for the scope and updates
+// its included.custom.audience if it differs from the desired value.
+// If a mapper with the correct name exists but has the wrong ProtocolMapper type
+// (e.g. corrupted state), it deletes the stale mapper and re-creates via best-effort POST.
+// If no mapper is found at all (ghost 409 from Keycloak's name index), returns nil
+// to allow verifyAudienceMapper to retry on the next reconcile.
+func (a *Admin) updateAudienceMapperIfNeeded(ctx context.Context, token, realm, scopeID, scopeName, audience string) error {
+	mappers, err := a.listAudienceMappers(ctx, token, realm, scopeID)
+	if err != nil {
+		return err
+	}
+
+	for i := range mappers {
+		if mappers[i].Name != scopeName {
+			continue
+		}
+		if mappers[i].ProtocolMapper != oidcAudienceMapper {
+			if err := a.deleteMapper(ctx, token, realm, scopeID, mappers[i].ID); err != nil {
+				return fmt.Errorf("delete stale mapper %q (type %q) for scope %q: %w",
+					mappers[i].Name, mappers[i].ProtocolMapper, scopeName, err)
+			}
+			return a.createAudienceMapperBestEffort(ctx, token, realm, scopeID, scopeName, audience)
+		}
+		if mappers[i].Config == nil {
+			continue
+		}
+		if mappers[i].Config["included.custom.audience"] == audience {
+			return nil
+		}
+		mappers[i].Config["included.custom.audience"] = audience
+		return a.putAudienceMapper(ctx, token, realm, scopeID, mappers[i])
+	}
+	// No mapper found despite 409 — Keycloak's internal name index is stale.
+	// Return nil; verifyAudienceMapper will retry on next reconcile.
+	return nil
+}
+
+func (a *Admin) deleteMapper(ctx context.Context, token, realm, scopeID, mapperID string) error {
+	base := trimBaseURL(a.BaseURL)
+	endpoint := base + "/admin/realms/" + url.PathEscape(realm) + "/client-scopes/" + url.PathEscape(scopeID) + "/protocol-mappers/models/" + url.PathEscape(mapperID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := a.httpc().Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusNoContent || (resp.StatusCode >= 200 && resp.StatusCode < 300) {
+		return nil
+	}
+	body, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("keycloak delete mapper: status %d: %s", resp.StatusCode, truncate(body, 256))
+}
+
+// createAudienceMapperBestEffort posts a new audience mapper. On 409 (conflict), it verifies
+// the mapper actually exists with the correct audience — if it does, that's fine (another
+// reconcile got there first). If 409 but no mapper is visible (Keycloak ghost-conflict),
+// it returns nil and the reconciler will retry on the next pass.
+func (a *Admin) createAudienceMapperBestEffort(ctx context.Context, token, realm, scopeID, scopeName, audience string) error {
+	mapper := protocolMapperRep{
+		Name:            scopeName,
+		Protocol:        "openid-connect",
+		ProtocolMapper:  oidcAudienceMapper,
+		ConsentRequired: false,
+		Config: map[string]string{
+			"included.custom.audience": audience,
+			"id.token.claim":           "false",
+			"access.token.claim":       "true",
+			"userinfo.token.claim":     "false",
+		},
+	}
+	payload, err := json.Marshal(mapper)
+	if err != nil {
+		return err
+	}
+	base := trimBaseURL(a.BaseURL)
+	endpoint := base + "/admin/realms/" + url.PathEscape(realm) + "/client-scopes/" + url.PathEscape(scopeID) + "/protocol-mappers/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := a.httpc().Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusCreated || (resp.StatusCode >= 200 && resp.StatusCode < 300) {
+		return nil
+	}
+	if resp.StatusCode == http.StatusConflict {
+		// 409 can mean: (a) another reconcile created it already, or (b) Keycloak ghost index.
+		// Verify via GET — if the mapper exists with correct audience, success.
+		mappers, err := a.listAudienceMappers(ctx, token, realm, scopeID)
+		if err != nil {
+			return nil
+		}
+		for i := range mappers {
+			if mappers[i].Name == scopeName && mappers[i].ProtocolMapper == oidcAudienceMapper {
+				if mappers[i].Config != nil && mappers[i].Config["included.custom.audience"] == audience {
+					return nil
+				}
+				// Mapper exists but wrong audience — update it.
+				if mappers[i].Config == nil {
+					mappers[i].Config = make(map[string]string)
+				}
+				mappers[i].Config["included.custom.audience"] = audience
+				return a.putAudienceMapper(ctx, token, realm, scopeID, mappers[i])
+			}
+		}
+		// Ghost-409: mapper not visible. Return nil; next reconcile will retry.
+		return nil
+	}
+	return fmt.Errorf("keycloak create mapper best-effort: status %d: %s", resp.StatusCode, truncate(body, 256))
+}
+
+func (a *Admin) putAudienceMapper(ctx context.Context, token, realm, scopeID string, mapper protocolMapperRep) error {
+	payload, err := json.Marshal(mapper)
+	if err != nil {
+		return err
+	}
+	base := trimBaseURL(a.BaseURL)
+	endpoint := base + "/admin/realms/" + url.PathEscape(realm) + "/client-scopes/" + url.PathEscape(scopeID) + "/protocol-mappers/models/" + url.PathEscape(mapper.ID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := a.httpc().Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusNoContent || (resp.StatusCode >= 200 && resp.StatusCode < 300) {
+		return nil
+	}
+	body, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("keycloak update audience mapper: status %d: %s", resp.StatusCode, truncate(body, 256))
+}
+
+// verifyAudienceMapper is a defense-in-depth check that runs on every reconcile.
+// It GETs the mappers for a scope and ensures the oidc-audience-mapper exists with the
+// correct audience. If the audience is stale, it PUTs an update. If a mapper with the
+// correct name but wrong type exists, it deletes and re-creates. If the mapper is missing
+// entirely, it attempts a POST but treats 409 as success (avoids ghost-409 cascades).
+func (a *Admin) verifyAudienceMapper(ctx context.Context, token, realm, scopeID, scopeName, audience string) error {
+	mappers, err := a.listAudienceMappers(ctx, token, realm, scopeID)
+	if err != nil {
+		return err
+	}
+
+	for i := range mappers {
+		if mappers[i].Name != scopeName {
+			continue
+		}
+		if mappers[i].ProtocolMapper != oidcAudienceMapper {
+			if err := a.deleteMapper(ctx, token, realm, scopeID, mappers[i].ID); err != nil {
+				return fmt.Errorf("delete stale mapper %q (type %q): %w",
+					mappers[i].Name, mappers[i].ProtocolMapper, err)
+			}
+			return a.createAudienceMapperBestEffort(ctx, token, realm, scopeID, scopeName, audience)
+		}
+		if mappers[i].Config != nil && mappers[i].Config["included.custom.audience"] == audience {
+			return nil
+		}
+		if mappers[i].Config == nil {
+			mappers[i].Config = make(map[string]string)
+		}
+		mappers[i].Config["included.custom.audience"] = audience
+		return a.putAudienceMapper(ctx, token, realm, scopeID, mappers[i])
+	}
+	// Mapper not found — create it. Treat 409 as success (Keycloak name-index ghost).
+	return a.createAudienceMapperBestEffort(ctx, token, realm, scopeID, scopeName, audience)
 }
 
 func (a *Admin) putRealmDefaultDefaultClientScope(ctx context.Context, token, realm, scopeID string) error {

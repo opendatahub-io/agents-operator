@@ -42,8 +42,11 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	"github.com/spiffe/go-spiffe/v2/workloadapi"
+
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
 	"github.com/kagenti/operator/internal/agentcard"
+	"github.com/kagenti/operator/internal/bootstrap"
 	"github.com/kagenti/operator/internal/controller"
 	"github.com/kagenti/operator/internal/keycloak"
 	"github.com/kagenti/operator/internal/mlflow"
@@ -68,6 +71,17 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
+// getOperatorNamespace returns the namespace the operator is running in.
+// Reads from POD_NAMESPACE environment variable (set via downward API in deployment),
+// falling back to kagenti-system if not set.
+func getOperatorNamespace() string {
+	if ns := os.Getenv("POD_NAMESPACE"); ns != "" {
+		return ns
+	}
+	setupLog.Info("POD_NAMESPACE not set, using default", "default", "kagenti-system")
+	return "kagenti-system"
+}
+
 // nolint:gocyclo
 func main() {
 	var metricsAddr string
@@ -86,8 +100,13 @@ func main() {
 	var requireA2ASignature bool
 	var signatureAuditMode bool
 	var enforceNetworkPolicies bool
-	var enableOperatorClientRegistration bool
 	var enableMLflow bool
+	var enableOtelBootstrap bool
+
+	var enableCardDiscovery bool
+
+	var enableVerifiedFetch bool
+	var verifiedFetchSpiffeSocket string
 
 	var spireTrustDomain string
 	var spireTrustBundleConfigMapName string
@@ -114,7 +133,7 @@ func main() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.BoolVar(&enableClientRegistration, "enable-client-registration", true,
-		"If set, AuthBridge webhook will register tool clients in Keycloak")
+		"Enable operator-managed Keycloak client registration for agent/tool workloads")
 	flag.StringVar(&configPath, "config-path", "/etc/kagenti/config.yaml", "Path to platform config file")
 	flag.StringVar(&featureGatesPath, "feature-gates-path",
 		"/etc/kagenti/feature-gates/feature-gates.yaml", "Path to feature gates config file")
@@ -124,11 +143,18 @@ func main() {
 		"When true, log signature verification failures but don't block (use for rollout)")
 	flag.BoolVar(&enforceNetworkPolicies, "enforce-network-policies", false,
 		"Create NetworkPolicies to restrict traffic for agents with unverified signatures")
-	flag.BoolVar(&enableOperatorClientRegistration, "enable-operator-client-registration", false,
-		"Reconcile Keycloak client registration for agent/tool workloads unless "+
-			"kagenti.io/client-registration-inject=true (legacy sidecar)")
 	flag.BoolVar(&enableMLflow, "enable-mlflow", false,
 		"Enable MLflow experiment tracking integration")
+	flag.BoolVar(&enableOtelBootstrap, "enable-otel-bootstrap", false,
+		"Enable OTel collector bootstrap (ingress CA trust and ConfigMap assembly) at startup")
+
+	flag.BoolVar(&enableCardDiscovery, "enable-card-discovery", false,
+		"Enable automatic agent card discovery from AgentRuntime workloads into status.card")
+	flag.BoolVar(&enableVerifiedFetch, "enable-verified-fetch", false,
+		"Enable mTLS-authenticated fetch of agent cards via SPIFFE identity")
+	flag.StringVar(&verifiedFetchSpiffeSocket, "verified-fetch-spiffe-socket",
+		"unix:///spiffe-workload-api/spire-agent.sock",
+		"SPIFFE Workload API socket path for verified fetch")
 
 	flag.StringVar(&spireTrustDomain, "spire-trust-domain", "",
 		"SPIRE trust domain for identity binding (e.g. 'example.org')")
@@ -183,8 +209,8 @@ func main() {
 		setupLog.Info("Feature gates updated",
 			"globalEnabled", fg.GlobalEnabled,
 			"envoyProxy", fg.EnvoyProxy,
-			"spiffeHelper", fg.SpiffeHelper,
-			"clientRegistration", fg.ClientRegistration)
+			"injectTools", fg.InjectTools,
+			"perWorkloadConfigResolution", fg.PerWorkloadConfigResolution)
 	})
 	if err := featureGateLoader.Watch(ctx); err != nil {
 		setupLog.Error(err, "Failed to start feature gates watcher")
@@ -279,21 +305,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	if !requireA2ASignature {
-		setupLog.Info("WARNING: --require-a2a-signature is false. Identity binding requires " +
-			"--require-a2a-signature=true to function. AgentCards with spec.identityBinding " +
-			"will always report NotBound.")
+	if !requireA2ASignature && !enableVerifiedFetch {
+		setupLog.Info("WARNING: Neither --require-a2a-signature nor --enable-verified-fetch is set. " +
+			"Identity binding requires at least one trust mechanism to function. " +
+			"AgentCards with spec.identityBinding will report NotBound.")
 	}
 
 	var sigProvider signature.Provider
 	if requireA2ASignature {
 		if spireTrustDomain == "" {
-			setupLog.Error(errors.New("missing required flag"), "--spire-trust-domain is required when --require-a2a-signature=true")
+			setupLog.Error(errors.New("missing required flag"),
+				"--spire-trust-domain is required when --require-a2a-signature=true")
 			os.Exit(1)
 		}
 		if spireTrustBundleConfigMapName == "" || spireTrustBundleConfigMapNS == "" {
 			setupLog.Error(errors.New("missing required flags"),
-				"--spire-trust-bundle-configmap and --spire-trust-bundle-configmap-namespace are required when --require-a2a-signature=true")
+				"--spire-trust-bundle-configmap and --spire-trust-bundle-configmap-namespace "+
+					"are required when --require-a2a-signature=true")
 			os.Exit(1)
 		}
 
@@ -318,17 +346,57 @@ func main() {
 			"auditMode", signatureAuditMode)
 	}
 
-	if err = (&controller.AgentCardReconciler{
+	agentFetcher := agentcard.NewConfigMapFetcher(mgr.GetAPIReader())
+
+	var authenticatedFetcher agentcard.AuthenticatedFetcher
+	if enableVerifiedFetch {
+		fetchCtx, fetchCancel := context.WithTimeout(ctx, 30*time.Second)
+		fetchX509Source, fetchSourceErr := workloadapi.NewX509Source(
+			fetchCtx,
+			workloadapi.WithClientOptions(workloadapi.WithAddr(verifiedFetchSpiffeSocket)),
+		)
+		fetchCancel()
+
+		if fetchSourceErr != nil {
+			setupLog.Info("WARNING: SPIRE unavailable for verified fetch, falling back to default fetcher",
+				"error", fetchSourceErr.Error(),
+				"socket", verifiedFetchSpiffeSocket)
+			enableVerifiedFetch = false
+		} else {
+			td := spireTrustDomain
+			if td == "" {
+				setupLog.Error(errors.New("missing required flag"),
+					"--spire-trust-domain is required when --enable-verified-fetch=true")
+				os.Exit(1)
+			}
+			fetcher, fetcherErr := agentcard.NewSpiffeFetcher(fetchX509Source, td)
+			if fetcherErr != nil {
+				setupLog.Error(fetcherErr, "Failed to create authenticated fetcher")
+				os.Exit(1)
+			}
+			authenticatedFetcher = fetcher
+			defer fetchX509Source.Close() //nolint:errcheck
+			setupLog.Info("Verified fetch enabled (mTLS via SPIFFE)",
+				"socket", verifiedFetchSpiffeSocket,
+				"trustDomain", td)
+		}
+	}
+
+	agentCardReconciler := &controller.AgentCardReconciler{
 		Client:                mgr.GetClient(),
 		Scheme:                mgr.GetScheme(),
 		Recorder:              mgr.GetEventRecorderFor("agentcard-controller"),
-		AgentFetcher:          agentcard.NewConfigMapFetcher(mgr.GetAPIReader()),
+		AgentFetcher:          agentFetcher,
+		AuthenticatedFetcher:  authenticatedFetcher,
+		EnableVerifiedFetch:   enableVerifiedFetch,
 		SignatureProvider:     sigProvider,
 		RequireSignature:      requireA2ASignature,
 		SignatureAuditMode:    signatureAuditMode,
 		SpireTrustDomain:      spireTrustDomain,
 		SVIDExpiryGracePeriod: svidExpiryGracePeriod,
-	}).SetupWithManager(mgr); err != nil {
+	}
+
+	if err = agentCardReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AgentCard")
 		os.Exit(1)
 	}
@@ -338,6 +406,7 @@ func main() {
 			Client:                 mgr.GetClient(),
 			Scheme:                 mgr.GetScheme(),
 			EnforceNetworkPolicies: enforceNetworkPolicies,
+			OperatorNamespace:      os.Getenv("POD_NAMESPACE"),
 		}
 		npReconciler.DiscoverKubeAPIServerCIDRs(
 			context.Background(), mgr.GetAPIReader(),
@@ -346,7 +415,7 @@ func main() {
 			setupLog.Error(err, "unable to create controller", "controller", "AgentCardNetworkPolicy")
 			os.Exit(1)
 		}
-		setupLog.Info("Network policy enforcement enabled for signature verification")
+		setupLog.Info("Network policy enforcement enabled for identity verification")
 	}
 
 	if err = (&controller.AgentCardSyncReconciler{
@@ -358,11 +427,24 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controller.AgentRuntimeReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("agentruntime-controller"),
-	}).SetupWithManager(mgr); err != nil {
+	artReconciler := &controller.AgentRuntimeReconciler{
+		Client:              mgr.GetClient(),
+		APIReader:           mgr.GetAPIReader(),
+		Scheme:              mgr.GetScheme(),
+		Recorder:            mgr.GetEventRecorderFor("agentruntime-controller"),
+		EnableCardDiscovery: enableCardDiscovery,
+		SpireTrustDomain:    spireTrustDomain,
+		GetFeatureGates:     featureGateLoader.Get,
+	}
+	if enableCardDiscovery {
+		artReconciler.AgentFetcher = agentFetcher
+		artReconciler.SignatureProvider = sigProvider
+		if authenticatedFetcher != nil {
+			artReconciler.AuthenticatedFetcher = authenticatedFetcher
+		}
+		setupLog.Info("Card discovery enabled for AgentRuntime controller")
+	}
+	if err = artReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AgentRuntime")
 		os.Exit(1)
 	}
@@ -379,11 +461,15 @@ func main() {
 		setupLog.Info("MLflow experiment tracking controller enabled")
 	}
 
-	if enableOperatorClientRegistration {
+	if enableClientRegistration {
+		operatorNS := getOperatorNamespace()
+		setupLog.Info("Client registration controller will read keycloak-admin-secret from operator namespace",
+			"namespace", operatorNS)
 		if err = (&controller.ClientRegistrationReconciler{
 			Client:                  mgr.GetClient(),
 			APIReader:               mgr.GetAPIReader(),
 			Scheme:                  mgr.GetScheme(),
+			OperatorNamespace:       operatorNS,
 			SpireTrustDomain:        spireTrustDomain,
 			KeycloakAdminTokenCache: &keycloak.CachedAdminTokenProvider{},
 		}).SetupWithManager(mgr); err != nil {
@@ -415,7 +501,7 @@ func main() {
 	if authBridgeWebhooksEnabled() {
 		podMutator := injector.NewPodMutator(
 			mgr.GetClient(),
-			enableClientRegistration,
+			mgr.GetAPIReader(),
 			configLoader.Get,
 			featureGateLoader.Get,
 		)
@@ -435,6 +521,21 @@ func main() {
 		}
 	}
 	// +kubebuilder:scaffold:builder
+
+	if enableOtelBootstrap {
+		otelBootstrap := &bootstrap.OtelBootstrapRunnable{
+			Client:    mgr.GetClient(),
+			APIReader: mgr.GetAPIReader(),
+			Config:    mgr.GetConfig(),
+			Namespace: getOperatorNamespace(),
+			Log:       ctrl.Log.WithName("bootstrap"),
+		}
+		if err := mgr.Add(otelBootstrap); err != nil {
+			setupLog.Error(err, "unable to add OTel bootstrap runnable")
+			os.Exit(1)
+		}
+		setupLog.Info("OTel collector bootstrap enabled")
+	}
 
 	if metricsCertWatcher != nil {
 		setupLog.Info("Adding metrics certificate watcher to manager")

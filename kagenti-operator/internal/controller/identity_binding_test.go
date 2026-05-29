@@ -178,11 +178,11 @@ var _ = Describe("Identity Binding — Trust Domain Only", func() {
 				URL:         "http://localhost:8000",
 			}
 
-			cardId1 := reconciler.computeCardId(cardData)
-			cardId2 := reconciler.computeCardId(cardData)
+			cardID1 := reconciler.computeCardID(cardData)
+			cardID2 := reconciler.computeCardID(cardData)
 
-			Expect(cardId1).NotTo(BeEmpty())
-			Expect(cardId1).To(Equal(cardId2))
+			Expect(cardID1).NotTo(BeEmpty())
+			Expect(cardID1).To(Equal(cardID2))
 		})
 
 		It("should compute different card ID for different card data", func() {
@@ -201,12 +201,12 @@ var _ = Describe("Identity Binding — Trust Domain Only", func() {
 				Version: "2.0.0",
 			}
 
-			cardId1 := reconciler.computeCardId(cardData1)
-			cardId2 := reconciler.computeCardId(cardData2)
+			cardID1 := reconciler.computeCardID(cardData1)
+			cardID2 := reconciler.computeCardID(cardData2)
 
-			Expect(cardId1).NotTo(BeEmpty())
-			Expect(cardId2).NotTo(BeEmpty())
-			Expect(cardId1).NotTo(Equal(cardId2))
+			Expect(cardID1).NotTo(BeEmpty())
+			Expect(cardID2).NotTo(BeEmpty())
+			Expect(cardID1).NotTo(Equal(cardID2))
 		})
 	})
 })

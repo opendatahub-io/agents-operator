@@ -1,0 +1,23 @@
+# AgentRuntime with OCI skill images: mounts skill OCI images as ImageVolumes.
+# Requires: skillImageVolumes feature gate enabled, Kubernetes 1.31+.
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: resume-agent-runtime
+  namespace: default
+  labels:
+    app.kubernetes.io/name: resume-agent
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: resume-agent
+  skills:
+    - name: resume-reviewer
+      image: ghcr.io/redhat-et/skillimage/resume-reviewer:v1.0.0
+      mountPath: /agent/skills/resume-reviewer
+    - name: blog-writer
+      image: ghcr.io/redhat-et/skillimage/blog-writer:latest
+      mountPath: /agent/skills/blog-writer
+      pullPolicy: Always

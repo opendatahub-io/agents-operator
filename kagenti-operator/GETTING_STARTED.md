@@ -1,6 +1,6 @@
 # Getting Started with Kagenti Operator
 
-> **Note**: This guide assumes you have already installed the Kagenti platform using the [Kagenti installer](https://github.com/kagenti/kagenti/blob/main/deployments/ansible/README.md).
+> **Note**: This guide assumes you have already installed the Kagenti platform on your cluster. For OpenShift, use [`scripts/ocp/setup-kagenti.sh`](https://github.com/kagenti/kagenti/blob/main/scripts/ocp/setup-kagenti.sh) — the recommended installer for OCP deployments. For plain Kubernetes, install the operator directly via Helm (see the [Quick Start](../README.md#quick-start) in the root README).
 
 ## Prerequisites
 
@@ -42,7 +42,7 @@ This scenario demonstrates the complete lifecycle of an AI agent deployment on t
 ### Kagenti Operator
 The Kagenti Operator discovers, indexes, and secures AI agents deployed in Kubernetes. There are two ways to enroll workloads:
 
-1. **AgentRuntime CR (Recommended)** — Create a clean Deployment and an `AgentRuntime` CR pointing to it. The controller applies labels and triggers sidecar injection automatically. Your workload manifests stay free of kagenti-specific labels.
+1. **AgentRuntime CR (Recommended)** — Create a Deployment with a `protocol.kagenti.io/a2a` label and an `AgentRuntime` CR pointing to it. The controller applies `kagenti.io/type` labels and triggers sidecar injection automatically. The protocol label enables automatic AgentCard creation for agent discovery.
 2. **Manual labels** — Add the `kagenti.io/type: agent` label directly to your Deployment or StatefulSet. This is simpler for quick tests but does not provide identity or observability configuration.
 
 > **Note:** The `Agent` Custom Resource is deprecated and will be removed in a future release.
@@ -51,9 +51,9 @@ The Kagenti Operator discovers, indexes, and secures AI agents deployed in Kuber
 
 ## Deploy an Agent with AgentRuntime (Recommended)
 
-The AgentRuntime approach keeps your workload manifests clean — no kagenti labels required. The controller applies labels, computes a config hash, and triggers the AuthBridge webhook to inject sidecars.
+The AgentRuntime approach requires only a `protocol.kagenti.io/a2a` label on your Deployment — the controller applies `kagenti.io/type`, computes a config hash, and triggers the AuthBridge webhook to inject sidecars. The protocol label tells the AgentCard sync controller which protocol the agent speaks, enabling automatic discovery.
 
-### Step 1: Deploy a Clean Deployment
+### Step 1: Deploy a Deployment with Protocol Label
 
 ```yaml
 kubectl apply -f - <<EOF
@@ -64,6 +64,7 @@ metadata:
   namespace: team1
   labels:
     app.kubernetes.io/name: weather-agent
+    protocol.kagenti.io/a2a: ""
 spec:
   replicas: 1
   selector:
@@ -155,16 +156,14 @@ kubectl get pods -n team1 -l kagenti.io/type=agent -o jsonpath='{.items[0].spec.
 
 ### Updating Configuration
 
-When you update the AgentRuntime CR (e.g., changing the trust domain or trace endpoint), the controller recomputes the config hash and triggers a rolling update automatically:
+When you update the AgentRuntime CR (e.g., changing the trust domain), the controller recomputes the config hash and triggers a rolling update automatically:
 
 ```bash
 kubectl patch agentruntime weather-agent-runtime -n team1 --type merge -p '
 spec:
-  trace:
-    endpoint: otel-collector.observability.svc.cluster.local:4317
-    protocol: grpc
-    sampling:
-      rate: 0.5
+  identity:
+    spiffe:
+      trustDomain: custom.example.com
 '
 ```
 

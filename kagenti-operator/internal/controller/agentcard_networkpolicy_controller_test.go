@@ -39,6 +39,7 @@ func newNPReconciler(enforce bool) *AgentCardNetworkPolicyReconciler {
 		Client:                 k8sClient,
 		Scheme:                 k8sClient.Scheme(),
 		EnforceNetworkPolicies: enforce,
+		OperatorNamespace:      "kagenti-operator-system",
 		KubeAPIServerCIDRs:     []string{"10.0.0.1/32", "10.0.0.2/32"},
 	}
 }
@@ -71,6 +72,33 @@ func createCardWithStatus(name, ns, deploymentName string, validSig *bool, ident
 	if validSig != nil || identityMatch != nil {
 		card.Status.ValidSignature = validSig
 		card.Status.SignatureIdentityMatch = identityMatch
+
+		verified := false
+		if validSig != nil && *validSig {
+			verified = true
+		}
+		if binding != nil && identityMatch != nil {
+			if *identityMatch {
+				verified = true
+			} else if binding.Strict {
+				verified = false
+			} else {
+				verified = true
+			}
+		}
+		verifiedStatus := metav1.ConditionFalse
+		reason := "SignatureInvalid"
+		if verified {
+			verifiedStatus = metav1.ConditionTrue
+			reason = "SignatureVerified"
+		}
+		card.Status.Conditions = []metav1.Condition{{
+			Type:               ConditionVerified,
+			Status:             verifiedStatus,
+			Reason:             reason,
+			Message:            "test",
+			LastTransitionTime: metav1.Now(),
+		}}
 		ExpectWithOffset(1, k8sClient.Status().Update(ctx, card)).To(Succeed())
 	}
 }
@@ -223,7 +251,20 @@ var _ = Describe("AgentCardNetworkPolicyReconciler", func() {
 			Expect(policyHasVerifiedPodIngress(p)).To(BeTrue())
 		})
 
-		It("should create restrictive policy when SignatureIdentityMatch=false", func() {
+		It("should create restrictive policy when SignatureIdentityMatch=false and strict=true", func() {
+			strictBinding := &agentv1alpha1.IdentityBinding{TrustDomain: "test.local", Strict: true}
+			createDeploymentWithService(ctx, deploymentName, namespace)
+			createCardWithStatus(agentCardName, namespace, deploymentName, nil, ptr.To(false), strictBinding)
+
+			r := newNPReconciler(true)
+			reconcileNP(r, agentCardName, namespace)
+			reconcileNP(r, agentCardName, namespace)
+
+			p := getPolicy(deploymentName, namespace)
+			Expect(p.Spec.Ingress[0].From[0].PodSelector).To(BeNil())
+		})
+
+		It("should create permissive policy when SignatureIdentityMatch=false and strict=false", func() {
 			createDeploymentWithService(ctx, deploymentName, namespace)
 			createCardWithStatus(agentCardName, namespace, deploymentName, nil, ptr.To(false), binding)
 
@@ -232,7 +273,8 @@ var _ = Describe("AgentCardNetworkPolicyReconciler", func() {
 			reconcileNP(r, agentCardName, namespace)
 
 			p := getPolicy(deploymentName, namespace)
-			Expect(p.Spec.Ingress[0].From[0].PodSelector).To(BeNil())
+			Expect(p.Spec.Ingress[0].From).To(HaveLen(3))
+			Expect(policyHasVerifiedPodIngress(p)).To(BeTrue())
 		})
 	})
 
@@ -262,6 +304,12 @@ var _ = Describe("AgentCardNetworkPolicyReconciler", func() {
 			card := &agentv1alpha1.AgentCard{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentCardName, Namespace: namespace}, card)).To(Succeed())
 			card.Status.ValidSignature = ptr.To(false)
+			for i := range card.Status.Conditions {
+				if card.Status.Conditions[i].Type == ConditionVerified {
+					card.Status.Conditions[i].Status = metav1.ConditionFalse
+					card.Status.Conditions[i].Reason = "SignatureInvalid"
+				}
+			}
 			Expect(k8sClient.Status().Update(ctx, card)).To(Succeed())
 
 			reconcileNP(r, agentCardName, namespace)
@@ -334,4 +382,118 @@ var _ = Describe("AgentCardNetworkPolicyReconciler", func() {
 			Expect(err).To(HaveOccurred())
 		})
 	})
+
+	Context("Verified condition (Phase 1 mTLS path)", func() {
+		const (
+			deploymentName = "np-verified-cond-agent"
+			agentCardName  = "np-verified-cond-card"
+			namespace      = "default"
+		)
+
+		AfterEach(func() {
+			cleanupResource(ctx, &agentv1alpha1.AgentCard{}, agentCardName, namespace)
+			cleanupResource(ctx, &appsv1.Deployment{}, deploymentName, namespace)
+			cleanupResource(ctx, &corev1.Service{}, deploymentName, namespace)
+		})
+
+		It("should create permissive policy when Verified condition is True", func() {
+			createDeploymentWithService(ctx, deploymentName, namespace)
+			createCardWithVerifiedCondition(agentCardName, namespace, deploymentName, metav1.ConditionTrue)
+
+			r := newNPReconciler(true)
+			reconcileNP(r, agentCardName, namespace)
+			reconcileNP(r, agentCardName, namespace)
+
+			p := getPolicy(deploymentName, namespace)
+			Expect(p.Spec.Ingress[0].From).To(HaveLen(3))
+			Expect(policyHasVerifiedPodIngress(p)).To(BeTrue())
+		})
+
+		It("should create restrictive policy when Verified condition is False", func() {
+			createDeploymentWithService(ctx, deploymentName, namespace)
+			createCardWithVerifiedCondition(agentCardName, namespace, deploymentName, metav1.ConditionFalse)
+
+			r := newNPReconciler(true)
+			reconcileNP(r, agentCardName, namespace)
+			reconcileNP(r, agentCardName, namespace)
+
+			p := getPolicy(deploymentName, namespace)
+			Expect(p.Spec.Ingress[0].From).To(HaveLen(2))
+			Expect(p.Spec.Ingress[0].From[0].PodSelector).To(BeNil())
+		})
+
+		It("should be permissive when Verified condition is True (set via signature)", func() {
+			createDeploymentWithService(ctx, deploymentName, namespace)
+			createCardWithStatus(agentCardName, namespace, deploymentName, ptr.To(true), nil, nil)
+
+			r := newNPReconciler(true)
+			reconcileNP(r, agentCardName, namespace)
+			reconcileNP(r, agentCardName, namespace)
+
+			p := getPolicy(deploymentName, namespace)
+			Expect(p.Spec.Ingress[0].From).To(HaveLen(3))
+			Expect(policyHasVerifiedPodIngress(p)).To(BeTrue())
+		})
+
+		It("Verified condition takes precedence over ValidSignature", func() {
+			createDeploymentWithService(ctx, deploymentName, namespace)
+
+			card := &agentv1alpha1.AgentCard{
+				ObjectMeta: metav1.ObjectMeta{Name: agentCardName, Namespace: namespace},
+				Spec: agentv1alpha1.AgentCardSpec{
+					TargetRef: &agentv1alpha1.TargetRef{
+						APIVersion: "apps/v1",
+						Kind:       "Deployment",
+						Name:       deploymentName,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, card)).To(Succeed())
+
+			card.Status.ValidSignature = ptr.To(true)
+			card.Status.Conditions = []metav1.Condition{
+				{
+					Type:               ConditionVerified,
+					Status:             metav1.ConditionFalse,
+					Reason:             "FetchFailed",
+					Message:            "mTLS fetch failed",
+					LastTransitionTime: metav1.Now(),
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, card)).To(Succeed())
+
+			r := newNPReconciler(true)
+			reconcileNP(r, agentCardName, namespace)
+			reconcileNP(r, agentCardName, namespace)
+
+			p := getPolicy(deploymentName, namespace)
+			Expect(p.Spec.Ingress[0].From).To(HaveLen(2))
+			Expect(p.Spec.Ingress[0].From[0].PodSelector).To(BeNil())
+		})
+	})
 })
+
+func createCardWithVerifiedCondition(name, ns, deploymentName string, condStatus metav1.ConditionStatus) {
+	card := &agentv1alpha1.AgentCard{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec: agentv1alpha1.AgentCardSpec{
+			TargetRef: &agentv1alpha1.TargetRef{
+				APIVersion: "apps/v1",
+				Kind:       "Deployment",
+				Name:       deploymentName,
+			},
+		},
+	}
+	ExpectWithOffset(1, k8sClient.Create(ctx, card)).To(Succeed())
+
+	card.Status.Conditions = []metav1.Condition{
+		{
+			Type:               ConditionVerified,
+			Status:             condStatus,
+			Reason:             "mTLSVerified",
+			Message:            "test condition",
+			LastTransitionTime: metav1.Now(),
+		},
+	}
+	ExpectWithOffset(1, k8sClient.Status().Update(ctx, card)).To(Succeed())
+}

@@ -9,8 +9,6 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -19,6 +17,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
@@ -31,11 +30,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/yaml"
 
-	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
+	"github.com/kagenti/operator/internal/clientreg"
 	"github.com/kagenti/operator/internal/keycloak"
 )
 
-// Well-known namespace resources (same contract as kagenti-webhook injector).
+// Well-known namespace resources.
 const (
 	authbridgeConfigConfigMap = "authbridge-config"
 	keycloakAdminSecret       = "keycloak-admin-secret"
@@ -43,10 +42,12 @@ const (
 	// LabelClientRegistrationInject: when not "true", the operator registers the OAuth client and sets
 	// AnnotationKeycloakClientSecretName. Value "true" opts the workload into the legacy webhook
 	// client-registration sidecar; the operator skips registration for that workload.
-	LabelClientRegistrationInject = "kagenti.io/client-registration-inject"
+	// Re-exported from internal/clientreg so existing callers keep working.
+	LabelClientRegistrationInject = clientreg.LabelClientRegistrationInject
 
 	// AnnotationKeycloakClientSecretName must match kagenti-webhook injector.AnnotationKeycloakClientSecretName.
-	AnnotationKeycloakClientSecretName = "kagenti.io/keycloak-client-credentials-secret-name"
+	// Re-exported from internal/clientreg to give both the controller and the webhook one source of truth.
+	AnnotationKeycloakClientSecretName = clientreg.AnnotationKeycloakClientSecretName
 )
 
 // ClientRegistrationReconciler registers OAuth clients in Keycloak and patches agent/tool workloads that
@@ -55,10 +56,15 @@ const (
 // never reference a missing Secret; the webhook mounts the Secret for injected sidecars that use shared-data.
 type ClientRegistrationReconciler struct {
 	client.Client
-	// APIReader reads authbridge-config and keycloak-admin-secret from the API server. Those objects
-	// are not in the manager's ConfigMap cache (see cmd/main.go cache.ByObject for ConfigMap).
+	// APIReader reads authbridge-config from agent namespaces and keycloak-admin-secret from
+	// the operator's namespace from the API server. Those objects are not in the manager's
+	// ConfigMap cache (see cmd/main.go cache.ByObject for ConfigMap).
 	APIReader client.Reader
 	Scheme    *runtime.Scheme
+
+	// OperatorNamespace is the namespace where the operator is running and where keycloak-admin-secret
+	// is located. This is dynamically detected from the operator's service account.
+	OperatorNamespace string
 
 	SpireTrustDomain string
 	// KeycloakAdminTokenCache caches admin password-grant tokens by Keycloak URL and credentials to
@@ -74,7 +80,11 @@ func (r *ClientRegistrationReconciler) uncachedReader() client.Reader {
 }
 
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=apps,resources=deployments/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=apps,resources=statefulsets/finalizers,verbs=update
+// +kubebuilder:rbac:groups=agents.x-k8s.io,resources=sandboxes,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=agents.x-k8s.io,resources=sandboxes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch
 
@@ -92,7 +102,8 @@ func (r *ClientRegistrationReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	dep := &appsv1.Deployment{}
-	if err := r.Get(ctx, req.NamespacedName, dep); err == nil {
+	err = r.Get(ctx, req.NamespacedName, dep)
+	if err == nil {
 		return r.reconcileOne(ctx, dep, injectTools, dep.Name, &dep.Spec.Template,
 			func(ctx context.Context) error {
 				return retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -106,29 +117,66 @@ func (r *ClientRegistrationReconciler) Reconcile(ctx context.Context, req ctrl.R
 					return r.Update(ctx, d)
 				})
 			})
-	}
-	if !apierrors.IsNotFound(err) {
+	} else if !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, err
 	}
 
 	sts := &appsv1.StatefulSet{}
-	if err := r.Get(ctx, req.NamespacedName, sts); err != nil {
+	err = r.Get(ctx, req.NamespacedName, sts)
+	if err == nil {
+		return r.reconcileOne(ctx, sts, injectTools, sts.Name, &sts.Spec.Template,
+			func(ctx context.Context) error {
+				return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+					s := &appsv1.StatefulSet{}
+					if err := r.Get(ctx, req.NamespacedName, s); err != nil {
+						return err
+					}
+					if !injectKeycloakClientCredentialsAnnotation(&s.Spec.Template, keycloakClientCredentialsSecretName(s.Namespace, s.Name)) {
+						return nil
+					}
+					return r.Update(ctx, s)
+				})
+			})
+	} else if !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+
+	sbx := &unstructured.Unstructured{}
+	sbx.SetGroupVersionKind(sandboxGVK)
+	if err = r.Get(ctx, req.NamespacedName, sbx); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
-	return r.reconcileOne(ctx, sts, injectTools, sts.Name, &sts.Spec.Template,
+	podLabels, _, _ := unstructured.NestedStringMap(sbx.Object, "spec", "podTemplate", "metadata", "labels")
+	podAnnotations, _, _ := unstructured.NestedStringMap(sbx.Object, "spec", "podTemplate", "metadata", "annotations")
+	saName, _, _ := unstructured.NestedString(sbx.Object, "spec", "podTemplate", "spec", "serviceAccountName")
+	syntheticTemplate := &corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{Labels: podLabels, Annotations: podAnnotations},
+		Spec:       corev1.PodSpec{ServiceAccountName: saName},
+	}
+	return r.reconcileOne(ctx, sbx, injectTools, sbx.GetName(), syntheticTemplate,
 		func(ctx context.Context) error {
 			return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-				s := &appsv1.StatefulSet{}
-				if err := r.Get(ctx, req.NamespacedName, s); err != nil {
+				fresh := &unstructured.Unstructured{}
+				fresh.SetGroupVersionKind(sandboxGVK)
+				if err := r.Get(ctx, req.NamespacedName, fresh); err != nil {
 					return err
 				}
-				if !injectKeycloakClientCredentialsAnnotation(&s.Spec.Template, keycloakClientCredentialsSecretName(s.Namespace, s.Name)) {
+				secretName := keycloakClientCredentialsSecretName(fresh.GetNamespace(), fresh.GetName())
+				annotations, _, _ := unstructured.NestedStringMap(fresh.Object, "spec", "podTemplate", "metadata", "annotations")
+				if annotations != nil && annotations[AnnotationKeycloakClientSecretName] == secretName {
 					return nil
 				}
-				return r.Update(ctx, s)
+				if annotations == nil {
+					annotations = map[string]string{}
+				}
+				annotations[AnnotationKeycloakClientSecretName] = secretName
+				if err := unstructured.SetNestedStringMap(fresh.Object, annotations, "spec", "podTemplate", "metadata", "annotations"); err != nil {
+					return fmt.Errorf("setting podTemplate annotations: %w", err)
+				}
+				return r.Update(ctx, fresh)
 			})
 		})
 }
@@ -163,10 +211,13 @@ func (r *ClientRegistrationReconciler) reconcileOne(
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
+	// Read keycloak-admin-secret from the operator's namespace, not from agent namespace.
+	// This prevents Keycloak admin credentials from being replicated to every agent namespace,
+	// which would be a security risk if an agent namespace is compromised.
 	adminSecret := &corev1.Secret{}
-	if err := r.uncachedReader().Get(ctx, types.NamespacedName{Namespace: ns, Name: keycloakAdminSecret}, adminSecret); err != nil {
+	if err := r.uncachedReader().Get(ctx, types.NamespacedName{Namespace: r.OperatorNamespace, Name: keycloakAdminSecret}, adminSecret); err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.Info("waiting for keycloak-admin-secret", "namespace", ns)
+			logger.Info("waiting for keycloak-admin-secret", "namespace", r.OperatorNamespace)
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 		return ctrl.Result{}, err
@@ -255,34 +306,14 @@ func injectKeycloakClientCredentialsAnnotation(template *corev1.PodTemplateSpec,
 	return true
 }
 
-// keycloakClientCredentialsSkipReason returns a non-empty human-readable reason when this controller should
-// not process the workload; empty string means reconcile should continue.
+// keycloakClientCredentialsSkipReason and workloadWantsOperatorClientReg delegate to internal/clientreg
+// so the controller's reconcile decision and the webhook's admission decision stay in lockstep.
 func keycloakClientCredentialsSkipReason(labels map[string]string, injectTools bool) string {
-	if labels == nil {
-		return "pod template has no labels"
-	}
-	if labels[LabelClientRegistrationInject] == "true" {
-		return fmt.Sprintf("%s is \"true\" (legacy webhook client-registration sidecar; operator-managed registration disabled for this workload)", LabelClientRegistrationInject)
-	}
-	switch labels[LabelAgentType] {
-	case LabelValueAgent:
-		return ""
-	case string(agentv1alpha1.RuntimeTypeTool):
-		if !injectTools {
-			return "kagenti.io/type is tool but cluster injectTools feature gate is disabled"
-		}
-		return ""
-	default:
-		t := labels[LabelAgentType]
-		if t == "" {
-			return "kagenti.io/type label is missing or not agent/tool"
-		}
-		return fmt.Sprintf("kagenti.io/type=%q is not agent or tool", t)
-	}
+	return clientreg.SkipReason(labels, injectTools)
 }
 
 func workloadWantsOperatorClientReg(labels map[string]string, injectTools bool) bool {
-	return keycloakClientCredentialsSkipReason(labels, injectTools) == ""
+	return clientreg.WorkloadWantsOperatorClientReg(labels, injectTools)
 }
 
 type authbridgeConfig struct {
@@ -392,9 +423,11 @@ func resolveKeycloakClientID(namespace, workloadName, serviceAccount string, spi
 	return fmt.Sprintf("spiffe://%s/ns/%s/sa/%s", trustDomain, namespace, sa), nil
 }
 
+// keycloakClientCredentialsSecretName is a thin alias over the shared helper so call sites in this
+// package stay unchanged. The shared implementation lives in internal/clientreg so the AuthBridge
+// mutating webhook can compute the same name at admission time.
 func keycloakClientCredentialsSecretName(namespace, workload string) string {
-	sum := sha256.Sum256([]byte(namespace + "\000" + workload + "\000kagenti-keycloak-client-credentials"))
-	return "kagenti-keycloak-client-credentials-" + hex.EncodeToString(sum[:8])
+	return clientreg.KeycloakClientCredentialsSecretName(namespace, workload)
 }
 
 func (r *ClientRegistrationReconciler) ensureClientCredentialsSecret(ctx context.Context, owner client.Object, secretName, clientID, clientSecret string) error {
@@ -429,6 +462,12 @@ func clientRegistrationWorkloadPredicate(obj client.Object) bool {
 		return workloadWantsOperatorClientReg(o.Spec.Template.Labels, true)
 	case *appsv1.StatefulSet:
 		return workloadWantsOperatorClientReg(o.Spec.Template.Labels, true)
+	case *unstructured.Unstructured:
+		if o.GroupVersionKind() != sandboxGVK {
+			return false
+		}
+		labels, _, _ := unstructured.NestedStringMap(o.Object, "spec", "podTemplate", "metadata", "labels")
+		return workloadWantsOperatorClientReg(labels, true)
 	default:
 		return false
 	}
@@ -438,13 +477,24 @@ func clientRegistrationWorkloadPredicate(obj client.Object) bool {
 // feature gates; the predicate uses injectTools=true so tool workloads are not dropped before gates load.
 func (r *ClientRegistrationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	pred := predicate.NewPredicateFuncs(clientRegistrationWorkloadPredicate)
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		Named("clientregistration").
 		For(&appsv1.Deployment{}, builder.WithPredicates(pred)).
 		Watches(
 			&appsv1.StatefulSet{},
 			&handler.EnqueueRequestForObject{},
 			builder.WithPredicates(pred),
-		).
-		Complete(r)
+		)
+
+	if SandboxCRDExists(mgr.GetConfig()) {
+		sandboxObj := &unstructured.Unstructured{}
+		sandboxObj.SetGroupVersionKind(sandboxGVK)
+		b = b.Watches(
+			sandboxObj,
+			&handler.EnqueueRequestForObject{},
+			builder.WithPredicates(pred),
+		)
+	}
+
+	return b.Complete(r)
 }

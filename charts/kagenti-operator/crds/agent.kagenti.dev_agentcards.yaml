@@ -34,10 +34,10 @@ spec:
       jsonPath: .status.card.name
       name: Agent
       type: string
-    - description: Signature Verified
-      jsonPath: .status.validSignature
+    - description: Identity Verified
+      jsonPath: .status.conditions[?(@.type=='Verified')].status
       name: Verified
-      type: boolean
+      type: string
     - description: Identity Bound
       jsonPath: .status.bindingStatus.bound
       name: Bound
@@ -53,10 +53,18 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
+    - description: Attested Agent SPIFFE ID
+      jsonPath: .status.attestedAgentSpiffeId
+      name: AttestedAgent
+      priority: 1
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: AgentCard is the Schema for the agentcards API.
+        description: |-
+          AgentCard binds an A2A agent card to a backing workload. The controller periodically
+          fetches the card from the referenced workload, verifies its JWS signature and SPIFFE
+          identity against the configured trust domain, and caches the result in status.
         properties:
           apiVersion:
             description: |-
@@ -84,8 +92,11 @@ spec:
                   strict:
                     default: false
                     description: |-
-                      Strict enables enforcement mode: binding failures trigger network isolation.
-                      When false (default), results are recorded in status only (audit mode).
+                      Strict controls whether binding failures trigger enforcement actions
+                      (label removal, restrictive NetworkPolicy).
+                      When true, binding failure removes the verified label and applies restrictive NetworkPolicy.
+                      When false (default), binding results are recorded in status only;
+                      the workload retains its verified label and permissive policy.
                     type: boolean
                   trustDomain:
                     description: |-
@@ -126,6 +137,11 @@ spec:
           status:
             description: AgentCardStatus defines the observed state of AgentCard.
             properties:
+              attestedAgentSpiffeId:
+                description: |-
+                  AttestedAgentSpiffeID is the SPIFFE ID extracted from the agent's TLS peer certificate
+                  during authenticated (mTLS) fetch. Set only when verifiedFetch is enabled and successful.
+                type: string
               bindingStatus:
                 description: BindingStatus contains the result of identity binding
                   evaluation

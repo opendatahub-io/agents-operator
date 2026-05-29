@@ -1,11 +1,13 @@
 # E2E Tests
 
-End-to-end tests for the kagenti-operator. The suite runs 20 specs:
+End-to-end tests for the kagenti-operator. The suite runs 32 specs:
 
 - **Manager tests** (2 specs) — controller pod readiness and Prometheus metrics
 - **AuthBridge Injection tests** (4 specs) — sidecar injection, idempotency, opt-out, and HTTP validation
 - **AgentCard tests** (6 specs) — webhook validation, auto-discovery, duplicate prevention, audit mode, and SPIRE signature verification
 - **AgentRuntime tests** (8 specs) — label application, status lifecycle, idempotency, error handling, tool type, StatefulSet support, identity/trace overrides, and deletion cleanup
+- **Combined tests** (5 specs) — AgentRuntime + AgentCard + Auth Bridge integration: labels, auto-created card, sidecar injection, identity binding, and deletion cleanup
+- **Skill Image Volumes tests** (7 specs) — feature gate disabled/enabled, volume mounting, update, removal, deletion cleanup, and webhook validation
 
 ## Prerequisites
 
@@ -14,7 +16,7 @@ End-to-end tests for the kagenti-operator. The suite runs 20 specs:
 - [kubectl](https://kubernetes.io/docs/tasks/tools/) — `brew install kubectl`
 - Container runtime: **Docker** or **Podman**
 
-The test suite auto-detects Docker vs Podman. No env vars needed. AuthBridge sidecar images (`authbridge-unified`, `proxy-init`, `spiffe-helper`) are pulled from `ghcr.io/kagenti/kagenti-extensions` and loaded into Kind during setup.
+The test suite auto-detects Docker vs Podman. No env vars needed. AuthBridge sidecar images (`authbridge-envoy`, `proxy-init`, `spiffe-helper`) are pulled from `ghcr.io/kagenti/kagenti-extensions` and loaded into Kind during setup.
 
 ## Run
 
@@ -22,7 +24,7 @@ The test suite auto-detects Docker vs Podman. No env vars needed. AuthBridge sid
 # Create a fresh Kind cluster
 kind delete cluster 2>/dev/null; kind create cluster
 
-# Run all 20 specs (~15 min)
+# Run all 32 specs (~18 min)
 make test-e2e
 ```
 
@@ -56,6 +58,9 @@ go test ./test/e2e/ -v -ginkgo.v -ginkgo.focus="Manager"
 
 # AgentRuntime tests only (~3 min)
 go test ./test/e2e/ -v -ginkgo.v -ginkgo.focus="AgentRuntime E2E"
+
+# Skill Image Volumes tests only (~4 min)
+go test ./test/e2e/ -v -ginkgo.v -ginkgo.focus="Skill Image Volumes"
 ```
 
 ## Cleanup
@@ -86,6 +91,13 @@ kind delete cluster
 | Tool type label | Tool type | AgentRuntime with type=tool applies `kagenti.io/type=tool` label and no AgentCard is created |
 | StatefulSet target | StatefulSet target | AgentRuntime applies labels, config-hash, and reaches Active for a StatefulSet workload |
 | Identity/trace overrides | Identity and trace overrides | AgentRuntime with identity+trace spec produces a different config-hash than a minimal CR |
+| Feature gate disabled | Skill Image Volumes | Skills declared but SkillsMounted=False with reason FeatureGateDisabled; no skill volumes on Deployment |
+| Mount skill ImageVolumes | Skill Image Volumes (enabled) | AgentRuntime with skills adds Image volumes, read-only mounts, SkillsMounted=True, config-hash, and `kagenti.io/skills` annotation |
+| Update skill image | Skill Image Volumes (enabled) | Changing skill image reference updates Deployment volume and config-hash |
+| Remove skills | Skill Image Volumes (enabled) | Removing skills from CR removes all skill volumes, mounts, and `kagenti.io/skills` annotation from Deployment |
+| Skill deletion cleanup | Skill Image Volumes (enabled) | AgentRuntime deletion removes skill volumes and `kagenti.io/skills` annotation from target Deployment |
+| Duplicate skill names | Webhook validation | Webhook rejects AgentRuntime with duplicate skill names |
+| Duplicate skill mountPaths | Webhook validation | Webhook rejects AgentRuntime with duplicate skill mountPaths |
 
 ## Architecture
 
@@ -99,7 +111,7 @@ BeforeSuite (once per suite)
 ├── Install Prometheus Operator v0.77.1 (metrics/ServiceMonitor CRDs)
 ├── Install CertManager v1.16.3 (webhook TLS certificates)
 ├── Build & load agentcard-signer image into Kind
-├── Pull & load AuthBridge sidecar images (authbridge-unified, proxy-init, spiffe-helper)
+├── Pull & load AuthBridge sidecar images (authbridge-envoy, proxy-init, spiffe-helper)
 └── Install SPIRE via Helm (spire-crds v0.5.0 + spire v0.28.3)
 
 BeforeAll (per Describe block)

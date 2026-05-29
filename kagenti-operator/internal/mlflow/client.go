@@ -22,12 +22,12 @@ package mlflow
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -40,12 +40,20 @@ const (
 	// DefaultTokenPath is the projected SA token path in a pod.
 	DefaultTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 
-	// DefaultCACertPath is the service-serving CA certificate path.
-	// On OpenShift, the service-ca.crt is projected into the SA token volume.
-	DefaultCACertPath = "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt"
-
 	// WorkspaceHeader is the MLflow workspace header (namespace-based isolation).
 	WorkspaceHeader = "X-MLFLOW-WORKSPACE"
+
+	// DefaultTimeout is the default HTTP client timeout.
+	DefaultTimeout = 30 * time.Second
+
+	// DefaultMaxRetries is the default number of retry attempts for transient errors.
+	DefaultMaxRetries = 3
+
+	// DefaultRetryBaseDelay is the initial delay between retries (before jitter).
+	DefaultRetryBaseDelay = 500 * time.Millisecond
+
+	// maxBackoffDelay caps the exponential backoff.
+	maxBackoffDelay = 30 * time.Second
 )
 
 // Client is a minimal MLflow REST API client for experiment management.
@@ -56,12 +64,22 @@ type Client struct {
 	// TokenPath is the path to the SA token file. Defaults to DefaultTokenPath.
 	TokenPath string
 
-	// CACertPath is the path to the CA certificate for TLS verification.
-	// Defaults to the in-cluster SA CA cert.
-	CACertPath string
-
-	// HTTPClient is the HTTP client to use. If nil, a default client with 30s timeout is used.
+	// HTTPClient is the HTTP client to use. If nil, a default client is created
+	// on first use with Timeout applied. Must be set before the first request.
 	HTTPClient *http.Client
+
+	// Timeout is the HTTP client timeout. Defaults to DefaultTimeout (30s).
+	// Must be set before the first request (ignored after the HTTP client is created).
+	Timeout time.Duration
+
+	// MaxRetries is the maximum number of retry attempts for transient errors
+	// (network errors, HTTP 429, 5xx). Defaults to DefaultMaxRetries (3).
+	// Set to a negative value to disable retries.
+	MaxRetries int
+
+	// RetryBaseDelay is the initial delay between retries before exponential
+	// backoff and jitter are applied. Defaults to DefaultRetryBaseDelay (500ms).
+	RetryBaseDelay time.Duration
 
 	httpOnce sync.Once
 }
@@ -108,33 +126,39 @@ func IsResourceAlreadyExists(err error) bool {
 	return false
 }
 
+func (c *Client) timeout() time.Duration {
+	if c.Timeout > 0 {
+		return c.Timeout
+	}
+	return DefaultTimeout
+}
+
+func (c *Client) maxRetries() int {
+	if c.MaxRetries > 0 {
+		return c.MaxRetries
+	}
+	if c.MaxRetries < 0 {
+		return 0 // explicitly disabled
+	}
+	return DefaultMaxRetries
+}
+
+func (c *Client) retryBaseDelay() time.Duration {
+	if c.RetryBaseDelay > 0 {
+		return c.RetryBaseDelay
+	}
+	return DefaultRetryBaseDelay
+}
+
 func (c *Client) httpClient() *http.Client {
 	c.httpOnce.Do(func() {
 		if c.HTTPClient == nil {
-			tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
-			if caCert, err := os.ReadFile(c.caCertPath()); err == nil {
-				pool, err := x509.SystemCertPool()
-				if err != nil {
-					// Fall back to an empty pool; the service-CA cert will still be appended.
-					pool = x509.NewCertPool()
-				}
-				pool.AppendCertsFromPEM(caCert)
-				tlsCfg.RootCAs = pool
-			}
 			c.HTTPClient = &http.Client{
-				Timeout:   30 * time.Second,
-				Transport: &http.Transport{TLSClientConfig: tlsCfg},
+				Timeout: c.timeout(),
 			}
 		}
 	})
 	return c.HTTPClient
-}
-
-func (c *Client) caCertPath() string {
-	if c.CACertPath != "" {
-		return c.CACertPath
-	}
-	return DefaultCACertPath
 }
 
 func (c *Client) tokenPath() string {
@@ -230,29 +254,100 @@ func (c *Client) doRequestExpectOK(ctx context.Context, method, path, workspace 
 	return err
 }
 
-// doAndReadResponse executes an HTTP request, reads the response body, and checks
-// for error status codes. Returns the raw response body on success.
+// doAndReadResponse executes an HTTP request with retry logic for transient errors.
+// It buffers the request body so it can be replayed on retries.
+// Returns the raw response body on success.
 func (c *Client) doAndReadResponse(ctx context.Context, method, path, workspace string, body io.Reader) ([]byte, error) {
-	resp, err := c.doRequest(ctx, method, path, workspace, body)
-	if err != nil {
-		return nil, err
+	// Buffer body for replay on retries.
+	var bodyBytes []byte
+	if body != nil {
+		var err error
+		bodyBytes, err = io.ReadAll(body)
+		if err != nil {
+			return nil, fmt.Errorf("buffering request body: %w", err)
+		}
 	}
-	defer resp.Body.Close() //nolint:errcheck
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading response: %w", err)
-	}
+	maxAttempts := c.maxRetries() + 1
+	baseDelay := c.retryBaseDelay()
+	var lastErr error
 
-	if resp.StatusCode != http.StatusOK {
+	for attempt := range maxAttempts {
+		if attempt > 0 {
+			delay := backoffDelay(baseDelay, attempt)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+
+		var bodyReader io.Reader
+		if bodyBytes != nil {
+			bodyReader = bytes.NewReader(bodyBytes)
+		}
+
+		resp, err := c.doRequest(ctx, method, path, workspace, bodyReader)
+		if err != nil {
+			lastErr = err
+			if isRetryableErr(err) && attempt < maxAttempts-1 {
+				continue
+			}
+			return nil, lastErr
+		}
+
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close() //nolint:errcheck
+		if err != nil {
+			return nil, fmt.Errorf("reading response: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusOK {
+			return respBody, nil
+		}
+
+		// Parse the error response.
 		var mlErr mlflowError
 		if json.Unmarshal(respBody, &mlErr) == nil && mlErr.ErrorCode != "" {
-			return nil, &mlErr
+			lastErr = &mlErr
+		} else {
+			lastErr = fmt.Errorf("mlflow: unexpected status %d: %s", resp.StatusCode, string(respBody))
 		}
-		return nil, fmt.Errorf("mlflow: unexpected status %d: %s", resp.StatusCode, string(respBody))
+
+		if !isRetryableStatus(resp.StatusCode) || attempt >= maxAttempts-1 {
+			return nil, lastErr
+		}
 	}
 
-	return respBody, nil
+	return nil, lastErr
+}
+
+// isRetryableErr returns true for transient network errors that should be retried.
+// Context cancellation and deadline exceeded are never retried since they reflect
+// caller intent. Only net.Error (timeouts, connection resets) trigger retries.
+func isRetryableErr(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
+}
+
+// isRetryableStatus returns true for HTTP status codes that indicate a transient error.
+func isRetryableStatus(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError
+}
+
+// backoffDelay returns the wait duration for the given retry attempt using
+// exponential backoff with jitter. attempt is 1-based (first retry = 1).
+func backoffDelay(base time.Duration, attempt int) time.Duration {
+	if attempt < 1 {
+		return base
+	}
+	delay := min(base<<(attempt-1), maxBackoffDelay)
+	// Jitter: multiply by a random factor in [0.5, 1.5).
+	jitter := 0.5 + rand.Float64() //nolint:gosec
+	return time.Duration(float64(delay) * jitter)
 }
 
 func (c *Client) doRequest(ctx context.Context, method, path, workspace string, body io.Reader) (*http.Response, error) {

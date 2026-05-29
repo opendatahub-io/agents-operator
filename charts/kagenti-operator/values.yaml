@@ -88,9 +88,32 @@ certmanager:
 networkPolicy:
   enable: false
 
+# Enforce NetworkPolicies based on AgentCard verification status.
+# Works with both verifiedFetch (mTLS) and signatureVerification (init-signer).
+enforceNetworkPolicies: false
+
 # [MLFLOW]: MLflow experiment tracking integration
 mlflow:
   enable: false
+
+# [OTEL BOOTSTRAP]: OTel collector bootstrap at operator startup.
+# When enabled, the operator assembles the OTel collector ConfigMap from
+# detected components (Phoenix, MLflow) and projects the OpenShift ingress
+# CA into the operator namespace (OCP only). Replaces the Helm-based
+# otel-ingress-ca-job and kagenti.otel.collectorConfig helper.
+otelBootstrap:
+  enable: false
+
+# [VERIFIED FETCH]: mTLS-authenticated fetch of agent cards via SPIFFE identity (Phase 1)
+# When enabled, the operator uses go-spiffe mTLS to fetch agent cards and records
+# the agent's attested SPIFFE ID in CRD status.
+verifiedFetch:
+  enabled: false
+  spiffeEndpointSocket: "unix:///spiffe-workload-api/spire-agent.sock"
+  # Agents must expose a Service port named "agent-tls" (default 8443).
+  # The operator discovers the TLS endpoint by port name, not number.
+  # SPIRE trust domain for identity binding (required when enabled)
+  spireTrustDomain: ""
 
 # [SIGNATURE VERIFICATION]: A2A agent card signature verification via SPIRE x5c
 signatureVerification:
@@ -100,7 +123,12 @@ signatureVerification:
   auditMode: false
   # Enforce network policies based on signature verification
   enforceNetworkPolicies: false
-  # SPIRE trust domain (required when enabled)
+  # SPIRE trust domain. Required when SPIRE is enabled in the cluster even if
+  # signatureVerification.enabled is false: the ClientRegistrationReconciler
+  # uses this to build SPIFFE-shaped Keycloak client IDs
+  # (spiffe://<trust-domain>/ns/<ns>/sa/<sa>) whenever authbridge-config has
+  # SPIRE_ENABLED=true. The chart renders --spire-trust-domain independently of
+  # signatureVerification.enabled for this reason.
   spireTrustDomain: ""
   # Key within the SPIRE trust bundle ConfigMap. Matches the SPIRE hardened Helm chart default
   # and the binary flag default. Override to "bundle.crt" only for older ZTWIM deployments.
@@ -115,11 +143,14 @@ signatureVerification:
 # Feature gates — highest-priority layer in the injection precedence chain.
 # Set globalEnabled to false to disable ALL sidecar injection (kill switch).
 # Set individual gates to false to disable specific sidecars cluster-wide.
+#
+# spiffe-helper and client-registration no longer have feature gates:
+#   * spiffe-helper is bundled inside the combined authbridge images and
+#     gated per-workload by the SPIRE_ENABLED env var.
+#   * client-registration is operator-managed (no in-pod sidecar).
 featureGates:
   globalEnabled: true
   envoyProxy: true
-  spiffeHelper: true
-  clientRegistration: true
   # injectTools controls whether tool workloads (kagenti.io/type=tool) receive
   # sidecar injection. Defaults to false — tools are not injected by default.
   injectTools: false
@@ -128,22 +159,28 @@ featureGates:
   # Default false — cached mode is faster and sufficient when namespace ConfigMaps
   # rarely change. Cache is cleared on webhook pod restart.
   perWorkloadConfigResolution: false
-  # combinedSidecar controls whether injection uses a single combined authbridge
-  # container instead of separate envoy-proxy + spiffe-helper + client-registration.
-  # Requires the authbridge image. Default false — separate sidecars.
-  combinedSidecar: false
+  # skillImageVolumes controls whether AgentRuntime can mount OCI skill images
+  # as Kubernetes ImageVolumes into agent pods. Requires Kubernetes 1.31+ with
+  # the ImageVolume feature gate enabled. Default false.
+  skillImageVolumes: false
 
 # Platform defaults for AuthBridge sidecar injection.
 # These are the lowest-priority layer — overridden by feature gates,
 # namespace labels/ConfigMaps, and workload labels/AgentRuntime CRs.
+#
+# Three combined images, selected per workload by deployment mode:
+#   * envoyProxy     (envoy-sidecar mode):     Envoy + ext_proc authbridge + spiffe-helper.
+#   * authbridge     (proxy-sidecar mode, default): authbridge-proxy (full plugin set) + spiffe-helper.
+#   * authbridgeLite (lite mode):              authbridge-lite (jwt-validation + token-exchange only,
+#                                              parsers dropped) + spiffe-helper. Same listener layout
+#                                              as authbridge; for size-constrained deployments.
+# proxy-init applies to envoy-sidecar mode only.
 defaults:
-  # Container images with version tags
   images:
-    envoyProxy: ghcr.io/kagenti/kagenti-extensions/envoy-with-processor:latest
-    proxyInit: ghcr.io/kagenti/kagenti-extensions/proxy-init:latest
-    spiffeHelper: ghcr.io/kagenti/kagenti-extensions/spiffe-helper:latest
-    clientRegistration: ghcr.io/kagenti/kagenti-extensions/client-registration:latest
+    envoyProxy: ghcr.io/kagenti/kagenti-extensions/authbridge-envoy:latest
     authbridge: ghcr.io/kagenti/kagenti-extensions/authbridge:latest
+    authbridgeLite: ghcr.io/kagenti/kagenti-extensions/authbridge-lite:latest
+    proxyInit: ghcr.io/kagenti/kagenti-extensions/proxy-init:latest
     pullPolicy: IfNotPresent
 
   # Proxy settings
@@ -170,20 +207,6 @@ defaults:
       limits:
         cpu: 10m
         memory: 10Mi
-    spiffeHelper:
-      requests:
-        cpu: 50m
-        memory: 64Mi
-      limits:
-        cpu: 100m
-        memory: 128Mi
-    clientRegistration:
-      requests:
-        cpu: 50m
-        memory: 64Mi
-      limits:
-        cpu: 100m
-        memory: 128Mi
     authbridge:
       requests:
         cpu: 100m
@@ -191,13 +214,3 @@ defaults:
       limits:
         cpu: 300m
         memory: 384Mi
-
-  # Per-sidecar enable/disable at the platform level (lowest-priority layer).
-  # These are overridden by feature gates, namespace labels, and workload labels.
-  sidecars:
-    envoyProxy:
-      enabled: true
-    spiffeHelper:
-      enabled: true
-    clientRegistration:
-      enabled: true

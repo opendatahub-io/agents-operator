@@ -24,7 +24,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 const (
@@ -32,21 +34,25 @@ const (
 	pathExperimentsGetByName = "/api/2.0/mlflow/experiments/get-by-name"
 )
 
+func createTempTokenFile(t *testing.T) string {
+	t.Helper()
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenPath, []byte("test-token"), 0600); err != nil {
+		t.Fatalf("writing token file: %v", err)
+	}
+	return tokenPath
+}
+
 func newTestClient(t *testing.T, handler http.Handler) *Client {
 	t.Helper()
 
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
-	tmpDir := t.TempDir()
-	tokenPath := filepath.Join(tmpDir, "token")
-	if err := os.WriteFile(tokenPath, []byte("test-token"), 0600); err != nil {
-		t.Fatalf("failed to write token file: %v", err)
-	}
-
 	return &Client{
-		BaseURL:   server.URL,
-		TokenPath: tokenPath,
+		BaseURL:    server.URL,
+		TokenPath:  createTempTokenFile(t),
+		MaxRetries: -1,
 	}
 }
 
@@ -252,8 +258,9 @@ func TestClient_TokenFileNotFound(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	c := &Client{
-		BaseURL:   server.URL,
-		TokenPath: "/nonexistent/path/token",
+		BaseURL:    server.URL,
+		TokenPath:  "/nonexistent/path/token",
+		MaxRetries: -1,
 	}
 
 	_, err := c.CreateExperiment(context.Background(), "test", "ns")
@@ -345,5 +352,82 @@ func TestRestoreExperiment_Failure(t *testing.T) {
 	_, err := c.CreateExperiment(context.Background(), "restore-fail", "test-ns")
 	if err == nil {
 		t.Fatal("expected error on restore failure")
+	}
+}
+
+// --- Retry / timeout tests ---
+
+func TestRetry_SucceedsAfterTransientFailure(t *testing.T) {
+	var calls atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := calls.Add(1)
+		if n <= 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("unavailable"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(createExperimentResponse{ExperimentID: "42"})
+	})
+
+	c := newTestClient(t, handler)
+	c.MaxRetries = 3
+	c.RetryBaseDelay = 1 * time.Millisecond
+
+	id, err := c.CreateExperiment(context.Background(), "retry-exp", "test-ns")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if id != "42" {
+		t.Errorf("expected experiment ID 42, got %s", id)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Errorf("expected 3 requests, got %d", got)
+	}
+}
+
+func TestRetry_ExhaustsRetriesOn5xx(t *testing.T) {
+	var calls atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(mlflowError{
+			ErrorCode: "INTERNAL_ERROR",
+			Message:   "server error",
+		})
+	})
+
+	c := newTestClient(t, handler)
+	c.MaxRetries = 2
+	c.RetryBaseDelay = 1 * time.Millisecond
+
+	_, err := c.CreateExperiment(context.Background(), "exhaust-exp", "test-ns")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	// 1 initial + 2 retries = 3 total
+	if got := calls.Load(); got != 3 {
+		t.Errorf("expected 3 requests, got %d", got)
+	}
+}
+
+func TestRetry_NoRetryOn4xx(t *testing.T) {
+	var calls atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte("bad request"))
+	})
+
+	c := newTestClient(t, handler)
+	c.MaxRetries = 3
+	c.RetryBaseDelay = 1 * time.Millisecond
+
+	_, err := c.CreateExperiment(context.Background(), "no-retry-exp", "test-ns")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("expected 1 request (no retries on 4xx), got %d", got)
 	}
 }

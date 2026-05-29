@@ -16,8 +16,39 @@ limitations under the License.
 
 package e2e
 
+import (
+	"encoding/base64"
+	"fmt"
+
+	"github.com/kagenti/operator/internal/clientreg"
+)
+
 const testNamespace = "e2e-agentcard-test"
 const authBridgeTestNamespace = "e2e-authbridge-test"
+const authBridgeAgentName = "authbridge-agent"
+const authBridgeAgentCMName = "authbridge-config-" + authBridgeAgentName
+
+// keycloakClientCredentialsSecretFixture returns YAML for a Secret that matches the deterministic
+// name the AuthBridge mutating webhook will pre-populate on pods of the given workload. Without it,
+// the webhook's eager Secret mount (introduced to eliminate the first-deploy credentials race) would
+// keep the pod in ContainerCreating forever in the e2e environment, which has no real Keycloak + no
+// admin-secret for the ClientRegistration controller to successfully register clients. The values
+// are dummy — these tests exercise injection shape, not OAuth flow.
+func keycloakClientCredentialsSecretFixture(namespace, workload string) string {
+	name := clientreg.KeycloakClientCredentialsSecretName(namespace, workload)
+	clientID := base64.StdEncoding.EncodeToString([]byte("e2e-" + workload))
+	clientSecret := base64.StdEncoding.EncodeToString([]byte("e2e-dummy-secret"))
+	return fmt.Sprintf(`apiVersion: v1
+kind: Secret
+metadata:
+  name: %s
+  namespace: %s
+type: Opaque
+data:
+  client-id.txt: %s
+  client-secret.txt: %s
+`, name, namespace, clientID, clientSecret)
+}
 
 // echoAgentFixture returns YAML for echo-agent Deployment + Service (used by S1, S3).
 func echoAgentFixture() string {
@@ -781,7 +812,7 @@ spec:
 `
 }
 
-// runtimeOverridesCRFixture returns YAML for an AgentRuntime CR with identity and trace overrides.
+// runtimeOverridesCRFixture returns YAML for an AgentRuntime CR with identity overrides.
 func runtimeOverridesCRFixture() string {
 	return `apiVersion: agent.kagenti.dev/v1alpha1
 kind: AgentRuntime
@@ -797,18 +828,13 @@ spec:
   identity:
     spiffe:
       trustDomain: custom.example.com
-  trace:
-    endpoint: "custom-collector.observability:4317"
-    protocol: grpc
-    sampling:
-      rate: 0.5
 `
 }
 
 // --- AuthBridge Injection E2E fixtures ---
 
-// authBridgeConfigMapFixture returns YAML for the 3 ConfigMaps required by
-// the auth bridge webhook: authbridge-config, spiffe-helper-config, envoy-config.
+// authBridgeConfigMapFixture returns YAML for the 4 ConfigMaps required by
+// the auth bridge webhook: authbridge-config, authbridge-runtime-config, spiffe-helper-config, envoy-config.
 // Only the mandatory keys are set (ISSUER, KEYCLOAK_URL, KEYCLOAK_REALM, TOKEN_URL,
 // DEFAULT_OUTBOUND_POLICY). The operator reads additional optional keys
 // (EXPECTED_AUDIENCE, TARGET_AUDIENCE, SPIRE_ENABLED, etc.) which default to empty.
@@ -901,26 +927,25 @@ data:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: authbridge-unified-config
+  name: authbridge-runtime-config
   namespace: ` + authBridgeTestNamespace + `
 data:
   config.yaml: |
     mode: envoy-sidecar
-    inbound:
-      issuer: "https://keycloak.example.com/realms/test"
-    outbound:
-      token_url: "https://keycloak.example.com/realms/test/protocol/openid-connect/token"
-      default_policy: "passthrough"
-    identity:
-      type: client-secret
-      client_id_file: "/shared/client-id.txt"
-      client_secret_file: "/shared/client-secret.txt"
-    bypass:
-      inbound_paths:
-        - "/.well-known/*"
-        - "/healthz"
-        - "/readyz"
-        - "/livez"
+    pipeline:
+      inbound:
+        plugins:
+          - name: jwt-validation
+            config:
+              issuer: "https://keycloak.example.com/realms/test"
+      outbound:
+        plugins:
+          - name: token-exchange
+            config:
+              token_url: "https://keycloak.example.com/realms/test/protocol/openid-connect/token"
+              default_policy: "passthrough"
+              identity:
+                type: client-secret
 `
 }
 
@@ -1089,5 +1114,399 @@ spec:
   namespaceSelector:
     matchLabels:
       kagenti-enabled: "true"
+`
+}
+
+// --- Combined E2E fixtures ---
+
+const combinedTestNamespace = "e2e-combined-test"
+
+// combinedAgentFixture returns YAML for the combined-agent ServiceAccount,
+// Deployment (Python HTTP server with agent card on port 8080), and Service.
+// Unlike echoAgentFixture, injection is NOT disabled so Auth Bridge sidecars are injected.
+func combinedAgentFixture() string {
+	return `apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: combined-agent
+  namespace: ` + combinedTestNamespace + `
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: combined-agent
+  namespace: ` + combinedTestNamespace + `
+  labels:
+    kagenti.io/type: agent
+    protocol.kagenti.io/a2a: ""
+    app.kubernetes.io/name: combined-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: combined-agent
+      kagenti.io/type: agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: combined-agent
+        kagenti.io/type: agent
+        protocol.kagenti.io/a2a: ""
+    spec:
+      serviceAccountName: combined-agent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: echo
+          image: docker.io/python:3.11-slim
+          imagePullPolicy: IfNotPresent
+          command:
+            - python3
+            - -c
+            - |
+              import http.server, json
+              class H(http.server.BaseHTTPRequestHandler):
+                  def do_GET(self):
+                      if self.path == '/.well-known/agent-card.json':
+                          card = {
+                              'name': 'Combined Agent',
+                              'version': '1.0.0',
+                              'url': 'http://combined-agent.` + combinedTestNamespace + `.svc:8080',
+                              'capabilities': {'streaming': False, 'pushNotifications': False},
+                              'defaultInputModes': ['text/plain'],
+                              'defaultOutputModes': ['text/plain'],
+                              'skills': [{'name': 'echo', 'description': 'Echo back input',
+                                          'inputModes': ['text/plain'], 'outputModes': ['text/plain']}]
+                          }
+                          self.send_response(200)
+                          self.send_header('Content-Type', 'application/json')
+                          self.end_headers()
+                          self.wfile.write(json.dumps(card).encode())
+                      else:
+                          self.send_response(200)
+                          self.send_header('Content-Type', 'application/json')
+                          self.end_headers()
+                          self.wfile.write(json.dumps({"status":"ok"}).encode())
+                  def log_message(self, *a): pass
+              http.server.HTTPServer(('', 8080), H).serve_forever()
+          ports:
+            - containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: combined-agent
+  namespace: ` + combinedTestNamespace + `
+spec:
+  selector:
+    app.kubernetes.io/name: combined-agent
+  ports:
+    - port: 8080
+      targetPort: 8080
+`
+}
+
+// combinedAgentRuntimeFixture returns YAML for an AgentRuntime CR targeting
+// the combined-agent Deployment with SPIFFE identity override.
+func combinedAgentRuntimeFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: combined-agent
+  namespace: ` + combinedTestNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: combined-agent
+  identity:
+    spiffe:
+      trustDomain: example.org
+`
+}
+
+// combinedConfigMapFixture returns YAML for the 4 AuthBridge ConfigMaps
+// (authbridge-config, spiffe-helper-config, envoy-config, authbridge-runtime-config)
+// scoped to the combined test namespace.
+func combinedConfigMapFixture() string {
+	return `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authbridge-config
+  namespace: ` + combinedTestNamespace + `
+data:
+  ISSUER: "https://keycloak.example.com/realms/test"
+  KEYCLOAK_URL: "https://keycloak.example.com"
+  KEYCLOAK_REALM: "test"
+  TOKEN_URL: "https://keycloak.example.com/realms/test/protocol/openid-connect/token"
+  DEFAULT_OUTBOUND_POLICY: "passthrough"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spiffe-helper-config
+  namespace: ` + combinedTestNamespace + `
+data:
+  helper.conf: |
+    agent_address = "/spiffe-workload-api/spire-agent.sock"
+    cmd = ""
+    cmd_args = ""
+    cert_dir = "/opt"
+    renew_signal = ""
+    svid_file_name = "svid.pem"
+    svid_key_file_name = "svid_key.pem"
+    svid_bundle_file_name = "svid_bundle.pem"
+    jwt_svids = [{jwt_audience="kagenti", jwt_svid_file_name="jwt_svid.token"}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: envoy-config
+  namespace: ` + combinedTestNamespace + `
+data:
+  envoy.yaml: |
+    admin:
+      address:
+        socket_address:
+          address: 127.0.0.1
+          port_value: 9901
+    static_resources:
+      listeners:
+        - name: outbound
+          address:
+            socket_address:
+              address: 0.0.0.0
+              port_value: 15123
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.tcp_proxy
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+                    stat_prefix: outbound_passthrough
+                    cluster: original_dst
+        - name: inbound
+          address:
+            socket_address:
+              address: 0.0.0.0
+              port_value: 15124
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.tcp_proxy
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+                    stat_prefix: inbound_passthrough
+                    cluster: local_app
+      clusters:
+        - name: original_dst
+          connect_timeout: 5s
+          type: ORIGINAL_DST
+          lb_policy: CLUSTER_PROVIDED
+        - name: local_app
+          connect_timeout: 5s
+          type: STATIC
+          load_assignment:
+            cluster_name: local_app
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: 127.0.0.1
+                          port_value: 8080
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authbridge-runtime-config
+  namespace: ` + combinedTestNamespace + `
+data:
+  config.yaml: |
+    mode: envoy-sidecar
+    pipeline:
+      inbound:
+        plugins:
+          - name: jwt-validation
+            config:
+              issuer: "https://keycloak.example.com/realms/test"
+      outbound:
+        plugins:
+          - name: token-exchange
+            config:
+              token_url: "https://keycloak.example.com/realms/test/protocol/openid-connect/token"
+              default_policy: "passthrough"
+              identity:
+                type: client-secret
+`
+}
+
+// combinedClusterSPIFFEIDFixture returns YAML for a ClusterSPIFFEID matching
+// the combined test namespace.
+func combinedClusterSPIFFEIDFixture() string {
+	return `apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: e2e-combined-test
+spec:
+  spiffeIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+  podSelector:
+    matchLabels:
+      kagenti.io/type: agent
+  namespaceSelector:
+    matchLabels:
+      kagenti-enabled: "true"
+`
+}
+
+// --- Skill Image Volumes E2E fixtures ---
+
+const skillTestNamespace = "e2e-skills-test"
+
+func skillTargetDeploymentFixture() string {
+	return `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skill-agent-target
+  namespace: ` + skillTestNamespace + `
+  labels:
+    app.kubernetes.io/name: skill-agent-target
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: skill-agent-target
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: skill-agent-target
+        kagenti.io/inject: disabled
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          image: registry.k8s.io/pause:3.9
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+`
+}
+
+func skillAgentRuntimeFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: skill-agent-runtime
+  namespace: ` + skillTestNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: skill-agent-target
+  skills:
+    - name: resume-reviewer
+      image: registry.k8s.io/pause:3.9
+      mountPath: /agent/skills/resume-reviewer
+    - name: blog-writer
+      image: registry.k8s.io/pause:3.10
+      mountPath: /agent/skills/blog-writer
+      pullPolicy: Always
+`
+}
+
+func skillAgentRuntimeUpdatedFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: skill-agent-runtime
+  namespace: ` + skillTestNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: skill-agent-target
+  skills:
+    - name: resume-reviewer
+      image: registry.k8s.io/pause:3.10
+      mountPath: /agent/skills/resume-reviewer
+    - name: blog-writer
+      image: registry.k8s.io/pause:3.10
+      mountPath: /agent/skills/blog-writer
+      pullPolicy: Always
+`
+}
+
+func skillAgentRuntimeNoSkillsFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: skill-agent-runtime
+  namespace: ` + skillTestNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: skill-agent-target
+`
+}
+
+func skillDuplicateNamesAgentRuntimeFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: skill-duplicate-runtime
+  namespace: ` + skillTestNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: skill-agent-target
+  skills:
+    - name: my-skill
+      image: registry.k8s.io/pause:3.9
+      mountPath: /agent/skills/my-skill
+    - name: my-skill
+      image: registry.k8s.io/pause:3.10
+      mountPath: /agent/skills/my-skill-2
+`
+}
+
+func skillDuplicateMountPathAgentRuntimeFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: skill-dup-mount-runtime
+  namespace: ` + skillTestNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: skill-agent-target
+  skills:
+    - name: skill-a
+      image: registry.k8s.io/pause:3.9
+      mountPath: /agent/skills/shared
+    - name: skill-b
+      image: registry.k8s.io/pause:3.10
+      mountPath: /agent/skills/shared
 `
 }

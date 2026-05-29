@@ -17,6 +17,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
+	"github.com/kagenti/operator/internal/keycloak/testidp"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -24,6 +25,7 @@ import (
 
 const (
 	clientRegistrationTestNamespace      = "test-ns"
+	clientRegistrationTestOperatorNS     = "operator-ns"
 	clientRegistrationTestDeploymentName = "my-dep"
 )
 
@@ -196,6 +198,10 @@ func authbridgeConfigMapForTest(ns, keycloakURL string) *corev1.ConfigMap {
 	}
 }
 
+// keycloakAdminSecretForTest creates a test keycloak-admin-secret.
+// The secret should be created in the operator namespace (clientRegistrationTestOperatorNS),
+// NOT in agent namespaces. This matches the production behavior where admin credentials
+// are restricted to the operator namespace for security.
 func keycloakAdminSecretForTest(ns string) *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -308,11 +314,13 @@ func TestClientRegistrationReconciler_Reconcile(t *testing.T) {
 			wantRequeue: requeue,
 		},
 		{
-			name: "missing keycloak admin secret waits with requeue",
+			name: "missing keycloak admin secret in operator namespace waits with requeue",
 			objs: []client.Object{
 				clusterFeatureGatesConfigMap(true),
 				testDeploymentForClientReg(),
 				authbridgeConfigMapForTest(clientRegistrationTestNamespace, "https://keycloak.example"),
+				// Note: keycloak-admin-secret intentionally NOT created in operator namespace
+				// to test the missing secret path
 			},
 			wantRequeue: requeue,
 		},
@@ -322,7 +330,11 @@ func TestClientRegistrationReconciler_Reconcile(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			scheme := clientRegistrationTestScheme(t)
 			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tc.objs...).Build()
-			r := &ClientRegistrationReconciler{Client: c, Scheme: scheme}
+			r := &ClientRegistrationReconciler{
+				Client:            c,
+				Scheme:            scheme,
+				OperatorNamespace: clientRegistrationTestOperatorNS,
+			}
 			res, err := r.Reconcile(ctx, req)
 			if err != nil {
 				t.Fatalf("Reconcile: %v", err)
@@ -350,9 +362,14 @@ func TestClientRegistrationReconciler_Reconcile(t *testing.T) {
 			clusterFeatureGatesConfigMap(true),
 			dep,
 			authbridgeConfigMapForTest(clientRegistrationTestNamespace, srv.URL),
-			keycloakAdminSecretForTest(clientRegistrationTestNamespace),
+			// keycloak-admin-secret created in OPERATOR namespace (not agent namespace)
+			keycloakAdminSecretForTest(clientRegistrationTestOperatorNS),
 		).Build()
-		r := &ClientRegistrationReconciler{Client: c, Scheme: scheme}
+		r := &ClientRegistrationReconciler{
+			Client:            c,
+			Scheme:            scheme,
+			OperatorNamespace: clientRegistrationTestOperatorNS,
+		}
 		res, err := r.Reconcile(ctx, req)
 		if err != nil || res != (ctrl.Result{}) {
 			t.Fatalf("got (%v, %v), want (zero Result, nil)", res, err)
@@ -388,4 +405,77 @@ func TestClientRegistrationReconciler_Reconcile(t *testing.T) {
 			t.Fatalf("client-secret: %q", clientSecret)
 		}
 	})
+}
+
+// TestClientRegistration_EndToEnd_CredentialsAuthenticate validates the full chain:
+// reconciler registers a Keycloak client via the testidp, creates the K8s Secret,
+// and the stored credentials can successfully obtain a workload token.
+func TestClientRegistration_EndToEnd_CredentialsAuthenticate(t *testing.T) {
+	idp := testidp.Start(t, testidp.WithAdminCredentials("admin", "secret"))
+
+	scheme := clientRegistrationTestScheme(t)
+	dep := testDeploymentForClientReg()
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{
+		Namespace: clientRegistrationTestNamespace,
+		Name:      clientRegistrationTestDeploymentName,
+	}}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		clusterFeatureGatesConfigMap(true),
+		dep,
+		authbridgeConfigMapForTest(clientRegistrationTestNamespace, idp.URL()),
+		// keycloak-admin-secret lives in the operator namespace (not the
+		// agent namespace) after PR #321's security hardening. The
+		// reconciler reads it from there via OperatorNamespace.
+		keycloakAdminSecretForTest(clientRegistrationTestOperatorNS),
+	).Build()
+
+	r := &ClientRegistrationReconciler{
+		Client:            c,
+		Scheme:            scheme,
+		OperatorNamespace: clientRegistrationTestOperatorNS,
+	}
+	res, err := r.Reconcile(ctx, req)
+	if err != nil || res != (ctrl.Result{}) {
+		t.Fatalf("Reconcile: result=%v err=%v", res, err)
+	}
+
+	// Read the credentials from the K8s Secret the reconciler created
+	secretName := keycloakClientCredentialsSecretName(clientRegistrationTestNamespace, clientRegistrationTestDeploymentName)
+	sec := &corev1.Secret{}
+	if err := c.Get(ctx, types.NamespacedName{
+		Namespace: clientRegistrationTestNamespace,
+		Name:      secretName,
+	}, sec); err != nil {
+		t.Fatalf("get credentials secret: %v", err)
+	}
+
+	clientID := string(sec.Data["client-id.txt"])
+	if clientID == "" && sec.StringData != nil {
+		clientID = sec.StringData["client-id.txt"]
+	}
+	clientSecret := string(sec.Data["client-secret.txt"])
+	if clientSecret == "" && sec.StringData != nil {
+		clientSecret = sec.StringData["client-secret.txt"]
+	}
+	if clientID == "" || clientSecret == "" {
+		t.Fatalf("expected non-empty credentials in secret, got id=%q secret=%q", clientID, clientSecret)
+	}
+
+	// Use those credentials to obtain a workload token from the testidp
+	token, err := idp.RequestWorkloadToken(clientID, clientSecret)
+	if err != nil {
+		t.Fatalf("workload token request with reconciler-created credentials: %v", err)
+	}
+	if token == "" {
+		t.Fatal("expected non-empty access token")
+	}
+
+	// Validate that the token is recognized as valid
+	if gotClientID, valid := idp.ValidateToken(token); !valid {
+		t.Fatal("token should be valid immediately after issuance")
+	} else if gotClientID != clientID {
+		t.Fatalf("token clientID=%q, want %q", gotClientID, clientID)
+	}
 }

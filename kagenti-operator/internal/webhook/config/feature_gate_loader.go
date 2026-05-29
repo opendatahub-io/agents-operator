@@ -178,11 +178,9 @@ func logFeatureGates(fg *FeatureGates, source string) {
 	log.Info("[feature-gates] gates",
 		"globalEnabled", fg.GlobalEnabled,
 		"envoyProxy", fg.EnvoyProxy,
-		"spiffeHelper", fg.SpiffeHelper,
-		"clientRegistration", fg.ClientRegistration,
 		"injectTools", fg.InjectTools,
 		"perWorkloadConfigResolution", fg.PerWorkloadConfigResolution,
-		"combinedSidecar", fg.CombinedSidecar,
+		"skillImageVolumes", fg.SkillImageVolumes,
 	)
 	log.Info("=============================================")
 }

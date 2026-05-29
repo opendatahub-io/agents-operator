@@ -133,24 +133,6 @@ var _ = Describe("AgentRuntime Config", func() {
 			Expect(r1.Hash).NotTo(Equal(r2.Hash))
 		})
 
-		It("should change when trace config changes", func() {
-			spec1 := &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeAgent,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-trace"},
-				Trace:     &agentv1alpha1.TraceSpec{Endpoint: "otel:4317", Protocol: agentv1alpha1.TraceProtocolGRPC},
-			}
-			spec2 := &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeAgent,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-trace"},
-				Trace:     &agentv1alpha1.TraceSpec{Endpoint: "otel:4318", Protocol: agentv1alpha1.TraceProtocolHTTP},
-			}
-
-			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec1)
-			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec2)
-
-			Expect(r1.Hash).NotTo(Equal(r2.Hash))
-		})
-
 		It("should change when identity changes", func() {
 			spec1 := &agentv1alpha1.AgentRuntimeSpec{
 				Type:      agentv1alpha1.RuntimeTypeAgent,
@@ -257,6 +239,77 @@ var _ = Describe("AgentRuntime Config", func() {
 			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
 			Expect(r1.Hash).NotTo(Equal(r2.Hash))
 		})
+
+		It("should change when MTLSMode flips on the CR", func() {
+			// CR-side parallel to the CM-edit test below: spec.mtlsMode
+			// must feed the hash so flipping disabled→strict on a CR
+			// rolls the workload. Without an explicit assertion a
+			// future refactor that drops MTLSMode from resolvedConfig
+			// would silently regress rollout-on-CR-edit.
+			specOff := &agentv1alpha1.AgentRuntimeSpec{
+				Type:      agentv1alpha1.RuntimeTypeAgent,
+				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-mtls-cr"},
+				MTLSMode:  "disabled",
+			}
+			specOn := &agentv1alpha1.AgentRuntimeSpec{
+				Type:      agentv1alpha1.RuntimeTypeAgent,
+				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-mtls-cr"},
+				MTLSMode:  "strict",
+			}
+
+			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace, specOff)
+			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, specOn)
+			Expect(r1.Hash).NotTo(Equal(r2.Hash))
+		})
+
+		It("should change when AuthBridgeMode flips on the CR", func() {
+			// Bonus: AuthBridgeMode rollouts had a pre-existing gap
+			// (not in resolvedConfig) that this PR closed. Lock it.
+			specA := &agentv1alpha1.AgentRuntimeSpec{
+				Type:           agentv1alpha1.RuntimeTypeAgent,
+				TargetRef:      agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-abm-cr"},
+				AuthBridgeMode: "proxy-sidecar",
+			}
+			specB := &agentv1alpha1.AgentRuntimeSpec{
+				Type:           agentv1alpha1.RuntimeTypeAgent,
+				TargetRef:      agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-abm-cr"},
+				AuthBridgeMode: "lite",
+			}
+			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace, specA)
+			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, specB)
+			Expect(r1.Hash).NotTo(Equal(r2.Hash))
+		})
+
+		It("should change when authbridge-runtime-config edits", func() {
+			// Edits to the namespace authbridge-runtime-config (which the
+			// admission webhook reads at pod creation) must roll
+			// affected workloads. The hash captures its config.yaml
+			// content as a raw string so any byte change registers.
+			abCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      AuthBridgeRuntimeConfigMapName,
+					Namespace: namespace,
+				},
+				Data: map[string]string{
+					"config.yaml": "mode: proxy-sidecar\n",
+				},
+			}
+			Expect(k8sClient.Create(ctx, abCM)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, abCM) }()
+
+			spec := &agentv1alpha1.AgentRuntimeSpec{
+				Type:      agentv1alpha1.RuntimeTypeAgent,
+				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-abruntime"},
+			}
+
+			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+
+			abCM.Data["config.yaml"] = "mode: proxy-sidecar\nmtls:\n  mode: strict\n"
+			Expect(k8sClient.Update(ctx, abCM)).To(Succeed())
+
+			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			Expect(r1.Hash).NotTo(Equal(r2.Hash))
+		})
 	})
 
 	Context("ComputeDefaultsOnlyHash", func() {
@@ -305,7 +358,6 @@ var _ = Describe("AgentRuntime Config", func() {
 				Type:      agentv1alpha1.RuntimeTypeAgent,
 				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "merge-test"},
 				Identity:  &agentv1alpha1.IdentitySpec{SPIFFE: &agentv1alpha1.SPIFFEIdentity{TrustDomain: "my-domain.org"}},
-				Trace:     &agentv1alpha1.TraceSpec{Endpoint: "cr-collector:4317", Protocol: agentv1alpha1.TraceProtocolGRPC},
 			}
 
 			resolved, _ := resolveConfig(ctx, k8sClient, namespace, spec)
@@ -313,9 +365,6 @@ var _ = Describe("AgentRuntime Config", func() {
 			// CR overrides
 			Expect(resolved.Type).To(Equal("agent"))
 			Expect(resolved.TrustDomain).To(Equal("my-domain.org"))
-			Expect(resolved.Trace).NotTo(BeNil())
-			Expect(resolved.Trace.Endpoint).To(Equal("cr-collector:4317"))
-			Expect(resolved.Trace.Protocol).To(Equal("grpc"))
 
 			// Namespace overrides cluster
 			Expect(resolved.Defaults["otel-endpoint"]).To(Equal("ns-collector:4317"))
@@ -335,7 +384,6 @@ var _ = Describe("AgentRuntime Config", func() {
 
 			Expect(resolved.Type).To(BeEmpty())
 			Expect(resolved.TrustDomain).To(BeEmpty())
-			Expect(resolved.Trace).To(BeNil())
 		})
 
 		It("should not duplicate CR overrides in Defaults map", func() {
@@ -347,14 +395,9 @@ var _ = Describe("AgentRuntime Config", func() {
 			spec := &agentv1alpha1.AgentRuntimeSpec{
 				Type:      agentv1alpha1.RuntimeTypeAgent,
 				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "no-dup"},
-				Trace:     &agentv1alpha1.TraceSpec{Endpoint: "cr-collector:4317"},
 			}
 
 			resolved, _ := resolveConfig(ctx, k8sClient, namespace, spec)
-
-			// CR trace endpoint is in structured field
-			Expect(resolved.Trace).NotTo(BeNil())
-			Expect(resolved.Trace.Endpoint).To(Equal("cr-collector:4317"))
 
 			// ConfigMap value untouched in Defaults
 			Expect(resolved.Defaults["otel-endpoint"]).To(Equal("cluster-collector:4317"))
@@ -548,7 +591,19 @@ var _ = Describe("AgentRuntime Config", func() {
 			requests := r.mapNamespaceConfigMapToAgentRuntimes(ctx, cm)
 			Expect(requests).NotTo(BeEmpty())
 
-			// Should not match ConfigMap without label
+			// Should also match authbridge-runtime-config (matched by name,
+			// no label required). Editing this CM is the operator-facing
+			// way to change mtls / mode / pipeline plugins for the whole
+			// namespace; without this watch the rollout never fires.
+			abCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: AuthBridgeRuntimeConfigMapName, Namespace: namespace,
+				},
+			}
+			Expect(r.mapNamespaceConfigMapToAgentRuntimes(ctx, abCM)).NotTo(BeEmpty())
+
+			// Should not match ConfigMap without label and not named
+			// authbridge-runtime-config (random unrelated CM).
 			noLabel := &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: "no-label", Namespace: namespace},
 			}

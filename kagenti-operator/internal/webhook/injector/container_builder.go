@@ -18,6 +18,7 @@ package injector
 
 import (
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 
@@ -33,7 +34,6 @@ const (
 	// Container names for AuthBridge sidecars
 	EnvoyProxyContainerName = "envoy-proxy"
 	ProxyInitContainerName  = "proxy-init"
-	AuthBridgeContainerName = "authbridge"
 
 	SharedVolumesFSGroup = 0
 )
@@ -70,289 +70,6 @@ func NewResolvedContainerBuilder(resolved *ResolvedConfig) *ContainerBuilder {
 	}
 }
 
-func (b *ContainerBuilder) BuildSpiffeHelperContainer() corev1.Container {
-	builderLog.Info("building SpiffeHelper Container")
-
-	return corev1.Container{
-		Name:            SpiffeHelperContainerName,
-		Image:           b.cfg.Images.SpiffeHelper,
-		ImagePullPolicy: b.cfg.Images.PullPolicy,
-		Resources:       b.cfg.Resources.SpiffeHelper,
-		Command: []string{
-			"/spiffe-helper",
-			"-config=/etc/spiffe-helper/helper.conf",
-			"run",
-		},
-		VolumeMounts: []corev1.VolumeMount{
-			{
-				Name:      "spiffe-helper-config",
-				MountPath: "/etc/spiffe-helper",
-			},
-			{
-				Name:      "spire-agent-socket",
-				MountPath: "/spiffe-workload-api",
-			},
-			{
-				Name:      "svid-output",
-				MountPath: "/opt",
-			},
-			{
-				Name:      "shared-data",
-				MountPath: "/shared",
-			},
-		},
-		// No hardcoded UID/GID — let the platform assign the user.
-		// On OpenShift, MustRunAsRange assigns a UID from the namespace range.
-		// On vanilla Kubernetes, the container runs as the image's default UID.
-		// fsGroup=0 on the pod ensures all containers share GID 0 for file access.
-		SecurityContext: &corev1.SecurityContext{
-			RunAsNonRoot:             ptr.To(true),
-			AllowPrivilegeEscalation: ptr.To(false),
-		},
-	}
-}
-
-func (b *ContainerBuilder) BuildClientRegistrationContainer(name, namespace string) corev1.Container {
-	// Default to SPIRE enabled for backward compatibility
-	return b.BuildClientRegistrationContainerWithSpireOption(name, namespace, true)
-}
-
-// BuildClientRegistrationContainerWithSpireOption creates the client registration container
-// with optional SPIRE support
-func (b *ContainerBuilder) BuildClientRegistrationContainerWithSpireOption(name, namespace string, spireEnabled bool) corev1.Container {
-	builderLog.Info("building ClientRegistration Container", "spireEnabled", spireEnabled)
-
-	clientName := namespace + "/" + name
-
-	var env []corev1.EnvVar
-	if b.resolved != nil {
-		// Resolved mode: literal values
-		env = b.buildClientRegistrationEnvResolved(clientName, spireEnabled)
-	} else {
-		// Legacy mode: ValueFrom refs
-		env = b.buildClientRegistrationEnvLegacy(clientName, spireEnabled)
-	}
-
-	// Volume mounts depend on SPIRE enablement
-	var volumeMounts []corev1.VolumeMount
-	if spireEnabled {
-		volumeMounts = []corev1.VolumeMount{
-			{
-				Name:      "svid-output",
-				MountPath: "/opt",
-			},
-			{
-				Name:      "shared-data",
-				MountPath: "/shared",
-			},
-		}
-	} else {
-		volumeMounts = []corev1.VolumeMount{
-			{
-				Name:      "shared-data",
-				MountPath: "/shared",
-			},
-		}
-	}
-
-	// Build the command based on SPIRE enablement
-	var command string
-	if spireEnabled {
-		command = `
-echo "Waiting for SPIFFE credentials..."
-while [ ! -f /opt/jwt_svid.token ]; do
-  echo "waiting for SVID"
-  sleep 1
-done
-echo "SPIFFE credentials ready!"
-
-# Extract client ID (SPIFFE ID) from JWT and save to file
-JWT_PAYLOAD=$(cat /opt/jwt_svid.token | cut -d'.' -f2)
-if ! CLIENT_ID=$(echo "${JWT_PAYLOAD}==" | base64 -d | python -c "import sys,json; print(json.load(sys.stdin).get('sub',''))"); then
-  echo "Error: Failed to decode JWT payload or extract client ID" >&2
-  exit 1
-fi
-if [ -z "$CLIENT_ID" ]; then
-  echo "Error: Extracted client ID is empty" >&2
-  exit 1
-fi
-echo "$CLIENT_ID" > /shared/client-id.txt
-echo "Client ID (SPIFFE ID): $CLIENT_ID"
-
-echo "Starting client registration..."
-python client_registration.py
-echo "Client registration complete!"
-tail -f /dev/null
-`
-	} else {
-		command = `
-echo "SPIRE disabled - using static client ID"
-
-# Use CLIENT_NAME as the client ID
-echo "$CLIENT_NAME" > /shared/client-id.txt
-echo "Client ID: $CLIENT_NAME"
-
-echo "Starting client registration..."
-python client_registration.py
-echo "Client registration complete!"
-tail -f /dev/null
-`
-	}
-
-	return corev1.Container{
-		Name:            ClientRegistrationContainerName,
-		Image:           b.cfg.Images.ClientRegistration,
-		ImagePullPolicy: b.cfg.Images.PullPolicy,
-		Resources:       b.cfg.Resources.ClientRegistration,
-		Command: []string{
-			"/bin/sh",
-			"-c",
-			command,
-		},
-		Env:          env,
-		VolumeMounts: volumeMounts,
-		SecurityContext: &corev1.SecurityContext{
-			RunAsNonRoot:             ptr.To(true),
-			AllowPrivilegeEscalation: ptr.To(false),
-		},
-	}
-}
-
-// buildClientRegistrationEnvResolved returns env vars from resolved config.
-// Non-sensitive values (URLs, realm, client name) are injected as literals.
-// Sensitive values (KEYCLOAK_ADMIN_USERNAME/PASSWORD) use SecretKeyRef to keep
-// credentials out of the Pod spec — only a reference to the Secret is stored.
-func (b *ContainerBuilder) buildClientRegistrationEnvResolved(clientName string, spireEnabled bool) []corev1.EnvVar {
-	secretName := b.resolved.AdminCredentialsSecretName
-	if secretName == "" {
-		secretName = KeycloakAdminSecretName
-	}
-	return []corev1.EnvVar{
-		{Name: "SPIRE_ENABLED", Value: fmt.Sprintf("%t", spireEnabled)},
-		{Name: "KEYCLOAK_URL", Value: b.resolved.KeycloakURL},
-		{Name: "KEYCLOAK_REALM", Value: b.resolved.KeycloakRealm},
-		{
-			Name: "KEYCLOAK_ADMIN_USERNAME",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
-					Key:                  "KEYCLOAK_ADMIN_USERNAME",
-				},
-			},
-		},
-		{
-			Name: "KEYCLOAK_ADMIN_PASSWORD",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
-					Key:                  "KEYCLOAK_ADMIN_PASSWORD",
-				},
-			},
-		},
-		{Name: "CLIENT_NAME", Value: clientName},
-		{Name: "SECRET_FILE_PATH", Value: "/shared/client-secret.txt"},
-		{Name: "PLATFORM_CLIENT_IDS", Value: b.resolved.PlatformClientIDs},
-		{Name: "CLIENT_AUTH_TYPE", Value: b.resolved.ClientAuthType},
-		{Name: "SPIFFE_IDP_ALIAS", Value: b.resolved.SpiffeIdpAlias},
-		{Name: "JWT_AUDIENCE", Value: b.resolved.JWTAudience},
-	}
-}
-
-// buildClientRegistrationEnvLegacy returns ValueFrom-based env vars (backward compat).
-func (b *ContainerBuilder) buildClientRegistrationEnvLegacy(clientName string, spireEnabled bool) []corev1.EnvVar {
-	return []corev1.EnvVar{
-		{
-			Name:  "SPIRE_ENABLED",
-			Value: fmt.Sprintf("%t", spireEnabled),
-		},
-		{
-			Name: "KEYCLOAK_URL",
-			ValueFrom: &corev1.EnvVarSource{
-				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: AuthBridgeConfigMapName},
-					Key:                  "KEYCLOAK_URL",
-					Optional:             ptr.To(true),
-				},
-			},
-		},
-		{
-			Name: "KEYCLOAK_REALM",
-			ValueFrom: &corev1.EnvVarSource{
-				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: AuthBridgeConfigMapName},
-					Key:                  "KEYCLOAK_REALM",
-				},
-			},
-		},
-		{
-			Name: "KEYCLOAK_ADMIN_USERNAME",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "keycloak-admin-secret"},
-					Key:                  "KEYCLOAK_ADMIN_USERNAME",
-				},
-			},
-		},
-		{
-			Name: "KEYCLOAK_ADMIN_PASSWORD",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "keycloak-admin-secret"},
-					Key:                  "KEYCLOAK_ADMIN_PASSWORD",
-				},
-			},
-		},
-		{
-			Name:  "CLIENT_NAME",
-			Value: clientName,
-		},
-		{
-			Name:  "SECRET_FILE_PATH",
-			Value: "/shared/client-secret.txt",
-		},
-		{
-			Name: "PLATFORM_CLIENT_IDS",
-			ValueFrom: &corev1.EnvVarSource{
-				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: AuthBridgeConfigMapName},
-					Key:                  "PLATFORM_CLIENT_IDS",
-					Optional:             ptr.To(true),
-				},
-			},
-		},
-		{
-			Name: "CLIENT_AUTH_TYPE",
-			ValueFrom: &corev1.EnvVarSource{
-				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: AuthBridgeConfigMapName},
-					Key:                  "CLIENT_AUTH_TYPE",
-					Optional:             ptr.To(true),
-				},
-			},
-		},
-		{
-			Name: "SPIFFE_IDP_ALIAS",
-			ValueFrom: &corev1.EnvVarSource{
-				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: AuthBridgeConfigMapName},
-					Key:                  "SPIFFE_IDP_ALIAS",
-					Optional:             ptr.To(true),
-				},
-			},
-		},
-		{
-			Name: "JWT_AUDIENCE",
-			ValueFrom: &corev1.EnvVarSource{
-				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: AuthBridgeConfigMapName},
-					Key:                  "JWT_AUDIENCE",
-					Optional:             ptr.To(true),
-				},
-			},
-		},
-	}
-}
-
 // BuildEnvoyProxyContainer creates the envoy-proxy sidecar container with SPIRE enabled (default).
 func (b *ContainerBuilder) BuildEnvoyProxyContainer() corev1.Container {
 	return b.BuildEnvoyProxyContainerWithSpireOption(true)
@@ -372,9 +89,14 @@ func (b *ContainerBuilder) BuildEnvoyProxyContainerWithSpireOption(spireEnabled 
 			ReadOnly:  true,
 		},
 		{
+			// Not ReadOnly: subPath mounts of /shared/client-id.txt and
+			// /shared/client-secret.txt (added later by
+			// ApplyKeycloakClientCredentialsSecretVolumes) need to create
+			// their targets inside this mount. The combined authbridge
+			// images use a read-only base (ubi9-micro), so /shared must
+			// be mounted RW for runc to create the subPath mountpoints.
 			Name:      "shared-data",
 			MountPath: "/shared",
-			ReadOnly:  true,
 		},
 		{
 			Name:      "authproxy-routes",
@@ -382,17 +104,42 @@ func (b *ContainerBuilder) BuildEnvoyProxyContainerWithSpireOption(spireEnabled 
 			ReadOnly:  true,
 		},
 		{
-			Name:      "authbridge-unified-config",
+			Name:      "authbridge-runtime-config",
 			MountPath: "/etc/authbridge",
 			ReadOnly:  true,
 		},
 	}
 	if spireEnabled {
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "svid-output",
-			MountPath: "/opt",
-			ReadOnly:  true,
-		})
+		volumeMounts = append(volumeMounts,
+			corev1.VolumeMount{
+				Name:      "svid-output",
+				MountPath: "/opt",
+				// Must be RW: the in-process spiffe Provider mirror inside the
+				// authbridge-envoy combined image writes /opt/svid.pem,
+				// /opt/svid_key.pem, /opt/svid_bundle.pem on every SPIRE
+				// rotation. Envoy's file-based DownstreamTlsContext /
+				// UpstreamTlsContext (used when mtlsMode != disabled) reads
+				// these files. The proxy-sidecar mount in
+				// BuildProxySidecarContainerWithPorts correctly defaults to RW;
+				// this branch was historically RO from the days of an external
+				// spiffe-helper writer, which no longer applies.
+			},
+			// authbridge-envoy bundles spiffe-helper; the entrypoint reads
+			// helper.conf from this mount. Without it, the bundled
+			// spiffe-helper would fail to start on SPIRE_ENABLED=true.
+			corev1.VolumeMount{
+				Name:      "spiffe-helper-config",
+				MountPath: "/etc/spiffe-helper",
+				ReadOnly:  true,
+			},
+			// SPIRE workload-API socket — bundled spiffe-helper dials it.
+			// Path derived from SpiffeConfig.SocketPath (defaults.go).
+			corev1.VolumeMount{
+				Name:      "spire-agent-socket",
+				MountPath: spireSocketDir(b.cfg.Spiffe.SocketPath),
+				ReadOnly:  true,
+			},
+		)
 	}
 
 	var env []corev1.EnvVar
@@ -401,6 +148,14 @@ func (b *ContainerBuilder) BuildEnvoyProxyContainerWithSpireOption(spireEnabled 
 	} else {
 		env = b.buildEnvoyProxyEnvLegacy()
 	}
+	// SPIRE_ENABLED gates the bundled spiffe-helper inside the
+	// combined image's entrypoint. Always set explicitly so the
+	// container's behavior is deterministic regardless of the image's
+	// own default.
+	env = append(env, corev1.EnvVar{
+		Name:  "SPIRE_ENABLED",
+		Value: spireEnabledStr(spireEnabled),
+	})
 
 	return corev1.Container{
 		Name:            EnvoyProxyContainerName,
@@ -434,6 +189,117 @@ func (b *ContainerBuilder) BuildEnvoyProxyContainerWithSpireOption(spireEnabled 
 		SecurityContext: &corev1.SecurityContext{
 			RunAsUser:                ptr.To(b.cfg.Proxy.UID),
 			RunAsGroup:               ptr.To(b.cfg.Proxy.UID),
+			RunAsNonRoot:             ptr.To(true),
+			AllowPrivilegeEscalation: ptr.To(false),
+		},
+		VolumeMounts: volumeMounts,
+	}
+}
+
+func spireEnabledStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
+// spireSocketDir returns the directory portion of the SPIRE workload-API
+// socket path (e.g. "unix:///spiffe-workload-api/spire-agent.sock" →
+// "/spiffe-workload-api"), suitable for use as a container mountPath.
+// Single source of truth: defaults.go's SpiffeConfig.SocketPath.
+func spireSocketDir(socketPath string) string {
+	stripped := strings.TrimPrefix(socketPath, "unix://")
+	dir := path.Dir(stripped)
+	if dir == "." || dir == "/" {
+		return ""
+	}
+	return dir
+}
+
+// BuildProxySidecarContainer creates a combined authbridge container for proxy-sidecar mode.
+// Uses the authbridge image (authbridge-proxy + spiffe-helper bundled, no Envoy).
+// The app uses HTTP_PROXY env vars to route outbound traffic through the forward proxy.
+// Inbound traffic goes through the reverse proxy.
+func (b *ContainerBuilder) BuildProxySidecarContainer(spireEnabled bool) corev1.Container {
+	return b.BuildProxySidecarContainerWithPorts(spireEnabled, b.cfg.Images.AuthBridge, 8080, 8000, 8081)
+}
+
+// BuildProxySidecarContainerWithPorts creates a proxy-sidecar container with dynamic ports.
+// image:            container image to run — Images.AuthBridge (full plugin set) or
+//
+//	Images.AuthBridgeLite (auth-only). Both images expose the same listeners
+//	on the same ports; only the plugin set compiled into the binary differs.
+//
+// reverseProxyPort: where the reverse proxy listens (takes over the agent's original port)
+// agentBackendPort: where the agent actually listens (moved to a free port)
+// forwardProxyPort: where the forward proxy listens (HTTP_PROXY target)
+func (b *ContainerBuilder) BuildProxySidecarContainerWithPorts(spireEnabled bool, image string, reverseProxyPort, agentBackendPort, forwardProxyPort int32) corev1.Container {
+	volumeMounts := []corev1.VolumeMount{
+		{
+			Name:      "shared-data",
+			MountPath: "/shared",
+		},
+		{
+			Name:      "authbridge-runtime-config",
+			MountPath: "/etc/authbridge",
+			ReadOnly:  true,
+		},
+		{
+			Name:      AuthproxyRoutesConfigMapName,
+			MountPath: "/etc/authproxy",
+			ReadOnly:  true,
+		},
+	}
+	if spireEnabled {
+		volumeMounts = append(volumeMounts,
+			corev1.VolumeMount{
+				Name:      "svid-output",
+				MountPath: "/opt",
+			},
+			// authbridge bundles spiffe-helper; the entrypoint reads
+			// helper.conf from this mount. Without it, the bundled
+			// spiffe-helper would fail to start on SPIRE_ENABLED=true.
+			corev1.VolumeMount{
+				Name:      "spiffe-helper-config",
+				MountPath: "/etc/spiffe-helper",
+				ReadOnly:  true,
+			},
+			// SPIRE workload-API socket — bundled spiffe-helper dials it.
+			// Path derived from SpiffeConfig.SocketPath (defaults.go).
+			corev1.VolumeMount{
+				Name:      "spire-agent-socket",
+				MountPath: spireSocketDir(b.cfg.Spiffe.SocketPath),
+				ReadOnly:  true,
+			},
+		)
+	}
+
+	return corev1.Container{
+		Name:            AuthBridgeProxyContainerName,
+		Image:           image,
+		ImagePullPolicy: b.cfg.Images.PullPolicy,
+		Args: []string{
+			"--config", "/etc/authbridge/config.yaml",
+		},
+		Env: []corev1.EnvVar{
+			// Gates the bundled spiffe-helper inside the combined image.
+			{Name: "SPIRE_ENABLED", Value: spireEnabledStr(spireEnabled)},
+		},
+		Ports: []corev1.ContainerPort{
+			{
+				Name:          "reverse-proxy",
+				ContainerPort: reverseProxyPort,
+				Protocol:      corev1.ProtocolTCP,
+			},
+			{
+				Name:          "forward-proxy",
+				ContainerPort: forwardProxyPort,
+				Protocol:      corev1.ProtocolTCP,
+			},
+		},
+		Resources: b.cfg.Resources.AuthBridge,
+		SecurityContext: &corev1.SecurityContext{
+			RunAsUser:                ptr.To(int64(1001)),
 			RunAsNonRoot:             ptr.To(true),
 			AllowPrivilegeEscalation: ptr.To(false),
 		},
@@ -549,272 +415,6 @@ func (b *ContainerBuilder) buildEnvoyProxyEnvLegacy() []corev1.EnvVar {
 				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: "authbridge-config"},
 					Key:                  "DEFAULT_OUTBOUND_POLICY",
-					Optional:             ptr.To(true),
-				},
-			},
-		},
-	}
-}
-
-// BuildAuthBridgeContainer creates the combined authbridge sidecar container
-// that includes envoy-proxy, go-processor, spiffe-helper, and client-registration
-// in a single container. This is used when the CombinedSidecar feature gate is enabled.
-func (b *ContainerBuilder) BuildAuthBridgeContainer(name, namespace string, spireEnabled, clientRegistrationEnabled bool) corev1.Container {
-	builderLog.Info("building AuthBridge combined Container",
-		"spireEnabled", spireEnabled,
-		"clientRegistrationEnabled", clientRegistrationEnabled)
-
-	clientName := namespace + "/" + name
-
-	var env []corev1.EnvVar
-	if b.resolved != nil {
-		env = b.buildAuthBridgeEnvResolved(clientName, spireEnabled, clientRegistrationEnabled)
-	} else {
-		env = b.buildAuthBridgeEnvLegacy(clientName, spireEnabled, clientRegistrationEnabled)
-	}
-
-	// Volume mounts: union of envoy-proxy + spiffe-helper + client-registration mounts.
-	// shared-data and svid-output are read-write (same container reads and writes).
-	volumeMounts := []corev1.VolumeMount{
-		{
-			Name:      "envoy-config",
-			MountPath: "/etc/envoy",
-			ReadOnly:  true,
-		},
-		{
-			Name:      "authproxy-routes",
-			MountPath: "/etc/authproxy",
-			ReadOnly:  true,
-		},
-		{
-			Name:      "shared-data",
-			MountPath: "/shared",
-		},
-	}
-	if spireEnabled {
-		volumeMounts = append(volumeMounts,
-			corev1.VolumeMount{
-				Name:      "svid-output",
-				MountPath: "/opt",
-			},
-			corev1.VolumeMount{
-				Name:      "spiffe-helper-config",
-				MountPath: "/etc/spiffe-helper",
-				ReadOnly:  true,
-			},
-			corev1.VolumeMount{
-				Name:      "spire-agent-socket",
-				MountPath: "/spiffe-workload-api",
-				ReadOnly:  true,
-			},
-		)
-	}
-
-	return corev1.Container{
-		Name:            AuthBridgeContainerName,
-		Image:           b.cfg.Images.AuthBridge,
-		ImagePullPolicy: b.cfg.Images.PullPolicy,
-		Resources:       b.cfg.Resources.AuthBridge,
-		Ports: []corev1.ContainerPort{
-			{
-				Name:          "envoy-outbound",
-				ContainerPort: b.cfg.Proxy.Port,
-				Protocol:      corev1.ProtocolTCP,
-			},
-			{
-				Name:          "envoy-inbound",
-				ContainerPort: b.cfg.Proxy.InboundProxyPort,
-				Protocol:      corev1.ProtocolTCP,
-			},
-			{
-				Name:          "envoy-admin",
-				ContainerPort: b.cfg.Proxy.AdminPort,
-				Protocol:      corev1.ProtocolTCP,
-			},
-			{
-				Name:          "ext-proc",
-				ContainerPort: 9090,
-				Protocol:      corev1.ProtocolTCP,
-			},
-		},
-		Env: env,
-		SecurityContext: &corev1.SecurityContext{
-			RunAsUser:                ptr.To(b.cfg.Proxy.UID),
-			RunAsGroup:               ptr.To(b.cfg.Proxy.UID),
-			RunAsNonRoot:             ptr.To(true),
-			AllowPrivilegeEscalation: ptr.To(false),
-		},
-		VolumeMounts: volumeMounts,
-	}
-}
-
-// buildAuthBridgeEnvResolved returns env vars for the combined container from resolved config.
-func (b *ContainerBuilder) buildAuthBridgeEnvResolved(clientName string, spireEnabled, clientRegistrationEnabled bool) []corev1.EnvVar {
-	secretName := b.resolved.AdminCredentialsSecretName
-	if secretName == "" {
-		secretName = KeycloakAdminSecretName
-	}
-
-	env := []corev1.EnvVar{
-		// Control flags for the entrypoint
-		{Name: "SPIRE_ENABLED", Value: fmt.Sprintf("%t", spireEnabled)},
-		{Name: "CLIENT_REGISTRATION_ENABLED", Value: fmt.Sprintf("%t", clientRegistrationEnabled)},
-		// Envoy/go-processor env vars
-		{Name: "KEYCLOAK_URL", Value: b.resolved.KeycloakURL},
-		{Name: "KEYCLOAK_REALM", Value: b.resolved.KeycloakRealm},
-		{Name: "TOKEN_URL", Value: b.resolved.TokenURL},
-		{Name: "ISSUER", Value: b.resolved.Issuer},
-		{Name: "EXPECTED_AUDIENCE", Value: b.resolved.ExpectedAudience},
-		{Name: "TARGET_AUDIENCE", Value: b.resolved.TargetAudience},
-		{Name: "TARGET_SCOPES", Value: b.resolved.TargetScopes},
-		{Name: "CLIENT_ID_FILE", Value: "/shared/client-id.txt"},
-		{Name: "CLIENT_SECRET_FILE", Value: "/shared/client-secret.txt"},
-		{Name: "ROUTES_CONFIG_PATH", Value: "/etc/authproxy/routes.yaml"},
-		{Name: "DEFAULT_OUTBOUND_POLICY", Value: b.resolved.DefaultOutboundPolicy},
-		// Client-registration env vars (sensitive values stay as SecretKeyRef)
-		{
-			Name: "KEYCLOAK_ADMIN_USERNAME",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
-					Key:                  "KEYCLOAK_ADMIN_USERNAME",
-				},
-			},
-		},
-		{
-			Name: "KEYCLOAK_ADMIN_PASSWORD",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
-					Key:                  "KEYCLOAK_ADMIN_PASSWORD",
-				},
-			},
-		},
-		{Name: "CLIENT_NAME", Value: clientName},
-		{Name: "SECRET_FILE_PATH", Value: "/shared/client-secret.txt"},
-		{Name: "PLATFORM_CLIENT_IDS", Value: b.resolved.PlatformClientIDs},
-	}
-
-	return env
-}
-
-// buildAuthBridgeEnvLegacy returns ValueFrom-based env vars for the combined container.
-func (b *ContainerBuilder) buildAuthBridgeEnvLegacy(clientName string, spireEnabled, clientRegistrationEnabled bool) []corev1.EnvVar {
-	return []corev1.EnvVar{
-		// Control flags for the entrypoint
-		{Name: "SPIRE_ENABLED", Value: fmt.Sprintf("%t", spireEnabled)},
-		{Name: "CLIENT_REGISTRATION_ENABLED", Value: fmt.Sprintf("%t", clientRegistrationEnabled)},
-		// Envoy/go-processor env vars (from ConfigMap)
-		{
-			Name: "KEYCLOAK_URL",
-			ValueFrom: &corev1.EnvVarSource{
-				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: AuthBridgeConfigMapName},
-					Key:                  "KEYCLOAK_URL",
-					Optional:             ptr.To(true),
-				},
-			},
-		},
-		{
-			Name: "KEYCLOAK_REALM",
-			ValueFrom: &corev1.EnvVarSource{
-				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: AuthBridgeConfigMapName},
-					Key:                  "KEYCLOAK_REALM",
-					Optional:             ptr.To(true),
-				},
-			},
-		},
-		{
-			Name: "TOKEN_URL",
-			ValueFrom: &corev1.EnvVarSource{
-				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "authbridge-config"},
-					Key:                  "TOKEN_URL",
-					Optional:             ptr.To(true),
-				},
-			},
-		},
-		{
-			Name: "ISSUER",
-			ValueFrom: &corev1.EnvVarSource{
-				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "authbridge-config"},
-					Key:                  "ISSUER",
-					Optional:             ptr.To(false),
-				},
-			},
-		},
-		{
-			Name: "EXPECTED_AUDIENCE",
-			ValueFrom: &corev1.EnvVarSource{
-				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "authbridge-config"},
-					Key:                  "EXPECTED_AUDIENCE",
-					Optional:             ptr.To(true),
-				},
-			},
-		},
-		{
-			Name: "TARGET_AUDIENCE",
-			ValueFrom: &corev1.EnvVarSource{
-				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "authbridge-config"},
-					Key:                  "TARGET_AUDIENCE",
-					Optional:             ptr.To(true),
-				},
-			},
-		},
-		{
-			Name: "TARGET_SCOPES",
-			ValueFrom: &corev1.EnvVarSource{
-				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "authbridge-config"},
-					Key:                  "TARGET_SCOPES",
-					Optional:             ptr.To(true),
-				},
-			},
-		},
-		{Name: "CLIENT_ID_FILE", Value: "/shared/client-id.txt"},
-		{Name: "CLIENT_SECRET_FILE", Value: "/shared/client-secret.txt"},
-		{Name: "ROUTES_CONFIG_PATH", Value: "/etc/authproxy/routes.yaml"},
-		{
-			Name: "DEFAULT_OUTBOUND_POLICY",
-			ValueFrom: &corev1.EnvVarSource{
-				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "authbridge-config"},
-					Key:                  "DEFAULT_OUTBOUND_POLICY",
-					Optional:             ptr.To(true),
-				},
-			},
-		},
-		// Client-registration env vars
-		{
-			Name: "KEYCLOAK_ADMIN_USERNAME",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "keycloak-admin-secret"},
-					Key:                  "KEYCLOAK_ADMIN_USERNAME",
-				},
-			},
-		},
-		{
-			Name: "KEYCLOAK_ADMIN_PASSWORD",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "keycloak-admin-secret"},
-					Key:                  "KEYCLOAK_ADMIN_PASSWORD",
-				},
-			},
-		},
-		{Name: "CLIENT_NAME", Value: clientName},
-		{Name: "SECRET_FILE_PATH", Value: "/shared/client-secret.txt"},
-		{
-			Name: "PLATFORM_CLIENT_IDS",
-			ValueFrom: &corev1.EnvVarSource{
-				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: AuthBridgeConfigMapName},
-					Key:                  "PLATFORM_CLIENT_IDS",
 					Optional:             ptr.To(true),
 				},
 			},

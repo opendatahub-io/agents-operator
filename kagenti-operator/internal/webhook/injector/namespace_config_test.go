@@ -133,3 +133,33 @@ func TestReadNamespaceConfig_PartialConfig(t *testing.T) {
 			cfg.TokenURL, cfg.Issuer)
 	}
 }
+
+func TestExtractMTLSMode(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{"empty input", "", ""},
+		{"no mtls block", "mode: proxy-sidecar\n", ""},
+		{"mtls block, mode strict", "mtls:\n  mode: strict\n", "strict"},
+		{"mtls block, mode permissive", "mtls:\n  mode: permissive\n", "permissive"},
+		{"mtls block, mode disabled", "mtls:\n  mode: disabled\n", "disabled"},
+		{"mtls block with cert paths overridden", "mtls:\n  mode: strict\n  cert_file: /custom/cert.pem\n", "strict"},
+		{"mtls block, no mode key", "mtls:\n  cert_file: /opt/svid.pem\n", ""},
+		{"mtls and other blocks", "mode: proxy-sidecar\nmtls:\n  mode: permissive\nlistener:\n  reverse_proxy_addr: \":8080\"\n", "permissive"},
+		// Malformed YAML produces "" — caller falls through to the next
+		// resolution layer. Internal WARN log is logged but not asserted
+		// here (slog handler is a global; capturing it adds harness noise).
+		{"malformed yaml falls through", "mtls:\n  mode: strict\n  - this is invalid", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractMTLSMode(tt.yaml)
+			if got != tt.want {
+				t.Errorf("ExtractMTLSMode(%q) = %q, want %q", tt.yaml, got, tt.want)
+			}
+		})
+	}
+}

@@ -48,8 +48,11 @@ type IdentityBinding struct {
 	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$`
 	TrustDomain string `json:"trustDomain,omitempty"`
 
-	// Strict enables enforcement mode: binding failures trigger network isolation.
-	// When false (default), results are recorded in status only (audit mode).
+	// Strict controls whether binding failures trigger enforcement actions
+	// (label removal, restrictive NetworkPolicy).
+	// When true, binding failure removes the verified label and applies restrictive NetworkPolicy.
+	// When false (default), binding results are recorded in status only;
+	// the workload retains its verified label and permissive policy.
 	// +optional
 	// +kubebuilder:default=false
 	Strict bool `json:"strict,omitempty"`
@@ -115,6 +118,11 @@ type AgentCardStatus struct {
 	// CardId is the SHA-256 hash of the card content for drift detection.
 	// +optional
 	CardId string `json:"cardId,omitempty"`
+
+	// AttestedAgentSpiffeID is the SPIFFE ID extracted from the agent's TLS peer certificate
+	// during authenticated (mTLS) fetch. Set only when verifiedFetch is enabled and successful.
+	// +optional
+	AttestedAgentSpiffeID string `json:"attestedAgentSpiffeId,omitempty"`
 
 	// ExpectedSpiffeID is the SPIFFE ID used for binding evaluation.
 	// +optional
@@ -339,13 +347,16 @@ type SkillParameter struct {
 // +kubebuilder:printcolumn:name="Kind",type="string",JSONPath=".status.targetRef.kind",description="Workload Kind"
 // +kubebuilder:printcolumn:name="Target",type="string",JSONPath=".status.targetRef.name",description="Target Workload"
 // +kubebuilder:printcolumn:name="Agent",type="string",JSONPath=".status.card.name",description="Agent Name"
-// +kubebuilder:printcolumn:name="Verified",type="boolean",JSONPath=".status.validSignature",description="Signature Verified"
+// +kubebuilder:printcolumn:name="Verified",type="string",JSONPath=".status.conditions[?(@.type=='Verified')].status",description="Identity Verified"
 // +kubebuilder:printcolumn:name="Bound",type="boolean",JSONPath=".status.bindingStatus.bound",description="Identity Bound"
 // +kubebuilder:printcolumn:name="Synced",type="string",JSONPath=".status.conditions[?(@.type=='Synced')].status",description="Sync Status"
 // +kubebuilder:printcolumn:name="LastSync",type="date",JSONPath=".status.lastSyncTime",description="Last Sync Time"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+// +kubebuilder:printcolumn:name="AttestedAgent",type="string",JSONPath=".status.attestedAgentSpiffeId",description="Attested Agent SPIFFE ID",priority=1
 
-// AgentCard is the Schema for the agentcards API.
+// AgentCard binds an A2A agent card to a backing workload. The controller periodically
+// fetches the card from the referenced workload, verifies its JWS signature and SPIFFE
+// identity against the configured trust domain, and caches the result in status.
 type AgentCard struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

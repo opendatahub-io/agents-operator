@@ -69,6 +69,110 @@ func TestRenderEnvoyConfig_TemplateRendering(t *testing.T) {
 	}
 }
 
+func TestRenderEnvoyConfig_MTLSDisabled_NoTLSBlocks(t *testing.T) {
+	// Default / disabled mode — no TLS blocks should render. Locks in
+	// the existing plaintext shape so a future template edit can't
+	// silently leak TLS config into pods that didn't ask for it.
+	for _, mode := range []string{"", MTLSModeDisabled} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			cfg := &ResolvedConfig{
+				Platform: config.CompiledDefaults(),
+				MTLSMode: mode,
+			}
+			result, err := RenderEnvoyConfig(cfg)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, banned := range []string{
+				"tls_inspector",
+				"DownstreamTlsContext",
+				"UpstreamTlsContext",
+				"original_destination_tls",
+			} {
+				if strings.Contains(result, banned) {
+					t.Errorf("disabled mode should not render %q", banned)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderEnvoyConfig_MTLSPermissive(t *testing.T) {
+	cfg := &ResolvedConfig{
+		Platform: config.CompiledDefaults(),
+		MTLSMode: MTLSModePermissive,
+	}
+	result, err := RenderEnvoyConfig(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Inbound: tls_inspector + both TLS and raw_buffer chains.
+	for _, want := range []string{
+		"tls_inspector",
+		"DownstreamTlsContext",
+		"transport_protocol: tls",
+		"transport_protocol: raw_buffer",
+		"/opt/svid.pem",
+		"/opt/svid_key.pem",
+		"/opt/svid_bundle.pem",
+		"require_client_certificate: true",
+	} {
+		if !strings.Contains(result, want) {
+			t.Errorf("permissive should render %q", want)
+		}
+	}
+
+	// Outbound: stays plaintext — no UpstreamTlsContext, no TLS cluster.
+	for _, banned := range []string{
+		"UpstreamTlsContext",
+		"original_destination_tls",
+	} {
+		if strings.Contains(result, banned) {
+			t.Errorf("permissive outbound should stay plaintext; got %q", banned)
+		}
+	}
+}
+
+func TestRenderEnvoyConfig_MTLSStrict(t *testing.T) {
+	cfg := &ResolvedConfig{
+		Platform: config.CompiledDefaults(),
+		MTLSMode: MTLSModeStrict,
+	}
+	result, err := RenderEnvoyConfig(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Inbound: tls_inspector + TLS chain only.
+	for _, want := range []string{
+		"tls_inspector",
+		"DownstreamTlsContext",
+		"transport_protocol: tls",
+		"require_client_certificate: true",
+	} {
+		if !strings.Contains(result, want) {
+			t.Errorf("strict should render %q", want)
+		}
+	}
+	// Strict: no raw_buffer chain (plaintext drops at filter chain match).
+	if strings.Contains(result, "transport_protocol: raw_buffer") {
+		t.Error("strict mode must not render the raw_buffer chain — plaintext should drop at filter chain match")
+	}
+
+	// Outbound: TLS-originating cluster present + outbound listener
+	// routes to it.
+	for _, want := range []string{
+		"UpstreamTlsContext",
+		"original_destination_tls",
+		"cluster: original_destination_tls",
+	} {
+		if !strings.Contains(result, want) {
+			t.Errorf("strict outbound should render %q", want)
+		}
+	}
+}
+
 func TestRenderEnvoyConfig_CustomPorts(t *testing.T) {
 	platform := config.CompiledDefaults()
 	platform.Proxy.Port = 20000

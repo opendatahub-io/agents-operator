@@ -106,7 +106,7 @@ func testCard() *agentv1alpha1.AgentCardData {
 	}
 }
 
-// --- signCard tests ---
+// --- SignCard tests (via shared library) ---
 
 func TestSignCard_ECDSA_P256(t *testing.T) {
 	ca := newTestCA(t)
@@ -114,9 +114,9 @@ func TestSignCard_ECDSA_P256(t *testing.T) {
 	leaf, _ := ca.issueLeaf(t, &key.PublicKey, "spiffe://example.org/ns/default/sa/test")
 
 	card := testCard()
-	output, err := signCard(card, key, []*x509.Certificate{leaf, ca.Cert})
+	output, err := signature.SignCard(card, key, []*x509.Certificate{leaf, ca.Cert})
 	if err != nil {
-		t.Fatalf("signCard failed: %v", err)
+		t.Fatalf("SignCard failed: %v", err)
 	}
 
 	var parsed agentv1alpha1.AgentCardData
@@ -148,9 +148,9 @@ func TestSignCard_ECDSA_P384(t *testing.T) {
 	leaf, _ := ca.issueLeaf(t, &key.PublicKey, "spiffe://example.org/agent")
 
 	card := testCard()
-	output, err := signCard(card, key, []*x509.Certificate{leaf})
+	output, err := signature.SignCard(card, key, []*x509.Certificate{leaf})
 	if err != nil {
-		t.Fatalf("signCard failed: %v", err)
+		t.Fatalf("SignCard failed: %v", err)
 	}
 
 	var parsed agentv1alpha1.AgentCardData
@@ -170,9 +170,9 @@ func TestSignCard_RSA(t *testing.T) {
 	leaf, _ := ca.issueLeaf(t, &key.PublicKey, "spiffe://example.org/rsa-agent")
 
 	card := testCard()
-	output, err := signCard(card, key, []*x509.Certificate{leaf})
+	output, err := signature.SignCard(card, key, []*x509.Certificate{leaf})
 	if err != nil {
-		t.Fatalf("signCard failed: %v", err)
+		t.Fatalf("SignCard failed: %v", err)
 	}
 
 	var parsed agentv1alpha1.AgentCardData
@@ -188,7 +188,7 @@ func TestSignCard_RSA(t *testing.T) {
 
 func TestSignCard_NilCardData(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	_, err := signCard(nil, key, []*x509.Certificate{{}})
+	_, err := signature.SignCard(nil, key, []*x509.Certificate{{}})
 	if err == nil {
 		t.Error("expected error for nil card data")
 	}
@@ -196,7 +196,7 @@ func TestSignCard_NilCardData(t *testing.T) {
 
 func TestSignCard_NoCertificates(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	_, err := signCard(testCard(), key, nil)
+	_, err := signature.SignCard(testCard(), key, nil)
 	if err == nil {
 		t.Error("expected error for empty cert chain")
 	}
@@ -210,20 +210,21 @@ func TestSignCard_ECDSA_RawRS_ByteLength(t *testing.T) {
 	leaf, _ := ca.issueLeaf(t, &key.PublicKey, "spiffe://example.org/agent")
 
 	card := testCard()
-	output, err := signCard(card, key, []*x509.Certificate{leaf})
+	output, err := signature.SignCard(card, key, []*x509.Certificate{leaf})
 	if err != nil {
-		t.Fatalf("signCard failed: %v", err)
+		t.Fatalf("SignCard failed: %v", err)
 	}
 
 	var parsed agentv1alpha1.AgentCardData
-	json.Unmarshal(output, &parsed)
+	if err := json.Unmarshal(output, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal signed card: %v", err)
+	}
 
 	sigBytes, err := base64.RawURLEncoding.DecodeString(parsed.Signatures[0].Signature)
 	if err != nil {
 		t.Fatalf("failed to decode signature: %v", err)
 	}
 
-	// ES256 raw R||S must be exactly 64 bytes (32 + 32)
 	if len(sigBytes) != 64 {
 		t.Errorf("ES256 raw R||S signature must be 64 bytes, got %d (likely DER-encoded)", len(sigBytes))
 	}
@@ -235,16 +236,17 @@ func TestSignCard_ECDSA_P384_RawRS_ByteLength(t *testing.T) {
 	leaf, _ := ca.issueLeaf(t, &key.PublicKey, "spiffe://example.org/agent")
 
 	card := testCard()
-	output, err := signCard(card, key, []*x509.Certificate{leaf})
+	output, err := signature.SignCard(card, key, []*x509.Certificate{leaf})
 	if err != nil {
-		t.Fatalf("signCard failed: %v", err)
+		t.Fatalf("SignCard failed: %v", err)
 	}
 
 	var parsed agentv1alpha1.AgentCardData
-	json.Unmarshal(output, &parsed)
+	if err := json.Unmarshal(output, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal signed card: %v", err)
+	}
 
 	sigBytes, _ := base64.RawURLEncoding.DecodeString(parsed.Signatures[0].Signature)
-	// ES384 raw R||S must be exactly 96 bytes (48 + 48)
 	if len(sigBytes) != 96 {
 		t.Errorf("ES384 raw R||S signature must be 96 bytes, got %d", len(sigBytes))
 	}
@@ -258,14 +260,15 @@ func TestSignCard_X5C_StandardBase64(t *testing.T) {
 	leaf, leafDER := ca.issueLeaf(t, &key.PublicKey, "spiffe://example.org/agent")
 
 	card := testCard()
-	output, _ := signCard(card, key, []*x509.Certificate{leaf, ca.Cert})
+	output, _ := signature.SignCard(card, key, []*x509.Certificate{leaf, ca.Cert})
 
 	var parsed agentv1alpha1.AgentCardData
-	json.Unmarshal(output, &parsed)
+	if err := json.Unmarshal(output, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal signed card: %v", err)
+	}
 
 	header, _ := signature.DecodeProtectedHeader(parsed.Signatures[0].Protected)
 
-	// x5c must use standard base64 (not base64url) per RFC 7515 §4.1.6
 	decoded, err := base64.StdEncoding.DecodeString(header.X5C[0])
 	if err != nil {
 		t.Fatalf("x5c[0] is not valid standard base64: %v", err)
@@ -281,10 +284,12 @@ func TestSignCard_X5C_LeafFirst(t *testing.T) {
 	leaf, _ := ca.issueLeaf(t, &key.PublicKey, "spiffe://example.org/agent")
 
 	card := testCard()
-	output, _ := signCard(card, key, []*x509.Certificate{leaf, ca.Cert})
+	output, _ := signature.SignCard(card, key, []*x509.Certificate{leaf, ca.Cert})
 
 	var parsed agentv1alpha1.AgentCardData
-	json.Unmarshal(output, &parsed)
+	if err := json.Unmarshal(output, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal signed card: %v", err)
+	}
 
 	header, _ := signature.DecodeProtectedHeader(parsed.Signatures[0].Protected)
 
@@ -308,22 +313,20 @@ func TestComputeKID(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	leaf, _ := ca.issueLeaf(t, &key.PublicKey, "spiffe://example.org/agent")
 
-	kid := computeKID(leaf)
+	kid := signature.ComputeKID(leaf)
 
 	fp := sha256.Sum256(leaf.Raw)
-	expected := big.NewInt(0).SetBytes(fp[:8]).Text(16)
-	// kid should be first 16 hex chars of SHA-256 fingerprint
+	_ = big.NewInt(0).SetBytes(fp[:8]).Text(16)
 	if len(kid) != 16 {
 		t.Errorf("expected kid length 16, got %d: %s", len(kid), kid)
 	}
-	_ = expected // format may differ in leading zeros, just check length
 }
 
-// --- algorithmForKey tests ---
+// --- AlgorithmForKey tests ---
 
 func TestAlgorithmForKey_ECDSA_P256(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	alg, err := algorithmForKey(&key.PublicKey)
+	alg, err := signature.AlgorithmForKey(&key.PublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +337,7 @@ func TestAlgorithmForKey_ECDSA_P256(t *testing.T) {
 
 func TestAlgorithmForKey_ECDSA_P384(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
-	alg, err := algorithmForKey(&key.PublicKey)
+	alg, err := signature.AlgorithmForKey(&key.PublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +348,7 @@ func TestAlgorithmForKey_ECDSA_P384(t *testing.T) {
 
 func TestAlgorithmForKey_ECDSA_P521(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
-	alg, err := algorithmForKey(&key.PublicKey)
+	alg, err := signature.AlgorithmForKey(&key.PublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +359,7 @@ func TestAlgorithmForKey_ECDSA_P521(t *testing.T) {
 
 func TestAlgorithmForKey_RSA(t *testing.T) {
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
-	alg, err := algorithmForKey(&key.PublicKey)
+	alg, err := signature.AlgorithmForKey(&key.PublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,17 +370,17 @@ func TestAlgorithmForKey_RSA(t *testing.T) {
 
 func TestAlgorithmForKey_RSA_TooSmall(t *testing.T) {
 	key, _ := rsa.GenerateKey(rand.Reader, 1024)
-	_, err := algorithmForKey(&key.PublicKey)
+	_, err := signature.AlgorithmForKey(&key.PublicKey)
 	if err == nil {
 		t.Error("expected error for 1024-bit RSA key")
 	}
 }
 
-// --- zeroPrivateKey tests ---
+// --- ZeroPrivateKey tests ---
 
 func TestZeroPrivateKey_ECDSA(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	zeroPrivateKey(key)
+	signature.ZeroPrivateKey(key)
 	if key.D.Sign() != 0 {
 		t.Error("expected ECDSA D to be zeroed")
 	}
@@ -385,7 +388,7 @@ func TestZeroPrivateKey_ECDSA(t *testing.T) {
 
 func TestZeroPrivateKey_RSA(t *testing.T) {
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
-	zeroPrivateKey(key)
+	signature.ZeroPrivateKey(key)
 	if key.D.Sign() != 0 {
 		t.Error("expected RSA D to be zeroed")
 	}
@@ -397,8 +400,6 @@ func TestZeroPrivateKey_RSA(t *testing.T) {
 }
 
 // --- Canonical JSON cross-validation ---
-// Signer uses signature.CreateCanonicalCardJSON -- verify the output matches
-// what the verifier expects.
 
 func TestSignCard_CanonicalJSON_CrossValidation(t *testing.T) {
 	ca := newTestCA(t)
@@ -406,27 +407,20 @@ func TestSignCard_CanonicalJSON_CrossValidation(t *testing.T) {
 	leaf, _ := ca.issueLeaf(t, &key.PublicKey, "spiffe://example.org/agent")
 
 	card := testCard()
-	output, err := signCard(card, key, []*x509.Certificate{leaf})
+	output, err := signature.SignCard(card, key, []*x509.Certificate{leaf})
 	if err != nil {
-		t.Fatalf("signCard failed: %v", err)
+		t.Fatalf("SignCard failed: %v", err)
 	}
 
 	var parsed agentv1alpha1.AgentCardData
-	json.Unmarshal(output, &parsed)
-
-	// Re-derive the canonical JSON from the parsed card (without signatures)
-	cardWithoutSigs := parsed
-	cardWithoutSigs.Signatures = nil
-	canonical, err := signature.CreateCanonicalCardJSON(&cardWithoutSigs)
-	if err != nil {
-		t.Fatalf("CreateCanonicalCardJSON failed: %v", err)
+	if err := json.Unmarshal(output, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal signed card: %v", err)
 	}
 
-	// Reconstruct the signing input and verify the signature
-	sig := parsed.Signatures[0]
-	payloadB64 := base64.RawURLEncoding.EncodeToString(canonical)
-	signingInput := sig.Protected + "." + payloadB64
+	cardWithoutSigs := parsed
+	cardWithoutSigs.Signatures = nil
 
+	sig := parsed.Signatures[0]
 	pubPEM, _ := signature.MarshalPublicKeyToPEM(&key.PublicKey)
 	result, err := signature.VerifyJWS(&cardWithoutSigs, &sig, pubPEM)
 	if err != nil {
@@ -435,7 +429,6 @@ func TestSignCard_CanonicalJSON_CrossValidation(t *testing.T) {
 	if !result.Verified {
 		t.Errorf("cross-validation failed: signer output not verified by VerifyJWS: %s", result.Details)
 	}
-	_ = signingInput
 }
 
 // --- End-to-end: signer output verified by X5CProvider ---
@@ -446,15 +439,16 @@ func TestSignCard_VerifiedByX5CProvider(t *testing.T) {
 	leaf, _ := ca.issueLeaf(t, &key.PublicKey, "spiffe://example.org/ns/default/sa/test")
 
 	card := testCard()
-	output, err := signCard(card, key, []*x509.Certificate{leaf, ca.Cert})
+	output, err := signature.SignCard(card, key, []*x509.Certificate{leaf, ca.Cert})
 	if err != nil {
-		t.Fatalf("signCard failed: %v", err)
+		t.Fatalf("SignCard failed: %v", err)
 	}
 
 	var parsed agentv1alpha1.AgentCardData
-	json.Unmarshal(output, &parsed)
+	if err := json.Unmarshal(output, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal signed card: %v", err)
+	}
 
-	// Build an X5CProvider with the test CA
 	pool := x509.NewCertPool()
 	pool.AddCert(ca.Cert)
 	provider := &signature.X5CProvider{}
@@ -477,7 +471,7 @@ func TestSignCard_VerifiedByX5CProvider(t *testing.T) {
 // --- writeConfigMap tests ---
 
 func TestWriteConfigMapWithClient_Create(t *testing.T) {
-	fakeClient := k8sfake.NewSimpleClientset()
+	fakeClient := k8sfake.NewSimpleClientset() //nolint:staticcheck // NewClientset requires generated apply configs
 	cardJSON := []byte(`{"name":"test-agent","version":"1.0"}`)
 
 	err := writeConfigMapWithClient(context.Background(), fakeClient, "my-agent", "test-ns", cardJSON)
@@ -500,6 +494,7 @@ func TestWriteConfigMapWithClient_Update(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "my-agent-card-signed", Namespace: "test-ns"},
 		Data:       map[string]string{"agent-card.json": `{"name":"old"}`},
 	}
+	//nolint:staticcheck // NewClientset requires generated apply configs
 	fakeClient := k8sfake.NewSimpleClientset(existing)
 
 	newCardJSON := []byte(`{"name":"updated-agent","version":"2.0"}`)
@@ -522,8 +517,5 @@ func TestWriteConfigMap_MissingEnvVars(t *testing.T) {
 	err := writeConfigMap(context.Background(), []byte("{}"))
 	if err == nil {
 		t.Fatal("expected error when env vars are missing")
-	}
-	if testing.Verbose() {
-		t.Logf("writeConfigMap error: %v", err)
 	}
 }

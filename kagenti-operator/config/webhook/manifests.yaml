@@ -13,28 +13,6 @@ webhooks:
       path: /mutate-workloads-authbridge
   failurePolicy: Fail
   name: inject.kagenti.io
-  namespaceSelector:
-    matchExpressions:
-    - key: kubernetes.io/metadata.name
-      operator: NotIn
-      values:
-      - kube-system
-      - kube-public
-      - kube-node-lease
-      - kagenti-operator-system
-    matchLabels:
-      kagenti-enabled: "true"
-  objectSelector:
-    matchExpressions:
-    - key: kagenti.io/type
-      operator: In
-      values:
-      - agent
-      - tool
-    - key: kagenti.io/inject
-      operator: NotIn
-      values:
-      - disabled
   reinvocationPolicy: IfNeeded
   rules:
   - apiGroups:
@@ -46,7 +24,6 @@ webhooks:
     resources:
     - pods
   sideEffects: None
-  timeoutSeconds: 10
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration

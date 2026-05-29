@@ -39,22 +39,29 @@ type ResolvedConfig struct {
 	TokenURL              string
 	Issuer                string
 	ExpectedAudience      string
+	AllowedAudiences      []string // from AgentRuntime .spec.identity.allowedAudiences or namespace CM
 	TargetAudience        string
 	TargetScopes          string
 	DefaultOutboundPolicy string
 	ClientAuthType        string // "client-secret" or "federated-jwt"
 	SpiffeIdpAlias        string // Keycloak SPIFFE Identity Provider alias
-	JWTAudience           string // JWT audience for SPIFFE authentication
 
 	// Sidecar configs — from namespace CMs (not overridable by AgentRuntime v1alpha1)
 	SpiffeHelperConf    string
 	EnvoyYAML           string // empty = use template
 	AuthproxyRoutesYAML string
 
-	// Observability — from AgentRuntime .spec.trace (optional)
-	TraceEndpoint     string
-	TraceProtocol     string   // "grpc" or "http"
-	TraceSamplingRate *float64 // nil = not set
+	// AuthBridge runtime config — from namespace "authbridge-runtime-config" ConfigMap
+	AuthBridgeRuntimeYAML string // raw config.yaml (base for per-agent ConfigMap)
+
+	// AuthBridgeMode and MTLSMode are the resolved values from the chain
+	// CR > namespace ConfigMap > default. They're populated alongside the
+	// raw AuthBridgeRuntimeYAML so callers (e.g. RenderEnvoyConfig) can
+	// branch on the resolved values without re-parsing the YAML.
+	// AuthBridgeMode is "" when no source set it (caller picks the default).
+	// MTLSMode is "" when no source set it (caller treats as "disabled").
+	AuthBridgeMode string
+	MTLSMode       string
 }
 
 // ResolveConfig merges all three configuration layers into a single ResolvedConfig.
@@ -85,32 +92,39 @@ func ResolveConfig(platform *config.PlatformConfig, ns *NamespaceConfig, ar *Age
 		DefaultOutboundPolicy:      ns.DefaultOutboundPolicy,
 		ClientAuthType:             ns.ClientAuthType,
 		SpiffeIdpAlias:             ns.SpiffeIdpAlias,
-		JWTAudience:                ns.JWTAudience,
 		SpiffeHelperConf:           ns.SpiffeHelperConf,
 		EnvoyYAML:                  ns.EnvoyYAML,
 		AuthproxyRoutesYAML:        ns.AuthproxyRoutesYAML,
+		AuthBridgeRuntimeYAML:      ns.AuthBridgeRuntimeYAML,
 	}
 
-	// Apply AgentRuntime overrides (highest precedence)
+	// Apply AgentRuntime identity overrides (highest precedence)
 	if ar != nil {
+		if len(ar.AllowedAudiences) > 0 {
+			resolved.AllowedAudiences = ar.AllowedAudiences
+		}
 		if ar.SpiffeTrustDomain != nil {
 			resolved.SpiffeTrustDomain = *ar.SpiffeTrustDomain
 		}
 		if ar.ClientRegistrationRealm != nil {
 			resolved.KeycloakRealm = *ar.ClientRegistrationRealm
 		}
-		// TODO: AdminCredentialsSecretName/Namespace overrides require reading a
-		// different Secret at namespace-config time (not a simple value override).
-		// Deferred until AgentRuntime CRD is merged and the full flow is testable.
-		if ar.TraceEndpoint != nil {
-			resolved.TraceEndpoint = *ar.TraceEndpoint
-		}
-		if ar.TraceProtocol != nil {
-			resolved.TraceProtocol = *ar.TraceProtocol
-		}
-		if ar.TraceSamplingRate != nil {
-			resolved.TraceSamplingRate = ar.TraceSamplingRate
-		}
+	}
+
+	// Resolve AuthBridgeMode + MTLSMode along the same CR > namespace > ""
+	// chain that pod_mutator uses. Keep this resolution local to
+	// ResolveConfig so consumers (e.g. RenderEnvoyConfig) can read the
+	// already-merged values straight off ResolvedConfig instead of
+	// re-implementing the chain.
+	if ar != nil && ar.AuthBridgeMode != nil {
+		resolved.AuthBridgeMode = *ar.AuthBridgeMode
+	} else if m := ExtractMode(resolved.AuthBridgeRuntimeYAML); m != "" {
+		resolved.AuthBridgeMode = m
+	}
+	if ar != nil && ar.MTLSMode != nil {
+		resolved.MTLSMode = *ar.MTLSMode
+	} else if m := ExtractMTLSMode(resolved.AuthBridgeRuntimeYAML); m != "" {
+		resolved.MTLSMode = m
 	}
 
 	return resolved

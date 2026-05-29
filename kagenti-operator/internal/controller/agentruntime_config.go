@@ -43,27 +43,58 @@ const (
 
 	// LabelNamespaceDefaults identifies namespace-level defaults ConfigMaps.
 	LabelNamespaceDefaults = "kagenti.io/defaults"
+
+	// AuthBridgeRuntimeConfigMapName is the namespace-scoped ConfigMap that
+	// holds the authbridge runtime config (config.yaml). Edits to this
+	// ConfigMap are watched by AgentRuntimeReconciler so the resolved-config
+	// hash picks them up and rolls affected workloads.
+	AuthBridgeRuntimeConfigMapName = "authbridge-runtime-config"
 )
 
 // resolvedConfig is the canonical representation used for hash computation.
 // It captures the merged result of cluster defaults → namespace defaults → CR overrides.
 //
-// Structured fields (Type, TrustDomain, Trace) hold CR-level overrides.
+// Structured fields (Type, TrustDomain) hold CR-level overrides.
 // FeatureGates and Defaults hold the raw ConfigMap data. The hash is computed
 // from the full struct — the webhook performs the same merge independently
 // at Pod CREATE time.
 type resolvedConfig struct {
 	Type         string            `json:"type"`
 	TrustDomain  string            `json:"trustDomain,omitempty"`
-	Trace        *traceConfig      `json:"trace,omitempty"`
 	FeatureGates map[string]string `json:"featureGates,omitempty"`
 	Defaults     map[string]string `json:"defaults,omitempty"`
+	// AuthBridgeMode and MTLSMode change the injected sidecar shape /
+	// transport posture, both of which require a pod restart to take
+	// effect. Including them here folds CR-edit changes into the
+	// config-hash so applyWorkloadConfig stamps a new hash on the pod
+	// template and the Deployment rolls.
+	AuthBridgeMode string `json:"authBridgeMode,omitempty"`
+	MTLSMode       string `json:"mtlsMode,omitempty"`
+
+	// AuthBridgeRuntime captures the namespace authbridge-runtime-config
+	// ConfigMap's config.yaml content so namespace-level edits flow into
+	// the hash. Stored as the raw string (not parsed) because authbridge
+	// pipelines/listener/mtls config drift through here in any shape and
+	// we want any byte change to roll the workload. Empty string when
+	// the ConfigMap doesn't exist in the namespace.
+	//
+	// Operational note: a single edit to authbridge-runtime-config
+	// re-hashes every AgentRuntime in the namespace and reconciles them
+	// in a burst. Kubernetes sequences the actual pod rolls per
+	// Deployment, but the controller's reconcile load scales linearly
+	// with the number of AgentRuntimes. For typical small namespaces
+	// (single-digit agents) this is fine; in larger deployments,
+	// formatting / whitespace edits to this CM during peak hours will
+	// trigger a noticeable rollout fan-out.
+	AuthBridgeRuntime string        `json:"authBridgeRuntime,omitempty"`
+	Skills            []skillConfig `json:"skills,omitempty"`
 }
 
-type traceConfig struct {
-	Endpoint string  `json:"endpoint,omitempty"`
-	Protocol string  `json:"protocol,omitempty"`
-	Rate     float64 `json:"rate,omitempty"`
+type skillConfig struct {
+	Name       string `json:"name"`
+	Image      string `json:"image"`
+	MountPath  string `json:"mountPath"`
+	PullPolicy string `json:"pullPolicy,omitempty"`
 }
 
 // ConfigResult holds the computed hash and any warnings from the config resolution.
@@ -111,9 +142,19 @@ func resolveConfig(ctx context.Context, c client.Reader, namespace string, spec 
 	}
 	merged := mergeMaps(clusterDefaults, nsDefaults)
 
+	// Layer 2b: namespace authbridge-runtime-config (config.yaml).
+	// Captured raw so any byte change rolls the workload. The CM may
+	// not exist in every agent namespace; absence is normal and the
+	// admission webhook falls back to its own defaults.
+	abRuntime := ""
+	if data := readConfigMapData(ctx, c, namespace, AuthBridgeRuntimeConfigMapName); len(data) > 0 {
+		abRuntime = data["config.yaml"]
+	}
+
 	resolved := resolvedConfig{
-		FeatureGates: featureGates,
-		Defaults:     merged,
+		FeatureGates:      featureGates,
+		Defaults:          merged,
+		AuthBridgeRuntime: abRuntime,
 	}
 
 	if spec == nil {
@@ -130,17 +171,16 @@ func resolveConfig(ctx context.Context, c client.Reader, namespace string, spec 
 		resolved.TrustDomain = spec.Identity.SPIFFE.TrustDomain
 	}
 
-	if spec.Trace != nil {
-		resolved.Trace = &traceConfig{}
-		if spec.Trace.Endpoint != "" {
-			resolved.Trace.Endpoint = spec.Trace.Endpoint
-		}
-		if spec.Trace.Protocol != "" {
-			resolved.Trace.Protocol = string(spec.Trace.Protocol)
-		}
-		if spec.Trace.Sampling != nil {
-			resolved.Trace.Rate = spec.Trace.Sampling.Rate
-		}
+	resolved.AuthBridgeMode = spec.AuthBridgeMode
+	resolved.MTLSMode = spec.MTLSMode
+
+	for _, s := range spec.Skills {
+		resolved.Skills = append(resolved.Skills, skillConfig{
+			Name:       s.Name,
+			Image:      s.Image,
+			MountPath:  s.MountPath,
+			PullPolicy: string(s.PullPolicy),
+		})
 	}
 
 	return resolved, warnings

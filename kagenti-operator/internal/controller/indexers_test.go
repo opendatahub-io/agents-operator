@@ -23,7 +23,10 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
 )
 
 var _ = Describe("mapWorkloadToAgentCards", func() {
@@ -79,6 +82,53 @@ var _ = Describe("mapWorkloadToAgentCards", func() {
 
 			mapFn := mapWorkloadToAgentCards(k8sClient, "apps/v1", "Deployment", logger)
 			requests := mapFn(ctx, deploy)
+			Expect(requests).To(BeEmpty())
+		})
+	})
+
+	Context("when a Sandbox workload has agent labels and matching AgentCard exists", func() {
+		It("should return a reconcile request for the AgentCard", func() {
+			card := &agentv1alpha1.AgentCard{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "sandbox-card",
+					Namespace: namespace,
+				},
+				Spec: agentv1alpha1.AgentCardSpec{
+					TargetRef: &agentv1alpha1.TargetRef{
+						APIVersion: "agents.x-k8s.io/v1alpha1",
+						Kind:       "Sandbox",
+						Name:       "my-sandbox",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, card)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, card) })
+
+			sbx := &unstructured.Unstructured{}
+			sbx.SetGroupVersionKind(sandboxGVK)
+			sbx.SetName("my-sandbox")
+			sbx.SetNamespace(namespace)
+			sbx.SetLabels(map[string]string{LabelAgentType: LabelValueAgent})
+
+			mapFn := mapWorkloadToAgentCards(indexedClient, "agents.x-k8s.io/v1alpha1", "Sandbox", logger)
+			Eventually(func() int {
+				return len(mapFn(ctx, sbx))
+			}).Should(Equal(1))
+			requests := mapFn(ctx, sbx)
+			Expect(requests[0].Name).To(Equal("sandbox-card"))
+		})
+	})
+
+	Context("when a Sandbox workload lacks agent labels", func() {
+		It("should return no reconcile requests", func() {
+			sbx := &unstructured.Unstructured{}
+			sbx.SetGroupVersionKind(sandboxGVK)
+			sbx.SetName("unlabeled-sandbox")
+			sbx.SetNamespace(namespace)
+			sbx.SetLabels(map[string]string{"app": "something"})
+
+			mapFn := mapWorkloadToAgentCards(k8sClient, "agents.x-k8s.io/v1alpha1", "Sandbox", logger)
+			requests := mapFn(ctx, sbx)
 			Expect(requests).To(BeEmpty())
 		})
 	})

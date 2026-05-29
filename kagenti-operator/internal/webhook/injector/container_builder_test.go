@@ -33,8 +33,14 @@ func TestBuildEnvoyProxyContainer_SpireEnabled_HasSvidOutputMount(t *testing.T) 
 			if vm.MountPath != "/opt" {
 				t.Errorf("svid-output mount path = %q, want /opt", vm.MountPath)
 			}
-			if !vm.ReadOnly {
-				t.Error("svid-output mount should be read-only")
+			// Must be RW: the in-process spiffe Provider mirror inside the
+			// authbridge-envoy combined image writes /opt/svid*.pem there.
+			// The previous assertion (ReadOnly required) was wrong — it was
+			// asserting the bug as the desired behavior. Envoy's file-based
+			// DownstreamTlsContext / UpstreamTlsContext (used when mtlsMode
+			// != disabled) refuses to boot if these files don't exist.
+			if vm.ReadOnly {
+				t.Error("svid-output mount must be read-write so the spiffe Provider mirror can write SVIDs")
 			}
 			break
 		}
@@ -80,7 +86,7 @@ func TestBuildEnvoyProxyContainer_HasAllRequiredMounts(t *testing.T) {
 		"envoy-config":              "/etc/envoy",
 		"shared-data":               "/shared",
 		"svid-output":               "/opt",
-		"authbridge-unified-config": "/etc/authbridge",
+		"authbridge-runtime-config": "/etc/authbridge",
 	}
 
 	mountsByName := make(map[string]string)
@@ -106,140 +112,6 @@ func TestBuildEnvoyProxyContainer_Name(t *testing.T) {
 
 	if container.Name != EnvoyProxyContainerName {
 		t.Errorf("container name = %q, want %q", container.Name, EnvoyProxyContainerName)
-	}
-}
-
-func TestBuildClientRegistrationContainer_HasPlatformClientIDsEnv(t *testing.T) {
-	builder := NewContainerBuilder(config.CompiledDefaults())
-	container := builder.BuildClientRegistrationContainerWithSpireOption("test-agent", "team1", true)
-
-	found := false
-	for _, env := range container.Env {
-		if env.Name == "PLATFORM_CLIENT_IDS" {
-			found = true
-			if env.ValueFrom == nil || env.ValueFrom.ConfigMapKeyRef == nil {
-				t.Error("PLATFORM_CLIENT_IDS should reference a ConfigMap key")
-				break
-			}
-			if env.ValueFrom.ConfigMapKeyRef.Name != "authbridge-config" {
-				t.Errorf("PLATFORM_CLIENT_IDS ConfigMapKeyRef.Name = %q, want %q",
-					env.ValueFrom.ConfigMapKeyRef.Name, "authbridge-config")
-			}
-			if env.ValueFrom.ConfigMapKeyRef.Key != "PLATFORM_CLIENT_IDS" {
-				t.Errorf("PLATFORM_CLIENT_IDS key = %q, want PLATFORM_CLIENT_IDS",
-					env.ValueFrom.ConfigMapKeyRef.Key)
-			}
-			if env.ValueFrom.ConfigMapKeyRef.Optional == nil || !*env.ValueFrom.ConfigMapKeyRef.Optional {
-				t.Error("PLATFORM_CLIENT_IDS should be optional")
-			}
-			break
-		}
-	}
-	if !found {
-		t.Error("client-registration container missing PLATFORM_CLIENT_IDS env var")
-	}
-}
-
-func TestBuildClientRegistrationContainer_AdminCredentialsFromSecret(t *testing.T) {
-	builder := NewContainerBuilder(config.CompiledDefaults())
-	container := builder.BuildClientRegistrationContainerWithSpireOption("my-app", "my-ns", true)
-
-	sensitiveKeys := []string{"KEYCLOAK_ADMIN_USERNAME", "KEYCLOAK_ADMIN_PASSWORD"}
-	for _, key := range sensitiveKeys {
-		found := false
-		for _, env := range container.Env {
-			if env.Name != key {
-				continue
-			}
-			found = true
-			if env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil {
-				t.Errorf("env %q must use SecretKeyRef, got ConfigMapKeyRef or literal", key)
-				continue
-			}
-			if env.ValueFrom.SecretKeyRef.Name != "keycloak-admin-secret" {
-				t.Errorf("env %q SecretKeyRef.Name = %q, want %q", key, env.ValueFrom.SecretKeyRef.Name, "keycloak-admin-secret")
-			}
-		}
-		if !found {
-			t.Errorf("client-registration container missing env var %q", key)
-		}
-	}
-}
-
-func TestBuildClientRegistrationContainer_ResolvedPath_AdminCredentialsFromSecret(t *testing.T) {
-	resolved := &ResolvedConfig{
-		Platform:    config.CompiledDefaults(),
-		KeycloakURL: "https://keycloak.example.com",
-	}
-	builder := NewResolvedContainerBuilder(resolved)
-	container := builder.BuildClientRegistrationContainerWithSpireOption("my-app", "my-ns", true)
-
-	sensitiveKeys := []string{"KEYCLOAK_ADMIN_USERNAME", "KEYCLOAK_ADMIN_PASSWORD"}
-	for _, key := range sensitiveKeys {
-		found := false
-		for _, env := range container.Env {
-			if env.Name != key {
-				continue
-			}
-			found = true
-			if env.Value != "" {
-				t.Errorf("env %q must NOT have a literal Value in resolved path (security: keeps credentials out of Pod spec)", key)
-			}
-			if env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil {
-				t.Errorf("env %q must use SecretKeyRef, got literal or ConfigMapKeyRef", key)
-				continue
-			}
-			if env.ValueFrom.SecretKeyRef.Name != "keycloak-admin-secret" {
-				t.Errorf("env %q SecretKeyRef.Name = %q, want %q", key, env.ValueFrom.SecretKeyRef.Name, "keycloak-admin-secret")
-			}
-		}
-		if !found {
-			t.Errorf("client-registration container missing env var %q", key)
-		}
-	}
-}
-
-func TestBuildClientRegistrationContainer_NonSensitiveKeysFromConfigMap(t *testing.T) {
-	builder := NewContainerBuilder(config.CompiledDefaults())
-	container := builder.BuildClientRegistrationContainerWithSpireOption("my-app", "my-ns", true)
-
-	nonSensitiveKeys := []string{"KEYCLOAK_URL", "KEYCLOAK_REALM"}
-	for _, key := range nonSensitiveKeys {
-		found := false
-		for _, env := range container.Env {
-			if env.Name != key {
-				continue
-			}
-			found = true
-			if env.ValueFrom == nil || env.ValueFrom.ConfigMapKeyRef == nil {
-				t.Errorf("env %q must use ConfigMapKeyRef", key)
-				continue
-			}
-			if env.ValueFrom.ConfigMapKeyRef.Name != "authbridge-config" {
-				t.Errorf("env %q ConfigMapKeyRef.Name = %q, want %q", key, env.ValueFrom.ConfigMapKeyRef.Name, "authbridge-config")
-			}
-		}
-		if !found {
-			t.Errorf("client-registration container missing env var %q", key)
-		}
-	}
-}
-
-func TestBuildClientRegistrationContainer_HasSecretFilePath(t *testing.T) {
-	builder := NewContainerBuilder(config.CompiledDefaults())
-	container := builder.BuildClientRegistrationContainerWithSpireOption("my-app", "my-ns", true)
-
-	found := false
-	for _, env := range container.Env {
-		if env.Name == "SECRET_FILE_PATH" {
-			found = true
-			if env.Value != "/shared/client-secret.txt" {
-				t.Errorf("SECRET_FILE_PATH should be /shared/client-secret.txt, got %s", env.Value)
-			}
-		}
-	}
-	if !found {
-		t.Error("client-registration container should have SECRET_FILE_PATH env var for backwards compatibility")
 	}
 }
 
@@ -440,242 +312,6 @@ func TestBuildPortExcludeValue(t *testing.T) {
 // AuthBridge combined container tests
 // ========================================
 
-func TestBuildAuthBridgeContainer_Name(t *testing.T) {
-	builder := NewContainerBuilder(config.CompiledDefaults())
-	container := builder.BuildAuthBridgeContainer("my-agent", "test-ns", true, true)
-
-	if container.Name != AuthBridgeContainerName {
-		t.Errorf("container name = %q, want %q", container.Name, AuthBridgeContainerName)
-	}
-}
-
-func TestBuildAuthBridgeContainer_UID1337(t *testing.T) {
-	builder := NewContainerBuilder(config.CompiledDefaults())
-	container := builder.BuildAuthBridgeContainer("my-agent", "test-ns", true, true)
-
-	if container.SecurityContext == nil {
-		t.Fatal("SecurityContext is nil")
-	}
-	if container.SecurityContext.RunAsUser == nil || *container.SecurityContext.RunAsUser != 1337 {
-		t.Errorf("RunAsUser = %v, want 1337", container.SecurityContext.RunAsUser)
-	}
-	if container.SecurityContext.RunAsGroup == nil || *container.SecurityContext.RunAsGroup != 1337 {
-		t.Errorf("RunAsGroup = %v, want 1337", container.SecurityContext.RunAsGroup)
-	}
-}
-
-func TestBuildAuthBridgeContainer_Ports(t *testing.T) {
-	builder := NewContainerBuilder(config.CompiledDefaults())
-	container := builder.BuildAuthBridgeContainer("my-agent", "test-ns", true, true)
-
-	wantPorts := map[string]int32{
-		"envoy-outbound": 15123,
-		"envoy-inbound":  15124,
-		"envoy-admin":    9901,
-		"ext-proc":       9090,
-	}
-
-	portsByName := make(map[string]int32)
-	for _, p := range container.Ports {
-		portsByName[p.Name] = p.ContainerPort
-	}
-
-	for name, wantPort := range wantPorts {
-		got, ok := portsByName[name]
-		if !ok {
-			t.Errorf("missing port %q", name)
-			continue
-		}
-		if got != wantPort {
-			t.Errorf("port %q = %d, want %d", name, got, wantPort)
-		}
-	}
-}
-
-func TestBuildAuthBridgeContainer_SpireEnabled_AllMounts(t *testing.T) {
-	builder := NewContainerBuilder(config.CompiledDefaults())
-	container := builder.BuildAuthBridgeContainer("my-agent", "test-ns", true, true)
-
-	wantMounts := map[string]string{
-		"envoy-config":         "/etc/envoy",
-		"authproxy-routes":     "/etc/authproxy",
-		"shared-data":          "/shared",
-		"svid-output":          "/opt",
-		"spiffe-helper-config": "/etc/spiffe-helper",
-		"spire-agent-socket":   "/spiffe-workload-api",
-	}
-
-	mountsByName := make(map[string]string)
-	for _, vm := range container.VolumeMounts {
-		mountsByName[vm.Name] = vm.MountPath
-	}
-
-	for name, wantPath := range wantMounts {
-		gotPath, ok := mountsByName[name]
-		if !ok {
-			t.Errorf("missing volume mount %q", name)
-			continue
-		}
-		if gotPath != wantPath {
-			t.Errorf("volume mount %q path = %q, want %q", name, gotPath, wantPath)
-		}
-	}
-
-	// shared-data and svid-output must be read-write
-	for _, vm := range container.VolumeMounts {
-		if vm.Name == "shared-data" || vm.Name == "svid-output" {
-			if vm.ReadOnly {
-				t.Errorf("volume mount %q should be read-write, got ReadOnly=true", vm.Name)
-			}
-		}
-	}
-}
-
-func TestBuildAuthBridgeContainer_SpireDisabled_NoSpireMounts(t *testing.T) {
-	builder := NewContainerBuilder(config.CompiledDefaults())
-	container := builder.BuildAuthBridgeContainer("my-agent", "test-ns", false, true)
-
-	spireMounts := []string{"svid-output", "spiffe-helper-config", "spire-agent-socket"}
-	for _, vm := range container.VolumeMounts {
-		for _, spireMount := range spireMounts {
-			if vm.Name == spireMount {
-				t.Errorf("unexpected SPIRE volume mount %q when SPIRE is disabled", vm.Name)
-			}
-		}
-	}
-
-	// Still has non-SPIRE mounts
-	found := false
-	for _, vm := range container.VolumeMounts {
-		if vm.Name == "envoy-config" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("missing envoy-config volume mount")
-	}
-}
-
-func TestBuildAuthBridgeContainer_ControlFlags(t *testing.T) {
-	builder := NewContainerBuilder(config.CompiledDefaults())
-	container := builder.BuildAuthBridgeContainer("my-agent", "test-ns", true, false)
-
-	envByName := make(map[string]string)
-	for _, env := range container.Env {
-		if env.Value != "" {
-			envByName[env.Name] = env.Value
-		}
-	}
-
-	if envByName["SPIRE_ENABLED"] != "true" {
-		t.Errorf("SPIRE_ENABLED = %q, want %q", envByName["SPIRE_ENABLED"], "true")
-	}
-	if envByName["CLIENT_REGISTRATION_ENABLED"] != "false" {
-		t.Errorf("CLIENT_REGISTRATION_ENABLED = %q, want %q", envByName["CLIENT_REGISTRATION_ENABLED"], "false")
-	}
-}
-
-func TestBuildAuthBridgeContainer_AllEnvVars(t *testing.T) {
-	builder := NewContainerBuilder(config.CompiledDefaults())
-	container := builder.BuildAuthBridgeContainer("my-agent", "test-ns", true, true)
-
-	// Verify union of envoy-proxy + client-registration env vars exist
-	requiredEnvNames := []string{
-		"SPIRE_ENABLED", "CLIENT_REGISTRATION_ENABLED",
-		"KEYCLOAK_URL", "KEYCLOAK_REALM", "TOKEN_URL", "ISSUER",
-		"EXPECTED_AUDIENCE", "TARGET_AUDIENCE", "TARGET_SCOPES",
-		"CLIENT_ID_FILE", "CLIENT_SECRET_FILE", "ROUTES_CONFIG_PATH",
-		"DEFAULT_OUTBOUND_POLICY",
-		"KEYCLOAK_ADMIN_USERNAME", "KEYCLOAK_ADMIN_PASSWORD",
-		"CLIENT_NAME", "SECRET_FILE_PATH", "PLATFORM_CLIENT_IDS",
-	}
-
-	envNames := make(map[string]bool)
-	for _, env := range container.Env {
-		envNames[env.Name] = true
-	}
-
-	for _, name := range requiredEnvNames {
-		if !envNames[name] {
-			t.Errorf("missing env var %q", name)
-		}
-	}
-}
-
-func TestBuildAuthBridgeContainer_AdminCredentialsFromSecret(t *testing.T) {
-	builder := NewContainerBuilder(config.CompiledDefaults())
-	container := builder.BuildAuthBridgeContainer("my-agent", "test-ns", true, true)
-
-	for _, key := range []string{"KEYCLOAK_ADMIN_USERNAME", "KEYCLOAK_ADMIN_PASSWORD"} {
-		found := false
-		for _, env := range container.Env {
-			if env.Name != key {
-				continue
-			}
-			found = true
-			if env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil {
-				t.Errorf("env %q must use SecretKeyRef", key)
-			}
-		}
-		if !found {
-			t.Errorf("missing env var %q", key)
-		}
-	}
-}
-
-func TestBuildAuthBridgeContainer_ResolvedMode(t *testing.T) {
-	resolved := &ResolvedConfig{
-		Platform:              config.CompiledDefaults(),
-		KeycloakURL:           "https://keycloak.example.com",
-		KeycloakRealm:         "test-realm",
-		TokenURL:              "https://keycloak.example.com/realms/test-realm/protocol/openid-connect/token",
-		DefaultOutboundPolicy: "passthrough",
-	}
-	builder := NewResolvedContainerBuilder(resolved)
-	container := builder.BuildAuthBridgeContainer("my-agent", "test-ns", true, true)
-
-	envByName := make(map[string]string)
-	for _, env := range container.Env {
-		if env.Value != "" {
-			envByName[env.Name] = env.Value
-		}
-	}
-
-	if envByName["KEYCLOAK_URL"] != "https://keycloak.example.com" {
-		t.Errorf("KEYCLOAK_URL = %q, want %q", envByName["KEYCLOAK_URL"], "https://keycloak.example.com")
-	}
-	if envByName["KEYCLOAK_REALM"] != "test-realm" {
-		t.Errorf("KEYCLOAK_REALM = %q, want %q", envByName["KEYCLOAK_REALM"], "test-realm")
-	}
-
-	// Sensitive values should still use SecretKeyRef
-	for _, env := range container.Env {
-		if env.Name == "KEYCLOAK_ADMIN_USERNAME" || env.Name == "KEYCLOAK_ADMIN_PASSWORD" {
-			if env.Value != "" {
-				t.Errorf("env %q must NOT have a literal Value in resolved path", env.Name)
-			}
-			if env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil {
-				t.Errorf("env %q must use SecretKeyRef", env.Name)
-			}
-		}
-	}
-}
-
-func TestBuildAuthBridgeContainer_ClientName(t *testing.T) {
-	builder := NewContainerBuilder(config.CompiledDefaults())
-	container := builder.BuildAuthBridgeContainer("my-agent", "test-ns", true, true)
-
-	for _, env := range container.Env {
-		if env.Name == "CLIENT_NAME" {
-			if env.Value != "test-ns/my-agent" {
-				t.Errorf("CLIENT_NAME = %q, want %q", env.Value, "test-ns/my-agent")
-			}
-			return
-		}
-	}
-	t.Error("missing CLIENT_NAME env var")
-}
-
 func TestBuildEnvoyProxyContainer_HasExpectedAudienceFromConfigMap(t *testing.T) {
 	builder := NewContainerBuilder(config.CompiledDefaults())
 	container := builder.BuildEnvoyProxyContainerWithSpireOption(true)
@@ -700,5 +336,156 @@ func TestBuildEnvoyProxyContainer_HasExpectedAudienceFromConfigMap(t *testing.T)
 	}
 	if !found {
 		t.Error("envoy-proxy container missing EXPECTED_AUDIENCE env var from ConfigMap")
+	}
+}
+
+func TestBuildProxySidecarContainer_SpireDisabled(t *testing.T) {
+	builder := NewContainerBuilder(config.CompiledDefaults())
+	container := builder.BuildProxySidecarContainer(false)
+
+	if container.Name != AuthBridgeProxyContainerName {
+		t.Errorf("container name = %q, want %q", container.Name, AuthBridgeProxyContainerName)
+	}
+	if container.Image != config.CompiledDefaults().Images.AuthBridge {
+		t.Errorf("image = %q, want %q", container.Image, config.CompiledDefaults().Images.AuthBridge)
+	}
+
+	// Should have --config args (mode comes from per-agent ConfigMap, not CLI)
+	if len(container.Args) < 2 || container.Args[0] != "--config" {
+		t.Errorf("args = %v, want [--config /etc/authbridge/config.yaml]", container.Args)
+	}
+
+	// Should have reverse-proxy and forward-proxy ports
+	portNames := map[string]bool{}
+	for _, p := range container.Ports {
+		portNames[p.Name] = true
+	}
+	if !portNames["reverse-proxy"] {
+		t.Error("missing reverse-proxy port")
+	}
+	if !portNames["forward-proxy"] {
+		t.Error("missing forward-proxy port")
+	}
+
+	// Should NOT have svid-output volume mount (SPIRE disabled)
+	for _, vm := range container.VolumeMounts {
+		if vm.Name == "svid-output" {
+			t.Error("svid-output volume mount should not be present when SPIRE is disabled")
+		}
+	}
+}
+
+func TestBuildProxySidecarContainer_SpireEnabled(t *testing.T) {
+	builder := NewContainerBuilder(config.CompiledDefaults())
+	container := builder.BuildProxySidecarContainer(true)
+
+	// Should have svid-output volume mount
+	found := false
+	for _, vm := range container.VolumeMounts {
+		if vm.Name == "svid-output" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("svid-output volume mount should be present when SPIRE is enabled")
+	}
+}
+
+// TestBuildEnvoyProxyContainer_SpireEnabled_HasSocketMount asserts that
+// the SPIRE workload-API socket volume is mounted into the envoy-proxy
+// container when SPIRE is on. The bundled spiffe-helper inside the
+// combined image dials this socket; without the mount it sits in a
+// silent dial-loop and never writes /opt/svid*.pem.
+func TestBuildEnvoyProxyContainer_SpireEnabled_HasSocketMount(t *testing.T) {
+	cfg := config.CompiledDefaults()
+	builder := NewContainerBuilder(cfg)
+	container := builder.BuildEnvoyProxyContainerWithSpireOption(true)
+
+	// Derive the expected mount path from SpiffeConfig.SocketPath the
+	// same way the production code does, so a future change to the
+	// canonical SocketPath in defaults.go can't leave this test
+	// asserting against a stale literal.
+	wantPath := spireSocketDir(cfg.Spiffe.SocketPath)
+	if wantPath == "" {
+		t.Fatalf("spireSocketDir(%q) returned empty — defaults must declare a valid socket path", cfg.Spiffe.SocketPath)
+	}
+
+	found := false
+	for _, vm := range container.VolumeMounts {
+		if vm.Name == "spire-agent-socket" {
+			found = true
+			if vm.MountPath != wantPath {
+				t.Errorf("spire-agent-socket mount path = %q, want %q (derived from SpiffeConfig.SocketPath %q)",
+					vm.MountPath, wantPath, cfg.Spiffe.SocketPath)
+			}
+			if !vm.ReadOnly {
+				t.Error("spire-agent-socket mount should be read-only (CSI volume itself is read-only)")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("envoy-proxy container missing spire-agent-socket mount when SPIRE is enabled — bundled spiffe-helper can't reach the workload API")
+	}
+}
+
+// TestBuildEnvoyProxyContainer_SpireDisabled_NoSocketMount: with SPIRE
+// off the socket mount must be absent — there's no spiffe-helper to
+// dial the socket, and mounting it would still try to schedule the
+// CSI volume.
+func TestBuildEnvoyProxyContainer_SpireDisabled_NoSocketMount(t *testing.T) {
+	builder := NewContainerBuilder(config.CompiledDefaults())
+	container := builder.BuildEnvoyProxyContainerWithSpireOption(false)
+
+	for _, vm := range container.VolumeMounts {
+		if vm.Name == "spire-agent-socket" {
+			t.Error("envoy-proxy container should NOT have spire-agent-socket mount when SPIRE is disabled")
+		}
+	}
+}
+
+// TestBuildProxySidecarContainer_SpireEnabled_HasSocketMount: same as
+// the envoy-proxy variant but for the proxy-sidecar combined image.
+// The bundled spiffe-helper has the same workload-API requirement.
+func TestBuildProxySidecarContainer_SpireEnabled_HasSocketMount(t *testing.T) {
+	cfg := config.CompiledDefaults()
+	builder := NewContainerBuilder(cfg)
+	container := builder.BuildProxySidecarContainer(true)
+
+	wantPath := spireSocketDir(cfg.Spiffe.SocketPath)
+	if wantPath == "" {
+		t.Fatalf("spireSocketDir(%q) returned empty — defaults must declare a valid socket path", cfg.Spiffe.SocketPath)
+	}
+
+	found := false
+	for _, vm := range container.VolumeMounts {
+		if vm.Name == "spire-agent-socket" {
+			found = true
+			if vm.MountPath != wantPath {
+				t.Errorf("spire-agent-socket mount path = %q, want %q (derived from SpiffeConfig.SocketPath %q)",
+					vm.MountPath, wantPath, cfg.Spiffe.SocketPath)
+			}
+			if !vm.ReadOnly {
+				t.Error("spire-agent-socket mount should be read-only (CSI volume itself is read-only)")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("proxy-sidecar container missing spire-agent-socket mount when SPIRE is enabled — bundled spiffe-helper can't reach the workload API")
+	}
+}
+
+// TestBuildProxySidecarContainer_SpireDisabled_NoSocketMount mirrors
+// the envoy-proxy negative test for the proxy-sidecar variant.
+func TestBuildProxySidecarContainer_SpireDisabled_NoSocketMount(t *testing.T) {
+	builder := NewContainerBuilder(config.CompiledDefaults())
+	container := builder.BuildProxySidecarContainer(false)
+
+	for _, vm := range container.VolumeMounts {
+		if vm.Name == "spire-agent-socket" {
+			t.Error("proxy-sidecar container should NOT have spire-agent-socket mount when SPIRE is disabled")
+		}
 	}
 }

@@ -2,18 +2,53 @@
 
 The AuthBridge webhook is a Kubernetes mutating admission webhook that injects sidecar containers into agent and tool Pods. It runs as part of the kagenti-operator binary and intercepts Pod CREATE requests to add networking, identity, and registration sidecars.
 
+## Deployment Modes
+
+The webhook supports multiple deployment modes controlled by the `kagenti.io/authbridge-mode` annotation on the workload's pod template. If not set, the default is `envoy-sidecar`.
+
+| Mode | Annotation value | Image | How it works |
+|------|-----------------|-------|-------------|
+| **envoy-sidecar** (default) | `envoy-sidecar` or absent | `authbridge-envoy` (140 MB) | iptables intercepts all traffic → Envoy → ext_proc for auth |
+| **proxy-sidecar** | `proxy-sidecar` | `authbridge-light` (29 MB) | `HTTP_PROXY` env vars route outbound traffic through authbridge |
+| **waypoint** | `waypoint` | N/A | Skips injection (standalone deployment, not a sidecar) |
+
+### envoy-sidecar (default)
+
+Transparent interception via iptables. All inbound/outbound traffic is redirected through Envoy, which delegates auth decisions to the authbridge binary via ext_proc gRPC. The agent is unaware of the proxy.
+
+Containers injected: `proxy-init` (init), `envoy-proxy`, `spiffe-helper`, `kagenti-client-registration`
+
+### proxy-sidecar
+
+Lightweight mode without Envoy or iptables. The webhook:
+
+1. **Steals the agent's port** — the reverse proxy takes over the agent's original port (e.g., `:8000`) for inbound JWT validation
+2. **Moves the agent** — finds a free port and patches the agent's `PORT` env var (e.g., `:8001`)
+3. **Injects `HTTP_PROXY`** — all app containers get `HTTP_PROXY`/`HTTPS_PROXY` env vars pointing to the forward proxy for outbound traffic
+4. Port assignment uses collision detection — scans all container ports to avoid conflicts
+
+Containers injected: `authbridge-proxy`, `spiffe-helper`, `kagenti-client-registration`
+No init containers (no iptables).
+
+The `authbridge-proxy` container receives `REVERSE_PROXY_ADDR`, `REVERSE_PROXY_BACKEND`, and `FORWARD_PROXY_ADDR` env vars with the dynamically assigned ports. These are expanded via `${...}` placeholders in the authbridge config YAML.
+
+### waypoint
+
+Not a sidecar — the waypoint proxy runs as a standalone Deployment. The webhook logs a message and skips injection. Waypoint deployment is managed separately.
+
 ## Sidecar Containers
 
-The webhook can inject up to four containers:
+The webhook can inject up to four containers depending on mode:
 
-| Container | Type | Purpose |
-|-----------|------|---------|
-| `envoy-proxy` | sidecar | Transparent proxy for outbound/inbound traffic with ext-proc filter for token exchange |
-| `proxy-init` | init | iptables rules to redirect traffic through envoy-proxy |
-| `spiffe-helper` | sidecar | Obtains and rotates SPIFFE SVIDs via the SPIRE workload API |
-| `kagenti-client-registration` | sidecar | Registers the workload as an OAuth2 client in Keycloak |
+| Container | Type | Modes | Purpose |
+|-----------|------|-------|---------|
+| `envoy-proxy` | sidecar | envoy-sidecar | Transparent proxy with ext-proc filter for token exchange (uses `authbridge-envoy` image) |
+| `authbridge-proxy` | sidecar | proxy-sidecar | Reverse + forward proxy for JWT validation and token exchange (uses `authbridge-light` image) |
+| `proxy-init` | init | envoy-sidecar | iptables rules to redirect traffic through envoy-proxy |
+| `spiffe-helper` | sidecar | envoy-sidecar, proxy-sidecar | Obtains and rotates SPIFFE SVIDs via the SPIRE workload API |
+| `kagenti-client-registration` | sidecar | envoy-sidecar, proxy-sidecar | Registers the workload as an OAuth2 client in Keycloak |
 
-`proxy-init` always follows `envoy-proxy` — if envoy is skipped, proxy-init is also skipped.
+In envoy-sidecar mode, `proxy-init` always follows `envoy-proxy` — if envoy is skipped, proxy-init is also skipped.
 
 ## Injection Trigger
 
@@ -99,7 +134,7 @@ When the `perWorkloadConfigResolution` feature gate is enabled, the webhook reso
 ```
 ┌──────────────────────────────────────┐
 │ Layer 3: AgentRuntime CR overrides   │  ← highest precedence
-│   (spec.identity, spec.trace)        │
+│   (spec.identity)                    │
 ├──────────────────────────────────────┤
 │ Layer 2: Namespace ConfigMaps        │
 │   (authbridge-config, envoy-config,  │
@@ -143,9 +178,6 @@ When the `perWorkloadConfigResolution` feature gate is enabled, the webhook reso
 |-------------------|---------------------|-------------|
 | `spec.identity.spiffe.trustDomain` | `SpiffeTrustDomain` | SPIFFE trust domain |
 | `spec.identity.clientRegistration.realm` | `KeycloakRealm` | Keycloak realm (future — not yet in CRD) |
-| `spec.trace.endpoint` | `TraceEndpoint` | OpenTelemetry collector endpoint |
-| `spec.trace.protocol` | `TraceProtocol` | `grpc` or `http` |
-| `spec.trace.sampling.rate` | `TraceSamplingRate` | 0.0–1.0 sampling rate |
 
 **Non-overridable fields** (always from PlatformConfig or namespace CMs):
 - Container images, resource limits, proxy ports
