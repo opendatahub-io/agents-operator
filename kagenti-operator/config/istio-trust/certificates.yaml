@@ -1,5 +1,12 @@
 # cert-manager Certificates for multi-mesh Istio shared trust.
 # Root CA in cert-manager namespace, intermediate CAs per Istio control plane.
+#
+# Dependency chain: Root CA (istio-mesh-root-ca, 10-year duration) issues all
+# intermediate CAs via the istio-mesh-ca ClusterIssuer. If the root CA secret
+# (istio-mesh-root-ca-secret) is accidentally deleted, all intermediates become
+# orphaned and workload mTLS will break.
+# Recovery: re-create this Certificate to generate a new root CA, then restart
+# cert-manager to re-issue the intermediate CA certificates.
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate

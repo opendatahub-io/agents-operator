@@ -210,11 +210,19 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// 4.7. Ensure SCC RoleBinding exists in the namespace.
 	// Creates a RoleBinding granting all ServiceAccounts in the namespace
 	// access to the kagenti-authbridge SCC. No-op on non-OpenShift clusters.
+	// On OpenShift, a transient failure is retried via requeue to prevent
+	// agent pods from failing with SCC violations at runtime.
 	if err := r.ensureNamespaceSCCBinding(ctx, rt.Namespace); err != nil {
 		logger.Error(err, "Failed to ensure SCC RoleBinding")
 		if r.Recorder != nil {
 			r.Recorder.Event(rt, corev1.EventTypeWarning, "SCCBindingError", err.Error())
 		}
+		r.setPhase(rt, agentv1alpha1.RuntimePhaseError)
+		r.setCondition(rt, ConditionTypeReady, metav1.ConditionFalse, "SCCBindingError", err.Error())
+		if statusErr := r.Status().Update(ctx, rt); statusErr != nil {
+			logger.Error(statusErr, "Failed to update status")
+		}
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	// 5. Compute config hash from merged configuration (cluster → namespace)

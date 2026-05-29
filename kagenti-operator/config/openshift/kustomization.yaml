@@ -9,3 +9,7 @@ resources:
 - ../istio-trust
 - ../authbridge
 - ../security
+
+patches:
+- path: patches/authbridge-keycloak.yaml
+- path: patches/spiffe-helper-keycloak.yaml

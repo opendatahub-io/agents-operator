@@ -76,8 +76,9 @@ func init() {
 }
 
 // getOperatorNamespace returns the namespace the operator is running in.
-// Reads from POD_NAMESPACE environment variable (set via downward API in deployment),
-// falling back to kagenti-system if not set.
+// In production, the manager_webhook_patch.yaml injects POD_NAMESPACE via
+// the downward API, so the fallback is effectively dead code. It exists for
+// local development and test runs where the webhook patch is not applied.
 func getOperatorNamespace() string {
 	if ns := os.Getenv("POD_NAMESPACE"); ns != "" {
 		return ns
@@ -309,6 +310,11 @@ func main() {
 		})
 	}
 
+	// ========================================
+	// Operator namespace resolution
+	// ========================================
+	controller.SetClusterDefaultsNamespace(getOperatorNamespace())
+
 	cmCacheNamespaces := buildConfigMapCacheNamespaces(
 		requireA2ASignature, spireTrustBundleConfigMapName, spireTrustBundleConfigMapNS,
 	)
@@ -364,11 +370,6 @@ func main() {
 			setupLog.Info("Auto-discovered SPIRE trust domain", "trustDomain", spireTrustDomain)
 		}
 	}
-
-	// ========================================
-	// Operator namespace resolution
-	// ========================================
-	controller.SetClusterDefaultsNamespace(getOperatorNamespace())
 
 	if !requireA2ASignature && !enableVerifiedFetch {
 		setupLog.Info("WARNING: Neither --require-a2a-signature nor --enable-verified-fetch is set. " +

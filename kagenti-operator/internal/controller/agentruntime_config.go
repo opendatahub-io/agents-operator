@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -50,14 +51,22 @@ const (
 )
 
 // ClusterDefaultsNamespace is the namespace where cluster-level ConfigMaps
-// and template ConfigMaps live. Defaults to "kagenti-system"; set to the
-// operator's own namespace by main() via SetClusterDefaultsNamespace
-var ClusterDefaultsNamespace = clusterDefaultsNamespaceDefault
+// and template ConfigMaps live. Defaults to "kagenti-system"; set once to the
+// operator's own namespace by main() via SetClusterDefaultsNamespace.
+//
+// Write-once semantics: SetClusterDefaultsNamespace must be called exactly once
+// from main() before the manager starts. Subsequent calls are no-ops.
+var (
+	ClusterDefaultsNamespace     = clusterDefaultsNamespaceDefault
+	clusterDefaultsNamespaceOnce sync.Once
+)
 
 func SetClusterDefaultsNamespace(ns string) {
-	if ns != "" {
-		ClusterDefaultsNamespace = ns
-	}
+	clusterDefaultsNamespaceOnce.Do(func() {
+		if ns != "" {
+			ClusterDefaultsNamespace = ns
+		}
+	})
 }
 
 // resolvedConfig is the canonical representation used for hash computation.
