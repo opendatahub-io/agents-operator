@@ -477,7 +477,7 @@ func RestoreControllerArgs(namespace, deploy string, origArgs []string) error {
 // DeployController installs CRDs and deploys the controller-manager.
 func DeployController(namespace, img string) error {
 	By("creating manager namespace")
-	if err := ensureNamespaceReady(namespace, 60*time.Second); err != nil {
+	if err := ensureNamespaceReady(namespace, 120*time.Second); err != nil {
 		return fmt.Errorf("namespace %s not ready: %w", namespace, err)
 	}
 
@@ -507,27 +507,36 @@ func DeployController(namespace, img string) error {
 
 // ensureNamespaceReady creates the namespace, waiting for any Terminating
 // instance to be fully deleted first. A previous test's cleanup may have
-// triggered namespace deletion that hasn't finished yet.
+// triggered namespace deletion that hasn't finished yet. With cert-manager
+// installed, namespace finalizers take longer during teardown.
 func ensureNamespaceReady(namespace string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		cmd := exec.Command("kubectl", "get", "ns", namespace, "-o", "jsonpath={.status.phase}")
-		output, err := Run(cmd)
-		if err != nil {
-			// Namespace doesn't exist — create it
-			createCmd := exec.Command("kubectl", "create", "ns", namespace)
-			_, createErr := Run(createCmd)
-			return createErr
-		}
-		phase := strings.TrimSpace(output)
-		if phase == "Active" {
-			return nil
-		}
-		// Namespace is Terminating — wait for it to be fully deleted
-		By(fmt.Sprintf("waiting for namespace %s to finish terminating (phase=%s)", namespace, phase))
-		time.Sleep(2 * time.Second)
+	cmd := exec.Command("kubectl", "get", "ns", namespace, "-o", "jsonpath={.status.phase}")
+	output, err := Run(cmd)
+	if err != nil {
+		// Namespace doesn't exist — create it
+		createCmd := exec.Command("kubectl", "create", "ns", namespace)
+		_, createErr := Run(createCmd)
+		return createErr
 	}
-	return fmt.Errorf("timed out waiting for namespace %s to finish terminating", namespace)
+
+	phase := strings.TrimSpace(output)
+	if phase == "Active" {
+		return nil
+	}
+
+	// Namespace is Terminating — wait for it to be fully deleted before recreating.
+	By(fmt.Sprintf("waiting for namespace %s to finish terminating (phase=%s)", namespace, phase))
+	cmd = exec.Command("kubectl", "wait", "--for=delete",
+		fmt.Sprintf("namespace/%s", namespace),
+		fmt.Sprintf("--timeout=%ds", int(timeout.Seconds())),
+	)
+	if _, err := Run(cmd); err != nil {
+		return fmt.Errorf("timed out waiting for namespace %s to finish terminating: %w", namespace, err)
+	}
+
+	createCmd := exec.Command("kubectl", "create", "ns", namespace)
+	_, createErr := Run(createCmd)
+	return createErr
 }
 
 // EnsureCertManagerWebhookReady waits for the cert-manager webhook to be responsive.
