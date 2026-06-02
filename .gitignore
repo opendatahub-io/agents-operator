@@ -64,3 +64,4 @@ Dockerfile.cross
 !.specify/memory/
 .specify/memory/*
 !.specify/memory/constitution.md
+.mcp.json
