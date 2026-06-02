@@ -1,13 +1,14 @@
 # Brainstorm Overview
 
-Last updated: 2026-05-29
+Last updated: 2026-06-02
 
 ## Sessions
 
-| # | Date | Topic | Status | Spec |
-|---|------|-------|--------|------|
-| 02 | 2026-05-21 | identity-binding-migration | active | - |
-| 03 | 2026-05-29 | per-agent-egress-scoping | active | - |
+| # | Date | Topic | Status | Spec | Issue |
+|---|------|-------|--------|------|-------|
+| 02 | 2026-05-21 | identity-binding-migration | active | - | - |
+| 03 | 2026-05-29 | per-agent-egress-scoping | active | - | - |
+| 04 | 2026-06-02 | mtls-gap-analysis | active | - | - |
 
 ## Open Threads
 
@@ -18,6 +19,10 @@ Last updated: 2026-05-29
 - Should the controller emit a warning event when custom egress rules are set but the agent is unverified? (from #03)
 - How should the controller handle the transition period where AgentCards still own NetworkPolicies? (from #03)
 - Should `spec.networkPolicy` support future extension, or use a narrower field name like `spec.egressPolicy`? (from #03)
+- What is the exact current state of `mtlsMode` support in proxy-sidecar mode? (from #04)
+- Does the controller's verified fetch fallback correctly set status conditions today? (from #04)
+- What SPIRE version and configuration is assumed for the CI cluster? (from #04)
+- Are there cert rotation edge cases (SVID expiry during active connections) that need explicit coverage? (from #04)
 
 ## Parked Ideas
 
