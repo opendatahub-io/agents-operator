@@ -7,8 +7,9 @@ Last updated: 2026-06-02
 | # | Date | Topic | Status | Spec | Issue |
 |---|------|-------|--------|------|-------|
 | 02 | 2026-05-21 | identity-binding-migration | active | - | - |
-| 03 | 2026-05-29 | per-agent-egress-scoping | active | - | - |
+| 03 | 2026-05-29 | per-agent-egress-scoping | active | - | [#385](https://github.com/kagenti/kagenti-operator/issues/385) |
 | 04 | 2026-06-02 | mtls-gap-analysis | active | - | - |
+| 05 | 2026-06-02 | mtls-status-conditions | active | - | - |
 
 ## Open Threads
 
@@ -23,6 +24,10 @@ Last updated: 2026-06-02
 - Does the controller's verified fetch fallback correctly set status conditions today? (from #04)
 - What SPIRE version and configuration is assumed for the CI cluster? (from #04)
 - Are there cert rotation edge cases (SVID expiry during active connections) that need explicit coverage? (from #04)
+- Should `ControlPlaneMTLS` be set on AgentRuntime or AgentCard, given `AttestedAgentSpiffeID` already lives on AgentCard? (from #05)
+- What happens to the condition when SPIRE is temporarily unavailable (grace period vs flapping)? (from #05)
+- How does `DataPlaneMTLS` interact with existing injection-related conditions? (from #05)
+- Should the SPIFFE ID in the condition message be full URI or workload identifier only? (from #05)
 
 ## Parked Ideas
 
