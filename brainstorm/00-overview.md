@@ -1,6 +1,6 @@
 # Brainstorm Overview
 
-Last updated: 2026-06-02
+Last updated: 2026-06-03
 
 ## Sessions
 
@@ -10,6 +10,7 @@ Last updated: 2026-06-02
 | 03 | 2026-05-29 | per-agent-egress-scoping | active | - | [#385](https://github.com/kagenti/kagenti-operator/issues/385) |
 | 04 | 2026-06-02 | mtls-gap-analysis | active | - | - |
 | 05 | 2026-06-02 | mtls-status-conditions | active | - | - |
+| 06 | 2026-06-03 | midstream-authbridge-sync | active | - | [#476](https://github.com/kagenti/kagenti-extensions/issues/476) |
 
 ## Open Threads
 
@@ -28,6 +29,10 @@ Last updated: 2026-06-02
 - What happens to the condition when SPIRE is temporarily unavailable (grace period vs flapping)? (from #05)
 - How does `DataPlaneMTLS` interact with existing injection-related conditions? (from #05)
 - Should the SPIFFE ID in the condition message be full URI or workload identifier only? (from #05)
+- What is the exact upstream tag/branch convention for kagenti-authbridge releases that the sync job should watch? (from #06)
+- Should the sync script preserve upstream git history or treat each sync as a squashed snapshot? (from #06)
+- How should we handle upstream go.mod module path changes when kagenti-extensions is renamed to kagenti-authbridge? (from #06)
+- Should the midstream Dockerfile be a copy of upstream's or a fully midstream-owned file? (from #06)
 
 ## Parked Ideas
 
