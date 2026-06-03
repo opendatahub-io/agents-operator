@@ -79,6 +79,9 @@ spec:
             {{- if .Values.authbridgeConfig.clientAuthType }}
             - "--client-auth-type={{ .Values.authbridgeConfig.clientAuthType }}"
             {{- end }}
+            {{- if .Values.authbridgeConfig.credentialWaitTimeout }}
+            - "--credential-wait-timeout={{ .Values.authbridgeConfig.credentialWaitTimeout }}"
+            {{- end }}
             {{- end }}
           command:
             - {{ .Values.controllerManager.container.cmd }}

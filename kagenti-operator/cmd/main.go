@@ -123,6 +123,7 @@ func main() {
 	var keycloakPublicURL string
 	var clientAuthType string
 	var spiffeIdpAlias string
+	var credentialWaitTimeout string
 	var enableAuthbridgeConfig bool
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -185,6 +186,8 @@ func main() {
 		"Default client authentication type: client-secret or federated-jwt")
 	flag.StringVar(&spiffeIdpAlias, "spiffe-idp-alias", "spire-spiffe",
 		"Keycloak SPIFFE Identity Provider alias")
+	flag.StringVar(&credentialWaitTimeout, "credential-wait-timeout", "120s",
+		"How long AuthBridge waits for Keycloak credentials to become available")
 	flag.BoolVar(&enableAuthbridgeConfig, "enable-authbridge-config", true,
 		"Reconcile authbridge-config ConfigMap in namespaces labeled kagenti-enabled=true")
 
@@ -611,6 +614,7 @@ func main() {
 				SpireTrustDomain:             spireTrustDomain,
 				ClientAuthType:               clientAuthType,
 				SpiffeIdpAlias:               spiffeIdpAlias,
+				CredentialWaitTimeout:        credentialWaitTimeout,
 			},
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "AuthbridgeConfig")

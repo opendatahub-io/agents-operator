@@ -107,6 +107,8 @@ keycloak:
 authbridgeConfig:
   enabled: true
   clientAuthType: "client-secret"
+  # How long AuthBridge waits for Keycloak credentials (increase for slow Keycloak startup)
+  # credentialWaitTimeout: "120s"
 
 # [MLFLOW]: MLflow experiment tracking integration
 mlflow:

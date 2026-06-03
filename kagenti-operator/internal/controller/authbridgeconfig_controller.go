@@ -36,6 +36,7 @@ type AuthbridgeConfigPlatform struct {
 	SpireTrustDomain             string
 	ClientAuthType               string
 	SpiffeIdpAlias               string
+	CredentialWaitTimeout        string
 }
 
 // AuthbridgeConfigReconciler reconciles authbridge-config ConfigMaps in namespaces
@@ -160,7 +161,7 @@ func (r *AuthbridgeConfigReconciler) buildConfigMapData() map[string]string {
 		"SPIRE_ENABLED":           spireEnabled,
 		"CLIENT_AUTH_TYPE":        clientAuthType,
 		"SPIFFE_IDP_ALIAS":        spiffeIdpAlias,
-		"CREDENTIAL_WAIT_TIMEOUT": "120s",
+		"CREDENTIAL_WAIT_TIMEOUT": r.credentialWaitTimeout(),
 	}
 
 	if issuer != "" {
@@ -170,6 +171,13 @@ func (r *AuthbridgeConfigReconciler) buildConfigMapData() map[string]string {
 	}
 
 	return data
+}
+
+func (r *AuthbridgeConfigReconciler) credentialWaitTimeout() string {
+	if r.Platform.CredentialWaitTimeout != "" {
+		return r.Platform.CredentialWaitTimeout
+	}
+	return "120s"
 }
 
 func (r *AuthbridgeConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {

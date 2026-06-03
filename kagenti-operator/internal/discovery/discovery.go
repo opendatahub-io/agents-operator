@@ -33,15 +33,18 @@ var (
 // DiscoverKeycloakPublicURL discovers the external Keycloak URL from cluster resources.
 // It tries OpenShift Route first, then Kubernetes Ingress.
 func DiscoverKeycloakPublicURL(ctx context.Context, c client.Reader, keycloakNamespace string) (string, error) {
-	if url, err := discoverFromRoute(ctx, c, keycloakNamespace); err == nil && url != "" {
+	url, routeErr := discoverFromRoute(ctx, c, keycloakNamespace)
+	if routeErr == nil && url != "" {
 		return url, nil
 	}
 
-	if url, err := discoverFromIngress(ctx, c, keycloakNamespace); err == nil && url != "" {
+	url, ingressErr := discoverFromIngress(ctx, c, keycloakNamespace)
+	if ingressErr == nil && url != "" {
 		return url, nil
 	}
 
-	return "", fmt.Errorf("could not discover Keycloak public URL from Route or Ingress in namespace %q", keycloakNamespace)
+	return "", fmt.Errorf("could not discover Keycloak public URL in namespace %q: route: %v, ingress: %v",
+		keycloakNamespace, routeErr, ingressErr)
 }
 
 func discoverFromRoute(ctx context.Context, c client.Reader, ns string) (string, error) {
@@ -72,15 +75,18 @@ func discoverFromIngress(ctx context.Context, c client.Reader, ns string) (strin
 // It tries the ZTWIM CR first (OpenShift), then falls back to reading the spire-bundle
 // ConfigMap which contains the trust domain as a JSON key in SPIFFE bundle format.
 func DiscoverSPIRETrustDomain(ctx context.Context, c client.Reader, spireNamespace string) (string, error) {
-	if td, err := discoverFromZTWIM(ctx, c); err == nil && td != "" {
+	td, ztwimErr := discoverFromZTWIM(ctx, c)
+	if ztwimErr == nil && td != "" {
 		return td, nil
 	}
 
-	if td, err := discoverFromSpireBundle(ctx, c, spireNamespace); err == nil && td != "" {
+	td, bundleErr := discoverFromSpireBundle(ctx, c, spireNamespace)
+	if bundleErr == nil && td != "" {
 		return td, nil
 	}
 
-	return "", fmt.Errorf("could not discover SPIRE trust domain from ZTWIM CR or spire-bundle ConfigMap")
+	return "", fmt.Errorf("could not discover SPIRE trust domain: ztwim: %v, spire-bundle: %v",
+		ztwimErr, bundleErr)
 }
 
 func discoverFromZTWIM(ctx context.Context, c client.Reader) (string, error) {
