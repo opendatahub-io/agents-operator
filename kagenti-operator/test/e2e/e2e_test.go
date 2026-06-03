@@ -2348,6 +2348,51 @@ rules:
 			_, _ = utils.Run(cmd)
 		})
 
+		It("should degrade gracefully with malformed skills annotation", func() {
+			By("setting a malformed kagenti.io/skills annotation")
+			cmd := exec.Command("kubectl", "annotate", "--overwrite",
+				"deployment", "skill-discovery-agent",
+				"-n", skillDiscoveryTestNamespace,
+				`kagenti.io/skills=not-valid-json`)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("triggering a reconcile via label touch")
+			cmd = exec.Command("kubectl", "label", "--overwrite",
+				"agentruntime", "skill-discovery-agent",
+				"-n", skillDiscoveryTestNamespace,
+				"malformed-test=trigger")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying linkedSkills is empty (no crash, graceful degradation)")
+			Eventually(func(g Gomega) {
+				raw, err := utils.KubectlGetJsonpath("agentruntime", "skill-discovery-agent",
+					skillDiscoveryTestNamespace, "{.status.linkedSkills}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(raw).To(SatisfyAny(BeEmpty(), Equal("[]")))
+			}).Should(Succeed())
+
+			By("verifying SkillAnnotationParseError event was emitted")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "events",
+					"-n", skillDiscoveryTestNamespace,
+					"--field-selector", "reason=SkillAnnotationParseError",
+					"-o", "jsonpath={.items[*].message}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("Failed to parse kagenti.io/skills annotation"))
+			}).Should(Succeed())
+
+			By("restoring valid annotation")
+			cmd = exec.Command("kubectl", "annotate", "--overwrite",
+				"deployment", "skill-discovery-agent",
+				"-n", skillDiscoveryTestNamespace,
+				`kagenti.io/skills=["summarizer","openshift-review"]`)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 		It("should clean up on AgentRuntime deletion", func() {
 			By("re-adding skills annotation to Deployment")
 			cmd := exec.Command("kubectl", "annotate", "--overwrite",

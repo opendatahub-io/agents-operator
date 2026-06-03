@@ -505,6 +505,10 @@ func (r *AgentRuntimeReconciler) readLinkedSkills(ctx context.Context, rt *agent
 	var skills []string
 	if err := json.Unmarshal([]byte(raw), &skills); err != nil {
 		logger.V(1).Info("Failed to parse kagenti.io/skills annotation", "error", err, "raw", raw)
+		if r.Recorder != nil {
+			r.Recorder.Event(rt, corev1.EventTypeWarning, "SkillAnnotationParseError",
+				fmt.Sprintf("Failed to parse kagenti.io/skills annotation: %v", err))
+		}
 		return nil
 	}
 	return skills
