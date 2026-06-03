@@ -20,7 +20,7 @@
 - [ ] T001 Create `kagenti-authbridge/` directory on midstream branch
 - [ ] T002 Create `patches/authbridge/` and `patches/operator/` directories on midstream branch
 - [ ] T003 [P] Create `.sync-state` JSON file with initial empty state at repo root on midstream branch
-- [ ] T004 [P] Evaluate `openshift-knative/deviate` (install, test with a dry-run against kagenti-operator upstream) and document findings in `scripts/sync/README.md`
+- [ ] T004 [P] Evaluate `openshift-knative/deviate` (install, test with a dry-run against kagenti-operator upstream) and document findings in `scripts/sync/README.md`. If deviate is adopted, T009/T010 produce `deviate.yaml` configs instead of custom YAML; if not, T009/T010 produce custom configs consumed by T011's sync script
 
 ---
 
@@ -49,7 +49,7 @@
 
 - [ ] T009 [US1] Create sync configuration for kagenti-authbridge: define include paths (`authlib/`, `cmd/authbridge-proxy/`, `proxy-init/`), exclude paths (`cmd/authbridge-envoy/`, `cmd/authbridge-lite/`, `cmd/abctl/`, `demos/`, `docs/`, `tests/`), and upstream URL in `scripts/sync/config-authbridge.yaml` (or `deviate.yaml` if using deviate)
 - [ ] T010 [P] [US1] Create sync configuration for kagenti-operator: define include/exclude paths and upstream URL in `scripts/sync/config-operator.yaml`
-- [ ] T011 [US1] Create sync script `scripts/sync/sync-upstream.sh` that: (a) reads config for a named upstream, (b) fetches upstream, (c) computes diff since last synced SHA, (d) copies changed files into target directory, (e) applies carried patches from `patches/<upstream>/`, (f) updates `.sync-state`, (g) creates/updates a GitHub PR via `gh`
+- [ ] T011 [US1] Create sync script `scripts/sync/sync-upstream.sh` that: (a) reads config for a named upstream, (b) fetches upstream, (c) computes diff since last synced SHA, (d) detects non-fast-forward (force-push/rebase) and flags for manual review instead of auto-syncing, (e) copies changed files into target directory, (f) applies carried patches from `patches/<upstream>/`, (g) updates `.sync-state`, (h) creates/updates a GitHub PR via `gh`, (i) logs elapsed time for SC-004 validation
 - [ ] T012 [US1] Run initial manual sync of kagenti-authbridge into `kagenti-authbridge/` on midstream branch and verify file layout
 - [ ] T013 [US1] Run initial manual sync of kagenti-operator into `kagenti-operator/` on midstream branch (updating existing content) and verify
 - [ ] T014 [US1] Create GitHub Actions workflow `.github/workflows/sync-upstream.yml` that runs `scripts/sync/sync-upstream.sh` on a daily schedule (06:00 UTC) for both upstreams, with manual trigger support
@@ -70,6 +70,7 @@
 - [ ] T016 [US2] Verify that building with `exclude_plugin_ibac` tag produces a binary where the IBAC plugin is not registered (run binary with `--config /dev/null` and check for "ibac" in error output or logs)
 - [ ] T017 [US2] Verify that building without any tags (upstream default) still includes all plugins including IBAC
 - [ ] T018 [P] [US2] Document the build-tag mechanism and plugin inclusion/exclusion in `kagenti-authbridge/BUILD.md`
+- [ ] T018a [P] [US2] Add a CI check in `.github/workflows/sync-upstream.yml` (or separate workflow) that validates build tags used in the midstream Dockerfile match known plugin tag names (prevents misspelled tags from silently including unintended plugins)
 
 **Checkpoint**: Sidecar image builds with correct plugin subset. IBAC excluded, all others included.
 
