@@ -13,14 +13,15 @@ A midstream maintainer wants upstream authbridge changes to appear as reviewable
 
 **Why this priority**: Without automated sync, upstream changes accumulate and create large, risky catch-up merges. This is the foundation that all other stories depend on.
 
-**Independent Test**: Run the sync script against the current upstream state and verify it produces a valid PR with the expected file set under `kagenti-authbridge/`.
+**Independent Test**: Run the sync script against the current upstream state and verify it produces valid PRs with the expected file sets under `kagenti-operator/` and `kagenti-authbridge/`.
 
 **Acceptance Scenarios**:
 
 1. **Given** upstream kagenti-authbridge has new commits since the last sync, **When** the sync job runs, **Then** a PR is opened in the midstream repo containing only the changed files under `kagenti-authbridge/`.
-2. **Given** upstream has no new commits since the last sync, **When** the sync job runs, **Then** no PR is created and the job exits cleanly.
-3. **Given** a sync PR already exists and is open, **When** the sync job runs with new upstream commits, **Then** the existing PR is updated rather than creating a duplicate.
-4. **Given** a sync PR is merged, **When** the sync job runs next, **Then** it uses the merged commit as the new baseline.
+2. **Given** upstream kagenti-operator has new commits since the last sync, **When** the sync job runs, **Then** a PR is opened in the midstream repo containing only the changed files under `kagenti-operator/`.
+3. **Given** upstream has no new commits since the last sync, **When** the sync job runs, **Then** no PR is created and the job exits cleanly.
+4. **Given** a sync PR already exists and is open, **When** the sync job runs with new upstream commits, **Then** the existing PR is updated rather than creating a duplicate.
+5. **Given** a sync PR is merged, **When** the sync job runs next, **Then** it uses the merged commit as the new baseline.
 
 ---
 
@@ -82,8 +83,8 @@ An operator deploying the sidecar in a cluster configures which compiled-in plug
 
 ### Functional Requirements
 
-- **FR-001**: The sync script MUST track the last synced upstream commit SHA in a state file within the midstream repo.
-- **FR-002**: The sync script MUST copy upstream authbridge source into `kagenti-authbridge/` in the midstream repo, preserving the internal directory structure.
+- **FR-001**: The sync tooling MUST track the last synced upstream commit SHA per upstream repository (kagenti-operator and kagenti-authbridge) within the midstream repo.
+- **FR-002**: The sync script MUST copy upstream authbridge source into `kagenti-authbridge/` in the midstream repo, preserving the internal directory structure including all plugin source code (plugin exclusion is handled solely by build tags, not by the sync script).
 - **FR-003**: The sync script MUST exclude files not needed for the product build (demos, docs, CLI tooling like `abctl`, envoy and lite binary directories).
 - **FR-004**: The sync automation MUST open a GitHub PR with a descriptive title indicating the upstream commit range being synced.
 - **FR-005**: The sync automation MUST NOT merge PRs automatically; human review is required.
@@ -92,10 +93,13 @@ An operator deploying the sidecar in a cluster configures which compiled-in plug
 - **FR-008**: The midstream Dockerfile for the sidecar MUST pass the appropriate build tags to exclude non-product plugins.
 - **FR-009**: The midstream repo MUST produce two independent container images: operator and sidecar (proxy-sidecar mode).
 - **FR-010**: The sync script MUST be runnable both manually (for initial setup and debugging) and via CI automation.
+- **FR-011**: Midstream-specific patches (e.g., the IBAC build-tag patch before upstream acceptance) MUST be maintained as `.patch` files in a dedicated directory and reapplied automatically after each upstream sync.
+- **FR-012**: The sync tooling SHOULD evaluate `openshift-knative/deviate` as the upstream sync engine, since it already implements the required pattern: mirror upstream releases, delete unwanted files, overlay midstream-specific files, apply carried patches, and create PRs.
 
 ### Key Entities
 
-- **Sync State**: Tracks the last synced upstream commit SHA per upstream repository. Stored as a file in the midstream repo.
+- **Sync State**: Tracks the last synced upstream commit SHA per upstream repository (kagenti-operator and kagenti-authbridge). Stored as a file in the midstream repo.
+- **Carried Patch**: A `.patch` file in a dedicated directory (e.g., `patches/`) that captures midstream-specific modifications to upstream source. Reapplied automatically after each sync via `git apply`.
 - **Plugin Build Tag**: A Go build constraint that controls whether a plugin package is compiled into the binary. Named `exclude_plugin_<name>`.
 - **Upstream Source Snapshot**: The set of files copied from upstream authbridge into `kagenti-authbridge/`, scoped to the proxy-sidecar binary and its dependencies.
 
@@ -108,6 +112,14 @@ An operator deploying the sidecar in a cluster configures which compiled-in plug
 - **SC-003**: Both container images (operator and sidecar) build successfully from a clean checkout of the midstream repo.
 - **SC-004**: The sync script completes in under 5 minutes for a typical upstream delta.
 - **SC-005**: A new upstream plugin added without a build tag is automatically included in midstream builds without sync script changes.
+
+## Clarifications
+
+### Session 2026-06-03
+
+- Q: Should the sync copy the full `authlib/` directory (including IBAC source), relying solely on build tags for exclusion, or also skip excluded plugin directories? → A: Sync full `authlib/` including all plugin source; build tags are the sole exclusion mechanism.
+- Q: How should conflicts between upstream changes and midstream patches be handled? → A: Upstream wins for synced files; midstream patches maintained in a separate `patches/` directory and reapplied after each sync. Evaluate `openshift-knative/deviate` as the sync tool (it already implements this exact pattern: mirror upstream releases, apply carried patches from an `openshift/patches/` directory, commit, create PR).
+- Q: Should this spec also formalize the operator sync so both upstreams use the same mechanism? → A: Yes, include operator sync. Both kagenti-operator and kagenti-authbridge syncs use the same tooling and automation pattern.
 
 ## Assumptions
 
