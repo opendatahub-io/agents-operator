@@ -36,6 +36,15 @@ const (
 	ManagementStateUnmanaged ManagementState = "Unmanaged"
 )
 
+// Phase represents the top-level lifecycle phase of the module.
+// +kubebuilder:validation:Enum=Ready;"Not Ready"
+type Phase string
+
+const (
+	PhaseReady    Phase = "Ready"
+	PhaseNotReady Phase = "Not Ready"
+)
+
 // AgentsOperatorAuth holds platform-projected authentication settings.
 type AgentsOperatorAuth struct {
 	// Enabled indicates whether authentication integration is active.
@@ -43,6 +52,9 @@ type AgentsOperatorAuth struct {
 	Enabled bool `json:"enabled,omitempty"`
 
 	// Audiences lists accepted token audiences.
+	// +kubebuilder:validation:MaxItems=32
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=256
 	// +optional
 	Audiences []string `json:"audiences,omitempty"`
 }
@@ -73,6 +85,10 @@ type AgentsOperatorSpec struct {
 
 // AgentsOperatorStatus defines the observed state of AgentsOperator.
 type AgentsOperatorStatus struct {
+	// Phase is the top-level lifecycle phase read by the platform for quick status summary.
+	// +optional
+	Phase Phase `json:"phase,omitempty"`
+
 	// ObservedGeneration reflects the generation last reconciled.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -99,6 +115,7 @@ type AgentsOperator struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
+	// +kubebuilder:default={}
 	Spec   AgentsOperatorSpec   `json:"spec,omitempty"`
 	Status AgentsOperatorStatus `json:"status,omitempty"`
 }

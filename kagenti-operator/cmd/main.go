@@ -46,8 +46,8 @@ import (
 	cmv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 
-	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
 	platformv1alpha1 "github.com/kagenti/operator/api/platform/v1alpha1"
+	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
 	"github.com/kagenti/operator/internal/agentcard"
 	"github.com/kagenti/operator/internal/bootstrap"
 	"github.com/kagenti/operator/internal/controller"

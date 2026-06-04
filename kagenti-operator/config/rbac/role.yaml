@@ -141,6 +141,21 @@ rules:
   - list
   - watch
 - apiGroups:
+  - components.platform.opendatahub.io
+  resources:
+  - agentsoperators
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - components.platform.opendatahub.io
+  resources:
+  - agentsoperators/status
+  verbs:
+  - get
+  - update
+- apiGroups:
   - mlflow.opendatahub.io
   resources:
   - mlflowexperiments

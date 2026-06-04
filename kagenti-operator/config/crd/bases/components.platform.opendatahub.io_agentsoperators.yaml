@@ -46,6 +46,7 @@ spec:
           metadata:
             type: object
           spec:
+            default: {}
             description: AgentsOperatorSpec defines the desired state of AgentsOperator.
             properties:
               auth:
@@ -54,7 +55,10 @@ spec:
                   audiences:
                     description: Audiences lists accepted token audiences.
                     items:
+                      maxLength: 256
+                      minLength: 1
                       type: string
+                    maxItems: 32
                     type: array
                   enabled:
                     description: Enabled indicates whether authentication integration
@@ -141,6 +145,13 @@ spec:
                 description: ObservedGeneration reflects the generation last reconciled.
                 format: int64
                 type: integer
+              phase:
+                description: Phase is the top-level lifecycle phase read by the platform
+                  for quick status summary.
+                enum:
+                - Ready
+                - Not Ready
+                type: string
               releases:
                 description: Releases lists installed component versions.
                 items:

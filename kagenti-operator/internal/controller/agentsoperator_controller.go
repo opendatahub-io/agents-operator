@@ -20,6 +20,7 @@ import (
 	"context"
 	"time"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -30,6 +31,16 @@ import (
 )
 
 const (
+	conditionReady                 = "Ready"
+	conditionProvisioningSucceeded = "ProvisioningSucceeded"
+	conditionDegraded              = "Degraded"
+
+	reasonAvailable            = "Available"
+	reasonProvisioningComplete = "ProvisioningComplete"
+	reasonNoWarnings           = "NoWarnings"
+	reasonRemoved              = "Removed"
+	reasonUnmanaged            = "Unmanaged"
+
 	agentsOperatorReleaseName    = "agents-operator"
 	agentsOperatorReleaseRepoURL = "https://github.com/opendatahub-io/agents-operator"
 	agentsOperatorReleaseVersion = "0.2.0-alpha.24"
@@ -42,9 +53,8 @@ type AgentsOperatorReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=components.platform.opendatahub.io,resources=agentsoperators,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=components.platform.opendatahub.io,resources=agentsoperators/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=components.platform.opendatahub.io,resources=agentsoperators/finalizers,verbs=update
+// +kubebuilder:rbac:groups=components.platform.opendatahub.io,resources=agentsoperators,verbs=get;list;watch
+// +kubebuilder:rbac:groups=components.platform.opendatahub.io,resources=agentsoperators/status,verbs=get;update
 
 func (r *AgentsOperatorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -54,63 +64,65 @@ func (r *AgentsOperatorReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	now := metav1.Now()
-	ready := metav1.ConditionFalse
-	readyReason := "NotManaged"
-	readyMessage := "Agents Operator module is not managed"
-	prov := metav1.ConditionFalse
-	provReason := "NotManaged"
-	provMessage := "Module is not managed"
-	degraded := metav1.ConditionFalse
-	degradedReason := "NoWarnings"
-	degradedMessage := ""
+	var (
+		ready        metav1.ConditionStatus
+		readyReason  string
+		readyMessage string
+		prov         metav1.ConditionStatus
+		provReason   string
+		provMessage  string
+	)
 
 	switch ao.Spec.ManagementState {
 	case platformv1alpha1.ManagementStateManaged, platformv1alpha1.ManagementStateForce:
 		ready = metav1.ConditionTrue
-		readyReason = "Available"
+		readyReason = reasonAvailable
 		readyMessage = "Agents Operator is running"
 		prov = metav1.ConditionTrue
-		provReason = "ProvisioningComplete"
+		provReason = reasonProvisioningComplete
 		provMessage = "Module controller is active"
 	case platformv1alpha1.ManagementStateRemoved:
-		readyReason = "Removed"
+		ready = metav1.ConditionFalse
+		readyReason = reasonRemoved
 		readyMessage = "Agents Operator management state is Removed"
-		provReason = "Removed"
+		prov = metav1.ConditionFalse
+		provReason = reasonRemoved
 		provMessage = "Module is removed"
 	default:
-		readyReason = "Unmanaged"
+		ready = metav1.ConditionFalse
+		readyReason = reasonUnmanaged
 		readyMessage = "Agents Operator management state is not Managed"
-		provReason = "Unmanaged"
+		prov = metav1.ConditionFalse
+		provReason = reasonUnmanaged
 		provMessage = "Module is unmanaged"
 	}
 
-	conditions := []metav1.Condition{
-		{
-			Type:               "Ready",
-			Status:             ready,
-			Reason:             readyReason,
-			Message:            readyMessage,
-			LastTransitionTime: now,
-		},
-		{
-			Type:               "ProvisioningSucceeded",
-			Status:             prov,
-			Reason:             provReason,
-			Message:            provMessage,
-			LastTransitionTime: now,
-		},
-		{
-			Type:               "Degraded",
-			Status:             degraded,
-			Reason:             degradedReason,
-			Message:            degradedMessage,
-			LastTransitionTime: now,
-		},
+	apimeta.SetStatusCondition(&ao.Status.Conditions, metav1.Condition{
+		Type:    conditionReady,
+		Status:  ready,
+		Reason:  readyReason,
+		Message: readyMessage,
+	})
+	apimeta.SetStatusCondition(&ao.Status.Conditions, metav1.Condition{
+		Type:    conditionProvisioningSucceeded,
+		Status:  prov,
+		Reason:  provReason,
+		Message: provMessage,
+	})
+	apimeta.SetStatusCondition(&ao.Status.Conditions, metav1.Condition{
+		Type:    conditionDegraded,
+		Status:  metav1.ConditionFalse,
+		Reason:  reasonNoWarnings,
+		Message: "",
+	})
+
+	if ready == metav1.ConditionTrue {
+		ao.Status.Phase = platformv1alpha1.PhaseReady
+	} else {
+		ao.Status.Phase = platformv1alpha1.PhaseNotReady
 	}
 
 	ao.Status.ObservedGeneration = ao.Generation
-	ao.Status.Conditions = conditions
 	ao.Status.Releases = []platformv1alpha1.ComponentRelease{
 		{
 			Name:    agentsOperatorReleaseName,

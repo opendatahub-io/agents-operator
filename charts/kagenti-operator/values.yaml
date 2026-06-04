@@ -48,6 +48,8 @@ controllerManager:
       type: RuntimeDefault
   terminationGracePeriodSeconds: 10
   serviceAccountName: controller-manager
+  serviceAccount:
+    annotations: {}
 
 # [RBAC]: To enable RBAC (Permissions) configurations
 rbac:
