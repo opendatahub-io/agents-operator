@@ -1,0 +1,91 @@
+# mTLS demo — callee pod.
+#
+# Same shape as caller.yaml — operator-injected authbridge sidecar
+# with SPIRE enabled. The demo-app exposes a /healthz endpoint via
+# busybox httpd on :8000 (the port authbridge port-steals from);
+# the authbridge reverse proxy lands on :8080 and forwards to
+# :8000 internally.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mtls-callee
+  namespace: team1
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mtls-callee
+  namespace: team1
+  labels:
+    app.kubernetes.io/name: mtls-callee
+    app.kubernetes.io/part-of: mtls-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mtls-callee
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mtls-callee
+        app.kubernetes.io/part-of: mtls-demo
+        kagenti.io/inject: enabled
+        kagenti.io/spire: enabled
+        # Required by the kagenti-operator's mutating-webhook
+        # objectSelector ({kagenti.io/type: [agent, tool]}).
+        kagenti.io/type: agent
+    spec:
+      serviceAccountName: mtls-callee
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: demo-app
+          image: hashicorp/http-echo:1.0.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - "-listen=:8000"
+            - "-text=mtls-callee ok"
+          ports:
+            - containerPort: 8000
+              name: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          volumeMounts:
+            - name: shared-data
+              mountPath: /shared
+      volumes:
+        - name: shared-data
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mtls-callee
+  namespace: team1
+  labels:
+    app.kubernetes.io/name: mtls-callee
+    app.kubernetes.io/part-of: mtls-demo
+spec:
+  selector:
+    app.kubernetes.io/name: mtls-callee
+  ports:
+    - port: 8080
+      targetPort: 8000
+      protocol: TCP
+      name: http
+  type: ClusterIP

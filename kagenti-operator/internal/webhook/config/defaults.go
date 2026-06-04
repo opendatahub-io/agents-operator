@@ -17,7 +17,7 @@ func CompiledDefaults() *PlatformConfig {
 			// authbridge: combined image for proxy-sidecar mode (default
 			// deployment shape) — authbridge-proxy + spiffe-helper
 			// bundled, no Envoy, no gRPC.
-			AuthBridge: "ghcr.io/kagenti/kagenti-extensions/authbridge:latest",
+			AuthBridge: "quay.io/opendatahub/odh-authbridge:latest",
 			// authbridge-lite: size-optimized variant for the "lite"
 			// mode. Same listener layout as AuthBridge but parsers
 			// (a2a/mcp/inference) are dropped.

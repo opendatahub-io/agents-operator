@@ -192,7 +192,7 @@ featureGates:
 defaults:
   images:
     envoyProxy: ghcr.io/kagenti/kagenti-extensions/authbridge-envoy:latest
-    authbridge: ghcr.io/kagenti/kagenti-extensions/authbridge:latest
+    authbridge: quay.io/opendatahub/odh-authbridge:latest
     authbridgeLite: ghcr.io/kagenti/kagenti-extensions/authbridge-lite:latest
     proxyInit: ghcr.io/kagenti/kagenti-extensions/proxy-init:latest
     pullPolicy: IfNotPresent
