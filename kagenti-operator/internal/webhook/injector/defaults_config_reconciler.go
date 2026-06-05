@@ -165,10 +165,11 @@ func (r *DefaultsConfigReconciler) reconcileWorkloadsInNamespace(ctx context.Con
 func (r *DefaultsConfigReconciler) updateConfigHash(ctx context.Context, namespace, name, kind string) error {
 	logger := log.FromContext(ctx).WithValues("workload", name, "kind", kind)
 
-	newHash, err := controller.ComputeDefaultsOnlyHash(ctx, r.Client, namespace)
+	configResult, err := controller.ComputeConfigHash(ctx, r.Client, namespace)
 	if err != nil {
 		return err
 	}
+	newHash := configResult.Hash
 
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		key := types.NamespacedName{Name: name, Namespace: namespace}

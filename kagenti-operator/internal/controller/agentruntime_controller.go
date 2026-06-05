@@ -205,8 +205,8 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			fmt.Sprintf("Namespace %s opted out of Istio mesh enrollment", rt.Namespace))
 	}
 
-	// 5. Compute config hash from merged configuration (cluster → namespace → CR)
-	configResult, err := ComputeConfigHash(ctx, r.Client, rt.Namespace, &rt.Spec)
+	// 5. Compute config hash from merged configuration (cluster → namespace)
+	configResult, err := ComputeConfigHash(ctx, r.Client, rt.Namespace)
 	if err != nil {
 		logger.Error(err, "Failed to compute config hash")
 		r.setPhase(rt, agentv1alpha1.RuntimePhaseError)
