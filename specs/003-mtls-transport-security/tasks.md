@@ -8,35 +8,63 @@
 
 **Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
 
+**Codebase Audit (2026-06-05)**: Reconciled tasks against current main. Several items are partially or fully implemented. Tasks marked `[DONE]` reflect existing code; tasks marked `[PARTIAL]` need only the remaining delta.
+
 ## Format: `[ID] [P?] [Story] Description`
 
 - **[P]**: Can run in parallel (different files, no dependencies)
 - **[Story]**: Which user story this task belongs to (e.g., US1, US2, US3)
 - Include exact file paths in descriptions
 
+## File Paths
+
+All paths are relative to `kagenti-operator/` (the Go module root inside the repo):
+
+- `api/v1alpha1/agentruntime_types.go` — CRD types
+- `internal/controller/agentruntime_controller.go` — main reconciler (has `fetchCard()`, conditions, etc.)
+- `internal/controller/agentruntime_config.go` — config merge and hash (has `resolvedConfig` with `MTLSMode`)
+- `internal/controller/agentruntime_controller_test.go` — controller tests
+- `internal/webhook/injector/` — sidecar injection (envoy template, resolved config)
+- `cmd/main.go` — flag definitions and wiring
+
+## What Already Exists on Main
+
+The following are already implemented and do NOT need new code:
+
+- `MTLSMode` field on `AgentRuntimeSpec` with values `disabled`, `permissive`, `strict` (defaults to empty/disabled)
+- `TransportSecurity` enum (`mtls`, `http`) and `CardStatus` struct on status
+- `SpiffeFetcher` / `AuthenticatedFetcher` wired into `fetchCard()` — already chooses mTLS vs HTTP
+- `resolvedConfig.MTLSMode` flows into config hash — hash already changes on mTLSMode change
+- `--require-a2a-signature`, `--signature-audit-mode`, `--enforce-network-policies` already default to `false`
+- Envoy template has `MTLSEnabled`, `MTLSPermissive`, `MTLSStrict` wiring for TLS contexts
+- Webhook resolves `MTLSMode` from CR > namespace > default chain
+- `authbridge-runtime-config` ConfigMap content is captured in config hash
+
+---
+
 ## Phase 1: Setup
 
-**Purpose**: CRD type changes, flag defaults, and code generation that all stories depend on
+**Purpose**: CRD type changes, flag defaults, and code generation
 
-- [ ] T001 Change `mTLSMode` default from `disabled` to `permissive` in `api/v1alpha1/agentruntime_types.go`. Update the kubebuilder default marker on the `MTLSMode` field. Add `ConditionTypeMTLSReady` constant (e.g., `MTLSReady`) to the condition type constants.
-- [ ] T002 Run `make generate` and `make manifests` to regenerate deepcopy functions and CRD manifests. Verify `zz_generated.deepcopy.go` is updated and `config/crd/bases/` has the updated AgentRuntime CRD with the new default.
-- [ ] T003 [P] Change `--enable-verified-fetch` flag default from `false` to `true` in `cmd/main.go`. This makes SpiffeFetcher the default card fetcher when SPIRE is available.
-- [ ] T004 [P] Change `--require-a2a-signature`, `--signature-audit-mode`, and `--enforce-network-policies` flag defaults from `true` to `false` in `cmd/main.go`. Add deprecation warning logs at startup when any of these flags are explicitly set to `true`: `slog.Warn("flag deprecated", "flag", name, "replacement", "mTLS transport security", "removal", "next release")`.
+- [ ] T001 Change `mTLSMode` default to `permissive` in `api/v1alpha1/agentruntime_types.go`. Currently the field has no kubebuilder default marker and empty string is treated as disabled. Add `// +kubebuilder:default=permissive` marker on the `MTLSMode` field (line 124). Add `ConditionTypeMTLSReady = "MTLSReady"` constant alongside the existing condition types (line 71-75).
+- [ ] T002 Run `make generate && make manifests` to regenerate deepcopy and CRD manifests. Verify the CRD schema shows `default: permissive` for mtlsMode.
+- [ ] T003 [P] Change `--enable-verified-fetch` flag default from `false` to `true` in `cmd/main.go` (line 164). Change `--enable-card-discovery` flag default from `false` to `true` in `cmd/main.go` (line 162). Both are needed — verified fetch without card discovery does nothing.
+- [ ] T004 [P] Add deprecation warning logs in `cmd/main.go` after `flag.Parse()`. When `--require-a2a-signature`, `--signature-audit-mode`, or `--enforce-network-policies` is explicitly `true`, log: `setupLog.Info("DEPRECATED: flag will be removed in a future release; mTLS transport security replaces JWS signing", "flag", "<name>")`. The defaults are already `false` — no change needed there.
 
-**Checkpoint**: CRD types updated, flags changed, code generated. Ready for controller changes.
+**Checkpoint**: CRD default updated, flags flipped, code regenerated.
 
 ---
 
 ## Phase 2: Foundational (Blocking Prerequisites)
 
-**Purpose**: Core ConfigMap generation and MTLSReady condition logic that all user stories need
+**Purpose**: MTLSReady condition logic and ConfigMap mtls block injection
 
 **CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T005 Add `mtls:` block injection to the authbridge ConfigMap generation in `internal/controller/agentruntime_config.go` (or the relevant ConfigMap construction code in `internal/controller/agentruntime_controller.go`). When `mTLSMode` is `permissive` or `strict`, include `mtls:\n  mode: <value>` in the authbridge config YAML. When `mTLSMode` is `disabled`, omit the `mtls:` block entirely. Ensure the `spiffe:` block is also present when `mtls:` is included. The config hash must change when `mTLSMode` changes.
-- [ ] T006 Add `MTLSReady` condition logic to the reconcile loop in `internal/controller/agentruntime_controller.go`. After resolving the target workload, evaluate mTLS readiness: if `mTLSMode` is `disabled`, set `MTLSReady=True` with reason `MTLSDisabled`; if `mTLSMode` is `permissive` or `strict`, check whether spiffe-helper is present in the workload's pod template (via volume mounts or init containers) — if present set `MTLSReady=True` with reason `SPIREAvailable`, if absent set `MTLSReady=False` with reason `SPIREUnavailable` and message `"mTLS requires SPIRE; either deploy SPIRE or set mTLSMode: disabled"`. Follow the save/restore pattern for in-memory status around any Patch calls (Constitution I).
+- [ ] T005 [PARTIAL] Add `mtls:` block injection to the authbridge-runtime-config ConfigMap. Currently `resolvedConfig.MTLSMode` flows into the hash but the actual ConfigMap content sent to authbridge may not include a top-level `mtls:` block. Examine how the namespace `authbridge-runtime-config` ConfigMap is created/updated (in `ensureNamespaceConfigMaps()` or `ensurePerAgentConfigMap()`). When `mTLSMode` is `permissive` or `strict`, ensure the authbridge config YAML contains `mtls:\n  mode: <value>`. When `disabled` or empty, omit the block. Verify the `spiffe:` block is present when `mtls:` is included.
+- [ ] T006 Add `MTLSReady` condition logic to the reconcile loop in `internal/controller/agentruntime_controller.go`. Insert after target resolution (around line 170) and before the Ready condition (line 251). Logic: if `mTLSMode` resolves to `disabled` or empty-before-default → `MTLSReady=True/MTLSDisabled`; if `permissive` or `strict` → check whether the workload's pod template has spiffe-helper volume mounts or the SPIRE agent socket mount → if present `MTLSReady=True/SPIREAvailable`, if absent `MTLSReady=False/SPIREUnavailable` with message `"mTLS requires SPIRE; either deploy SPIRE or set mTLSMode: disabled"`. Use `r.setCondition()` (existing helper). Follow save/restore pattern around Patch calls (Constitution I).
 
-**Checkpoint**: ConfigMap generation and MTLSReady condition ready. User story implementation can begin.
+**Checkpoint**: MTLSReady condition and ConfigMap mtls block ready.
 
 ---
 
@@ -44,20 +72,20 @@
 
 **Goal**: Agents deployed with SPIRE communicate over mTLS automatically without explicit mTLSMode configuration because mTLSMode defaults to permissive.
 
-**Independent Test**: Deploy two agent workloads with SPIRE, create AgentRuntimes with no explicit mTLSMode, verify the authbridge ConfigMap contains the `mtls: mode: permissive` block and the workload pods have spiffe-helper and mTLS-configured sidecars.
+**Independent Test**: Deploy two agent workloads with SPIRE, create AgentRuntimes with no explicit mTLSMode, verify the authbridge config contains `mtls: mode: permissive` and `MTLSReady=True`.
 
 ### Tests for User Story 1
 
-- [ ] T007 [P] [US1] Add unit tests for ConfigMap `mtls:` block generation in `internal/controller/agentruntime_controller_test.go`. Test cases: (a) mTLSMode unset (default permissive) → ConfigMap contains `mtls: mode: permissive`; (b) mTLSMode `strict` → ConfigMap contains `mtls: mode: strict`; (c) mTLSMode `disabled` → ConfigMap has no `mtls:` block; (d) `spiffe:` block is present alongside `mtls:` block. Create objects in envtest and read back the ConfigMap from the API server to verify (Constitution II).
-- [ ] T008 [P] [US1] Add unit tests for `MTLSReady` condition in `internal/controller/agentruntime_controller_test.go`. Test cases: (a) mTLSMode permissive + SPIRE available → `MTLSReady=True/SPIREAvailable`; (b) mTLSMode permissive + SPIRE absent → `MTLSReady=False/SPIREUnavailable`; (c) mTLSMode disabled → `MTLSReady=True/MTLSDisabled`; (d) condition transitions when SPIRE becomes available. Read back AgentRuntime from envtest API server to verify conditions (Constitution II).
-- [ ] T009 [P] [US1] Add unit test for config hash change on mTLSMode transition in `internal/controller/agentruntime_controller_test.go`. Verify that changing mTLSMode from `permissive` to `strict` or `disabled` results in a different `kagenti.io/config-hash` annotation on the workload pod template.
+- [ ] T007 [P] [US1] Add unit tests for ConfigMap `mtls:` block generation in `internal/controller/agentruntime_controller_test.go`. Test cases: (a) mTLSMode unset (defaults to permissive via kubebuilder marker) → authbridge config contains `mtls: mode: permissive`; (b) mTLSMode `strict` → contains `mtls: mode: strict`; (c) mTLSMode `disabled` → no `mtls:` block. Create objects in envtest and read back from API server (Constitution II).
+- [ ] T008 [P] [US1] Add unit tests for `MTLSReady` condition in `internal/controller/agentruntime_controller_test.go`. Test cases: (a) mTLSMode permissive + spiffe-helper present → `MTLSReady=True/SPIREAvailable`; (b) mTLSMode permissive + no spiffe-helper → `MTLSReady=False/SPIREUnavailable`; (c) mTLSMode disabled → `MTLSReady=True/MTLSDisabled`. Read back AgentRuntime from envtest API server (Constitution II).
+- [ ] T009 [P] [US1] Add unit test for config hash change on mTLSMode transition in `internal/controller/agentruntime_config_test.go`. Verify that the `resolvedConfig` hash differs when mTLSMode changes between `permissive`, `strict`, and `disabled`. This is likely already passing since `MTLSMode` is in the struct — verify and add explicit test case.
 
 ### Implementation for User Story 1
 
-- [ ] T010 [US1] Wire the ConfigMap `mtls:` block and `MTLSReady` condition into the reconcile flow. Verify that a new AgentRuntime with no explicit mTLSMode gets `permissive` behavior: the authbridge ConfigMap contains the `mtls:` block, the config hash includes it, and the `MTLSReady` condition is set appropriately. Ensure the save/restore pattern is used around metadata patches before Status().Update() (Constitution I, III).
-- [ ] T011 [US1] Verify that changing `mTLSMode` on an existing AgentRuntime triggers a rolling restart via config hash change on the workload's pod template annotation.
+- [ ] T010 [US1] Wire T005 and T006 into the reconcile flow end-to-end. Create an AgentRuntime with no explicit mTLSMode, reconcile, verify: (a) the resolved mTLSMode is `permissive`; (b) the authbridge config has the `mtls:` block; (c) `MTLSReady` condition is set; (d) config hash includes mTLSMode.
+- [ ] T011 [US1] Verify that changing `mTLSMode` on an existing AgentRuntime triggers a workload rolling restart. The `resolvedConfig` already includes `MTLSMode` in the hash — verify this causes a new `kagenti.io/config-hash` annotation on the pod template.
 
-**Checkpoint**: Agent-to-agent mTLS defaults to permissive. ConfigMap and conditions are correct. Rolling restart on mode change works.
+**Checkpoint**: Agent-to-agent mTLS defaults to permissive. ConfigMap and conditions correct.
 
 ---
 
@@ -65,18 +93,20 @@
 
 **Goal**: The operator controller uses SpiffeFetcher by default when SPIRE is available. Transport security metadata is recorded in AgentRuntime.status.card.
 
-**Independent Test**: Deploy an agent with SPIRE, create an AgentRuntime, verify `status.card.transportSecurity` is `mtls` and `status.card.attestedAgentSpiffeID` is populated.
+**Independent Test**: Deploy an agent with SPIRE, create an AgentRuntime, verify `status.card.transportSecurity` is `mtls`.
+
+**Note**: The `fetchCard()` method (line 863) already implements the mTLS-first, HTTP-fallback logic. The `AuthenticatedFetcher` is already wired. The main change is making it the default via T003 (`--enable-verified-fetch=true`).
 
 ### Tests for User Story 2
 
-- [ ] T012 [P] [US2] Add unit tests for SpiffeFetcher as default in `internal/controller/agentruntime_controller_test.go`. Test cases: (a) SPIRE configured (verified-fetch enabled) → SpiffeFetcher used → `status.card.transportSecurity` is `mtls`; (b) SPIRE not configured → DefaultFetcher used → `status.card.transportSecurity` is `http`; (c) `status.card.attestedAgentSpiffeID` populated on mTLS fetch. Use stub fetchers that return controlled data AND read back from envtest API server (Constitution II).
-- [ ] T013 [P] [US2] Add unit test for `--enable-verified-fetch` kill switch in `internal/controller/agentruntime_controller_test.go`. Verify that when `EnableVerifiedFetch=false`, the controller falls back to DefaultFetcher even when SPIRE is configured.
+- [ ] T012 [P] [US2] Add unit tests in `internal/controller/agentruntime_controller_test.go` verifying: (a) when `AuthenticatedFetcher` is set and TLS port exists → `status.card.transportSecurity` is `mtls` and `attestedAgentSpiffeID` is populated; (b) when `AuthenticatedFetcher` is nil → `status.card.transportSecurity` is `http`; (c) when TLS port is missing, falls back to HTTP with a `FallbackToHTTP` event. Use stub fetchers. Read back from envtest (Constitution II).
+- [ ] T013 [P] [US2] Add unit test verifying `--enable-verified-fetch=false` (kill switch) results in `AuthenticatedFetcher` being nil even when SPIRE is configured. Test at the `cmd/main.go` wiring level or at the reconciler level with `EnableVerifiedFetch=false`.
 
 ### Implementation for User Story 2
 
-- [ ] T014 [US2] Wire SpiffeFetcher as the default fetcher in the reconcile loop in `internal/controller/agentruntime_controller.go`. When `EnableCardDiscovery` is true and `EnableVerifiedFetch` is true (now default) and the SPIRE socket is configured, use `SpiffeFetcher`. Otherwise fall back to `DefaultFetcher`. Ensure `status.card.transportSecurity` and `status.card.attestedAgentSpiffeID` are populated from the fetch result. Follow save/restore pattern for status around Patch calls (Constitution I).
+- [x] T014 [DONE] [US2] The `fetchCard()` method already wires SpiffeFetcher as the preferred fetcher, falls back to HTTP, and populates `transportSecurity` and `attestedAgentSpiffeID`. No new code needed — T003 (flag default change) activates this path.
 
-**Checkpoint**: Controller fetches agent cards over mTLS by default. Transport security metadata visible in AgentRuntime status.
+**Checkpoint**: Controller fetches over mTLS by default. Status metadata populated.
 
 ---
 
@@ -84,57 +114,83 @@
 
 **Goal**: Operators without SPIRE see a clear MTLSReady=False condition with actionable guidance.
 
-**Independent Test**: Create an AgentRuntime in a cluster without SPIRE, verify the MTLSReady condition is False with reason SPIREUnavailable and a helpful message.
+**Independent Test**: Create an AgentRuntime in a cluster without SPIRE, verify MTLSReady=False/SPIREUnavailable.
 
 ### Tests for User Story 3
 
-- [ ] T015 [P] [US3] Add unit test for SPIRE unavailable error condition in `internal/controller/agentruntime_controller_test.go`. Test cases: (a) no spiffe-helper in workload → `MTLSReady=False/SPIREUnavailable` with message containing `"mTLS requires SPIRE"`; (b) mTLSMode disabled → no error, `MTLSReady=True/MTLSDisabled`; (c) SPIRE becomes available → `MTLSReady` transitions to `True`. Read back from envtest (Constitution II).
+- [ ] T015 [P] [US3] Add unit test in `internal/controller/agentruntime_controller_test.go` for the SPIRE-unavailable case: (a) workload with no spiffe-helper volume → `MTLSReady=False/SPIREUnavailable` with message containing `"mTLS requires SPIRE"`; (b) verify `Ready` condition reflects the MTLSReady failure. Read back from envtest (Constitution II).
 
 ### Implementation for User Story 3
 
-- [ ] T016 [US3] Verify that the MTLSReady condition logic from T006 correctly handles the SPIRE-unavailable case end-to-end. Ensure the AgentRuntime `Ready` condition reflects MTLSReady — if MTLSReady is False, Ready should also be False (or at least surface the issue). Verify the error message is actionable.
+- [ ] T016 [US3] Verify T006's MTLSReady condition correctly gates the `Ready` condition. When `MTLSReady=False`, the overall `Ready` condition should either be `False` or include a warning. Update the Ready condition logic (around line 251) to check MTLSReady before setting `Ready=True`.
 
-**Checkpoint**: SPIRE-unavailable scenario produces clear, actionable error conditions.
+**Checkpoint**: SPIRE-unavailable produces clear, actionable conditions.
 
 ---
 
 ## Phase 6: User Story 4 — JWS Signing Pipeline Deprecation Warning (Priority: P2)
 
-**Goal**: Operators using legacy signing flags see deprecation warnings directing them to mTLS.
+**Goal**: Operators using legacy signing flags see deprecation warnings.
 
-**Independent Test**: Start the operator with `--require-a2a-signature=true` and verify deprecation warning in logs.
+**Independent Test**: Start operator with `--require-a2a-signature=true`, verify deprecation log.
 
 ### Tests for User Story 4
 
-- [ ] T017 [P] [US4] Add unit test for deprecation warnings in a test file for `cmd/main.go` logic (or in an existing test that exercises flag parsing). Verify that when `--require-a2a-signature=true` is set, a deprecation warning is logged. Verify no warning when the flag is at its new default (`false`).
+- [ ] T017 [P] [US4] Add test verifying deprecation warning is logged when legacy flags are set to `true`. This can be a simple test that parses log output or validates the warning logic function.
 
 ### Implementation for User Story 4
 
-- [ ] T018 [US4] Verify the deprecation warning logic from T004 works correctly. Test that all three deprecated flags (`--require-a2a-signature`, `--signature-audit-mode`, `--enforce-network-policies`) emit structured warnings when set to `true`. Ensure no warnings when flags are at defaults.
+- [ ] T018 [US4] Verify T004's deprecation warnings work. Ensure all three flags emit warnings. Note: the flags already default to `false` on main — only the warning message is new.
 
-**Checkpoint**: Legacy signing flags deprecated with clear warnings.
+**Checkpoint**: Deprecation warnings active.
 
 ---
 
 ## Phase 7: Authbridge Verification (kagenti-extensions)
 
-**Purpose**: Verify the authbridge mTLS implementation is complete and consistent across all proxy modes
+**Purpose**: Verify authbridge mTLS is complete and matches operator expectations
 
-- [ ] T019 [P] Verify `authbridge/cmd/authbridge-envoy/main.go` has the same mTLS wiring as proxy and lite modes. Check whether envoy mode uses native Envoy TLS contexts or the Go-level `authtls` package. Document findings.
-- [ ] T020 [P] Verify the `cfg.MTLS` config schema in `authbridge/authlib/config/config.go` matches the `mtls: mode:` block the operator will generate (from contracts/authbridge-mtls-config.md).
-- [ ] T021 Add mTLS integration tests in `authbridge/tests/` (or appropriate test location). Test cases: (a) permissive mode accepts both TLS and plaintext inbound; (b) strict mode rejects plaintext inbound; (c) certificate rotation mid-session (spiffe-helper writes new SVID, next handshake uses it).
+- [x] T019 [DONE] Envoy mTLS wiring confirmed — webhook injector has `MTLSEnabled`, `MTLSPermissive`, `MTLSStrict` template fields driving envoy TLS contexts.
+- [ ] T020 [P] Verify the `cfg.MTLS` config schema in `authbridge/authlib/config/config.go` matches what the operator generates. Specifically: does the authbridge expect `mtls:\n  mode: permissive` or a different shape? Clone `kagenti-extensions` and check.
+- [ ] T021 Add mTLS integration tests (if not already present in authbridge). Test: (a) permissive accepts TLS + plaintext; (b) strict rejects plaintext; (c) cert rotation.
 
-**Checkpoint**: Authbridge mTLS verified across all modes. Config schema matches operator expectations.
+**Checkpoint**: Authbridge config contract verified.
 
 ---
 
 ## Phase 8: Polish & Cross-Cutting Concerns
 
-**Purpose**: E2E test, documentation, cleanup
+- [ ] T022 [P] Add e2e test in `test/e2e/` — deploy agents with SPIRE, create AgentRuntimes with default mTLSMode, verify ConfigMap, conditions, and card fetch transport.
+- [ ] T023 [P] Update documentation (`GETTING_STARTED.md`) for mTLS-by-default behavior and opt-out via `mTLSMode: disabled`.
+- [ ] T024 Run `make generate && make manifests && make test` — verify no regressions.
 
-- [ ] T022 [P] Add an e2e test scenario in `test/e2e/` that deploys two agents with SPIRE, creates AgentRuntimes with default mTLSMode, and verifies: (a) authbridge ConfigMaps contain `mtls:` block; (b) MTLSReady conditions are True; (c) controller fetches cards over mTLS (status.card.transportSecurity is mtls).
-- [ ] T023 [P] Update `GETTING_STARTED.md` or operator documentation to reflect mTLS-by-default behavior, the `mTLSMode` field, and how to opt out with `mTLSMode: disabled`.
-- [ ] T024 Run `make generate && make manifests && make test` to verify all changes pass existing tests and no regressions.
+---
+
+## Summary of Actual Work Needed
+
+| Task | Status | Work Required |
+|------|--------|---------------|
+| T001 | NEW | Add kubebuilder default marker + MTLSReady condition constant |
+| T002 | NEW | make generate && make manifests |
+| T003 | NEW | Flip two flag defaults to true |
+| T004 | NEW | Add deprecation warning logs (flag defaults already false) |
+| T005 | PARTIAL | Inject mtls: block into authbridge config — need to trace ConfigMap generation |
+| T006 | NEW | MTLSReady condition logic in reconcile loop |
+| T007-T009 | NEW | Unit tests for ConfigMap, condition, hash |
+| T010-T011 | NEW | End-to-end wiring verification |
+| T012-T013 | NEW | Unit tests for SpiffeFetcher default |
+| T014 | DONE | fetchCard() already implements mTLS-first logic |
+| T015 | NEW | Unit test for SPIRE unavailable |
+| T016 | NEW | Gate Ready condition on MTLSReady |
+| T017-T018 | NEW | Deprecation warning test + verification |
+| T019 | DONE | Envoy mTLS confirmed in webhook injector |
+| T020 | NEW | Verify authbridge config schema match |
+| T021-T024 | NEW | Integration tests, e2e, docs, regression check |
+
+**Net new implementation tasks**: 6 (T001, T003, T004, T005, T006, T016)
+**Net new test tasks**: 8 (T007-T009, T012-T013, T015, T017, T022)
+**Already done**: 2 (T014, T019)
+**Verification/polish**: 6 (T002, T010-T011, T018, T020-T021, T023-T024)
 
 ---
 
@@ -142,68 +198,20 @@
 
 ### Phase Dependencies
 
-- **Setup (Phase 1)**: No dependencies — can start immediately
-- **Foundational (Phase 2)**: Depends on Setup (T001, T002 for CRD types)
-- **User Stories (Phase 3-6)**: All depend on Foundational phase completion
-  - US1, US2, US3 are all P1 and can proceed in parallel after Phase 2
-  - US4 (P2) can proceed independently after Phase 1 (flag changes in T004)
-- **Authbridge Verification (Phase 7)**: Independent — can run in parallel with any phase
-- **Polish (Phase 8)**: Depends on all user stories being complete
+- **Setup (Phase 1)**: No dependencies — start immediately
+- **Foundational (Phase 2)**: Depends on T001, T002
+- **User Stories (Phase 3-6)**: All depend on Phase 2
+  - US4 can start after T004 (independent of Phase 2)
+- **Authbridge Verification (Phase 7)**: Independent — run in parallel
+- **Polish (Phase 8)**: After all user stories
 
-### User Story Dependencies
+### Recommended Execution Order
 
-- **US1 (Agent-to-Agent mTLS)**: Depends on Phase 2 (ConfigMap + MTLSReady) — no other story deps
-- **US2 (Controller-to-Agent mTLS)**: Depends on Phase 2 — independent of US1
-- **US3 (SPIRE Unavailable Error)**: Depends on Phase 2 (MTLSReady condition) — independent of US1/US2
-- **US4 (Deprecation Warnings)**: Depends only on T004 (flag defaults) — can start early
-
-### Within Each User Story
-
-- Tests written first, verify they reference the right conditions
-- Implementation wires the behavior
-- Read back from envtest API server to verify (Constitution II)
-
-### Parallel Opportunities
-
-- T003 and T004 can run in parallel (different concerns in cmd/main.go)
-- T007, T008, T009 can all run in parallel (different test cases, same file but independent sections)
-- T012, T013 can run in parallel
-- T019, T020 can run in parallel (different files in kagenti-extensions)
-- T022, T023 can run in parallel (e2e test vs documentation)
-- Phase 7 (authbridge verification) can run entirely in parallel with operator work
-
----
-
-## Parallel Example: User Story 1
-
-```bash
-# Launch all tests for User Story 1 together:
-Task: "Unit tests for ConfigMap mtls block in agentruntime_controller_test.go"
-Task: "Unit tests for MTLSReady condition in agentruntime_controller_test.go"
-Task: "Unit test for config hash change in agentruntime_controller_test.go"
-
-# After tests defined, implement:
-Task: "Wire ConfigMap and MTLSReady into reconcile flow"
-Task: "Verify rolling restart on mTLSMode change"
-```
-
----
-
-## Implementation Strategy
-
-### MVP First (User Story 1 Only)
-
-1. Complete Phase 1: Setup (CRD defaults, flag changes)
-2. Complete Phase 2: Foundational (ConfigMap mtls block, MTLSReady condition)
-3. Complete Phase 3: User Story 1 (agent-to-agent mTLS by default)
-4. **STOP and VALIDATE**: Test with two agents + SPIRE in a cluster
-5. Deploy/demo if ready
-
-### Incremental Delivery
-
-1. Setup + Foundational → mTLS infrastructure ready
-2. Add US1 → Agent-to-agent mTLS works → Test independently (MVP!)
-3. Add US2 → Controller fetches over mTLS → Test independently
-4. Add US3 → Clear errors without SPIRE → Test independently
-5. Add US4 → Deprecation warnings → Test independently
-6. Authbridge verification + E2E → Confidence across all modes
+1. T001 → T002 (CRD changes must come first)
+2. T003 + T004 in parallel (flag changes)
+3. T005 + T006 (foundational — ConfigMap + condition)
+4. T007-T011 (US1 tests + wiring)
+5. T012-T014 (US2 tests — T014 is already done, just verify)
+6. T015-T016 (US3 tests + Ready condition gate)
+7. T017-T018 (US4 deprecation)
+8. T020-T024 (verification, e2e, docs)
