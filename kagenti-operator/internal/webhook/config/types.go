@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -159,6 +160,21 @@ func (c *PlatformConfig) Validate() error {
 	case "", EgressEnforcementOff, EgressEnforcementEnforce:
 	default:
 		return fmt.Errorf("proxy.egressEnforcement must be \"off\" or \"enforce\" (got %q)", c.Proxy.EgressEnforcement)
+	}
+	// When enforce is on, ClusterCIDRs drive the only in-cluster allowance in the
+	// enforce-drop guard. Validate them at load time so a misconfig fails fast with
+	// a clear message rather than: (a) an empty list silently falling back to the
+	// Kind-shaped 10.0.0.0/8 default in init-iptables.sh, or (b) a malformed entry
+	// crashing the proxy-init container under `set -e` with a cryptic iptables error.
+	if c.Proxy.EgressEnforcement == EgressEnforcementEnforce {
+		if len(c.Proxy.ClusterCIDRs) == 0 {
+			return fmt.Errorf("proxy.clusterCIDRs must be non-empty when proxy.egressEnforcement is %q (set the cluster's pod+service CIDRs)", EgressEnforcementEnforce)
+		}
+		for _, cidr := range c.Proxy.ClusterCIDRs {
+			if _, _, err := net.ParseCIDR(cidr); err != nil {
+				return fmt.Errorf("proxy.clusterCIDRs entry %q is not a valid CIDR: %w", cidr, err)
+			}
+		}
 	}
 	if c.Images.EnvoyProxy == "" {
 		return fmt.Errorf("images.envoyProxy is required")
