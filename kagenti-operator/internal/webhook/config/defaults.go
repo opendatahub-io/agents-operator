@@ -32,9 +32,9 @@ func CompiledDefaults() *PlatformConfig {
 			UID:              1337,
 			InboundProxyPort: 15124,
 			AdminPort:        9901,
-			// Off by default — proxy-sidecar stays cooperative (HTTP_PROXY only)
-			// until an operator opts in. Migrate to "enforce" in a future release.
-			EgressEnforcement: EgressEnforcementOff,
+			// Transparent listener port — must match the authbridge proxy-sidecar
+			// preset (listener.transparent_proxy_addr default :8082).
+			TransparentPort: 8082,
 			// Kind-shaped default (pods 10.244/16 + services 10.96/16). OCP/EKS
 			// MUST override (see ProxyConfig.ClusterCIDRs doc).
 			ClusterCIDRs: []string{"10.0.0.0/8"},

@@ -188,7 +188,7 @@ featureGates:
 #                                              parsers dropped) + spiffe-helper. Same listener layout
 #                                              as authbridge; for size-constrained deployments.
 # proxy-init applies to envoy-sidecar mode (transparent redirect) and to
-# proxy-sidecar mode when proxy.egressEnforcement is "enforce" (enforce-drop).
+# proxy-sidecar / lite mode (always-on enforce-redirect egress capture).
 defaults:
   images:
     envoyProxy: ghcr.io/kagenti/kagenti-extensions/authbridge-envoy:latest
@@ -203,16 +203,15 @@ defaults:
     uid: 1337
     adminPort: 9901
     inboundProxyPort: 15124
-    # Proxy-sidecar fail-closed egress enforcement. "off" (default) keeps egress
-    # cooperative (HTTP_PROXY only); "enforce" injects a proxy-init enforce-drop
-    # guard so direct egress is dropped. envoy-sidecar is unaffected (it already
-    # enforces via transparent redirect).
-    egressEnforcement: "off"
-    # In-cluster CIDRs (pods/services/DNS) allowed direct by the enforce-drop
-    # guard; everything else egressing the pod is dropped. The default is
-    # Kind-shaped (pods 10.244/16 + services 10.96/16). OpenShift/EKS MUST
-    # override — e.g. OCP services 172.30.0.0/16 (outside 10/8) + pods
-    # 10.128.0.0/14 — or in-cluster service traffic will be dropped.
+    # Forward proxy's transparent listener port — the REDIRECT target for the
+    # always-on enforce-redirect egress guard (proxy-sidecar / lite). MUST match
+    # the authbridge listener.transparent_proxy_addr (default :8082).
+    transparentPort: 8082
+    # In-cluster CIDRs (pods/services/DNS) left direct by the enforce-redirect
+    # guard; external TCP is REDIRECTed to the transparent listener and external
+    # non-TCP is dropped. The default is Kind-shaped (pods 10.244/16 + services
+    # 10.96/16). OpenShift/EKS MUST override — e.g. OCP services 172.30.0.0/16
+    # (outside 10/8) + pods 10.128.0.0/14 — or in-cluster service traffic breaks.
     clusterCIDRs:
       - "10.0.0.0/8"
 

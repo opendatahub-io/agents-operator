@@ -525,18 +525,18 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 			injectHTTPProxyEnv(c, forwardProxyPort)
 		}
 
-		// Fail-closed egress enforcement (opt-in via proxy.egressEnforcement,
-		// default "off"). HTTP_PROXY above is cooperative — an app that ignores
-		// it egresses directly. When enforcement is on, inject the proxy-init
-		// enforce-drop guard so any direct egress is dropped. envoy-sidecar
-		// already enforces structurally via transparent redirect, so this is the
+		// Fail-closed egress enforcement (always-on for proxy-sidecar / lite).
+		// HTTP_PROXY above is cooperative — an app that ignores it egresses
+		// directly. The enforce-redirect proxy-init guard transparently REDIRECTs
+		// any bypass egress to the forward proxy's transparent listener, so it is
+		// captured rather than dropped and nothing breaks. envoy-sidecar enforces
+		// structurally via its own transparent redirect, so this is the
 		// proxy-sidecar / lite path only. The exempted PROXY_UID equals the proxy
 		// container's RunAsUser (both b.cfg.Proxy.UID).
-		if currentConfig.Proxy.EgressEnforcement == config.EgressEnforcementEnforce &&
-			!containerExists(podSpec.InitContainers, ProxyInitContainerName) {
+		if !containerExists(podSpec.InitContainers, ProxyInitContainerName) {
 			podSpec.InitContainers = append(podSpec.InitContainers,
-				builder.BuildProxyInitContainer(ProxyInitModeEnforceDrop, "", ""))
-			mutatorLog.Info("proxy-sidecar egress enforcement enabled (enforce-drop)",
+				builder.BuildProxyInitContainer(ProxyInitModeEnforceRedirect, "", ""))
+			mutatorLog.Info("proxy-sidecar egress enforcement enabled (enforce-redirect)",
 				"namespace", namespace, "crName", crName)
 		}
 

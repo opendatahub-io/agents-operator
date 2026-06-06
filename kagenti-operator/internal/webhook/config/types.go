@@ -41,36 +41,26 @@ type ImageConfig struct {
 	PullPolicy corev1.PullPolicy `json:"pullPolicy" yaml:"pullPolicy"`
 }
 
-// EgressEnforcement values for ProxyConfig.EgressEnforcement.
-const (
-	EgressEnforcementOff     = "off"
-	EgressEnforcementEnforce = "enforce"
-)
-
 type ProxyConfig struct {
 	Port             int32 `json:"port" yaml:"port"`
 	UID              int64 `json:"uid" yaml:"uid"`
 	InboundProxyPort int32 `json:"inboundProxyPort" yaml:"inboundProxyPort"`
 	AdminPort        int32 `json:"adminPort" yaml:"adminPort"`
 
-	// EgressEnforcement controls the proxy-sidecar fail-closed egress guard.
-	//   "off" (default): the workload routes egress through the forward proxy
-	//     via HTTP_PROXY only — cooperative and bypassable.
-	//   "enforce": a proxy-init container installs the enforce-drop iptables
-	//     guard, forcing all external egress through the forward proxy regardless
-	//     of whether the workload honors HTTP_PROXY.
-	// envoy-sidecar mode is unaffected — it already enforces egress structurally
-	// via the transparent redirect, so this knob is consulted only on the
-	// proxy-sidecar / lite path. Migrate the default off->enforce in a future
-	// release once ClusterCIDRs sourcing is validated across distros.
-	EgressEnforcement string `json:"egressEnforcement" yaml:"egressEnforcement"`
+	// TransparentPort is the forward proxy's transparent listener port — the
+	// REDIRECT target the enforce-redirect proxy-init guard sends captured
+	// external TCP egress to. It MUST match the authbridge proxy-sidecar
+	// listener.transparent_proxy_addr (default :8082).
+	TransparentPort int32 `json:"transparentPort" yaml:"transparentPort"`
 
 	// ClusterCIDRs are the in-cluster ranges (pods / services / DNS) that the
-	// enforce-drop guard allows direct; everything else egressing the pod is
-	// dropped. The default 10.0.0.0/8 is Kind-shaped (pods 10.244/16 + services
-	// 10.96/16). OCP/EKS MUST override this (e.g. OCP services 172.30.0.0/16,
-	// pods 10.128.0.0/14 — 172.30/16 is outside 10/8) or in-cluster service
-	// traffic will be dropped. Only used when EgressEnforcement == "enforce".
+	// enforce-redirect guard allows direct; external TCP is REDIRECTed to the
+	// transparent listener and external non-TCP is dropped. The default
+	// 10.0.0.0/8 is Kind-shaped (pods 10.244/16 + services 10.96/16). OCP/EKS
+	// MUST override this (e.g. OCP services 172.30.0.0/16, pods 10.128.0.0/14 —
+	// 172.30/16 is outside 10/8) or in-cluster service traffic will be dropped.
+	// Egress enforcement is always-on for proxy-sidecar / lite, so this is
+	// always consumed there; envoy-sidecar (transparent redirect) does not use it.
 	ClusterCIDRs []string `json:"clusterCIDRs" yaml:"clusterCIDRs"`
 }
 
@@ -151,32 +141,29 @@ func (c *PlatformConfig) Validate() error {
 	if c.Proxy.AdminPort < 1024 || c.Proxy.AdminPort > 65535 {
 		return fmt.Errorf("proxy.adminPort must be between 1024 and 65535")
 	}
-	// The enforce-drop guard exempts this UID (--uid-owner) and the proxy
+	if c.Proxy.TransparentPort < 1024 || c.Proxy.TransparentPort > 65535 {
+		return fmt.Errorf("proxy.transparentPort must be between 1024 and 65535")
+	}
+	// The enforce-redirect guard exempts this UID (--uid-owner) and the proxy
 	// container runs as it; it must be a real non-root user.
 	if c.Proxy.UID < 1 {
-		return fmt.Errorf("proxy.uid must be >= 1 (got %d): the proxy must not run as root and the enforce-drop exemption keys on this UID", c.Proxy.UID)
+		return fmt.Errorf("proxy.uid must be >= 1 (got %d): the proxy must not run as root and the egress-enforcement exemption keys on this UID", c.Proxy.UID)
 	}
-	switch c.Proxy.EgressEnforcement {
-	case "", EgressEnforcementOff, EgressEnforcementEnforce:
-	default:
-		return fmt.Errorf("proxy.egressEnforcement must be \"off\" or \"enforce\" (got %q)", c.Proxy.EgressEnforcement)
+	// ClusterCIDRs drive the only in-cluster allowance in the enforce-redirect
+	// guard, which is always-on for proxy-sidecar / lite. Validate at load time so
+	// a misconfig fails fast with a clear message rather than: (a) an empty list
+	// silently falling back to the Kind-shaped 10.0.0.0/8 default in
+	// init-iptables.sh, or (b) a malformed entry crashing the proxy-init container
+	// under `set -e` with a cryptic iptables error.
+	if len(c.Proxy.ClusterCIDRs) == 0 {
+		return fmt.Errorf("proxy.clusterCIDRs must be non-empty (set the cluster's pod+service CIDRs)")
 	}
-	// When enforce is on, ClusterCIDRs drive the only in-cluster allowance in the
-	// enforce-drop guard. Validate them at load time so a misconfig fails fast with
-	// a clear message rather than: (a) an empty list silently falling back to the
-	// Kind-shaped 10.0.0.0/8 default in init-iptables.sh, or (b) a malformed entry
-	// crashing the proxy-init container under `set -e` with a cryptic iptables error.
-	if c.Proxy.EgressEnforcement == EgressEnforcementEnforce {
-		if len(c.Proxy.ClusterCIDRs) == 0 {
-			return fmt.Errorf("proxy.clusterCIDRs must be non-empty when proxy.egressEnforcement is %q (set the cluster's pod+service CIDRs)", EgressEnforcementEnforce)
-		}
-		// Syntactic validation only — overlapping ranges and IPv4/IPv6 mixing are
-		// accepted (iptables handles both, and the init script splits v4/v6 itself);
-		// we only reject malformed strings here.
-		for _, cidr := range c.Proxy.ClusterCIDRs {
-			if _, _, err := net.ParseCIDR(cidr); err != nil {
-				return fmt.Errorf("proxy.clusterCIDRs entry %q is not a valid CIDR: %w", cidr, err)
-			}
+	// Syntactic validation only — overlapping ranges and IPv4/IPv6 mixing are
+	// accepted (iptables handles both, and the init script splits v4/v6 itself);
+	// we only reject malformed strings here.
+	for _, cidr := range c.Proxy.ClusterCIDRs {
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			return fmt.Errorf("proxy.clusterCIDRs entry %q is not a valid CIDR: %w", cidr, err)
 		}
 	}
 	if c.Images.EnvoyProxy == "" {

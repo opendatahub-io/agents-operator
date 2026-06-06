@@ -188,11 +188,11 @@ var _ = Describe("AuthBridge Pod Webhook", func() {
 			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(pod), pod)
 			Expect(err).NotTo(HaveOccurred())
 
-			// Default mode is proxy-sidecar — expect authbridge-proxy, no
-			// envoy-proxy or proxy-init.
+			// Default mode is proxy-sidecar — expect authbridge-proxy and the
+			// always-on enforce-redirect proxy-init guard; no envoy-proxy.
 			Expect(containerNames(pod.Spec.Containers)).To(ContainElement(injector.AuthBridgeProxyContainerName))
 			Expect(containerNames(pod.Spec.Containers)).NotTo(ContainElement(injector.EnvoyProxyContainerName))
-			Expect(initContainerNames(pod.Spec.InitContainers)).NotTo(ContainElement(injector.ProxyInitContainerName))
+			Expect(initContainerNames(pod.Spec.InitContainers)).To(ContainElement(injector.ProxyInitContainerName))
 		})
 	})
 
