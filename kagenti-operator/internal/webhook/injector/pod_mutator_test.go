@@ -781,6 +781,86 @@ func TestInjectAuthBridge_WaypointMode_SkipsInjection(t *testing.T) {
 	}
 }
 
+// Egress enforcement for proxy-sidecar is gated by proxy.egressEnforcement
+// (default "off"). When "enforce", a proxy-init container is injected in
+// enforce-drop mode; envoy-sidecar is unaffected (tested elsewhere).
+func TestInjectAuthBridge_ProxySidecar_EgressEnforcement(t *testing.T) {
+	ctx := context.Background()
+	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
+	makePod := func() *corev1.PodSpec {
+		return &corev1.PodSpec{
+			ServiceAccountName: "my-agent",
+			Containers:         []corev1.Container{{Name: "agent", Image: "my-agent:latest"}},
+		}
+	}
+	findProxyInit := func(spec *corev1.PodSpec) *corev1.Container {
+		for i := range spec.InitContainers {
+			if spec.InitContainers[i].Name == ProxyInitContainerName {
+				return &spec.InitContainers[i]
+			}
+		}
+		return nil
+	}
+
+	t.Run("enforce injects proxy-init in enforce-drop mode", func(t *testing.T) {
+		m := newTestMutator(newAgentRuntimeWithMode("team1", "my-agent", ModeProxySidecar))
+		cfg := config.CompiledDefaults()
+		cfg.Proxy.EgressEnforcement = "enforce"
+		m.GetPlatformConfig = func() *config.PlatformConfig { return cfg }
+
+		spec := makePod()
+		if _, err := m.InjectAuthBridge(ctx, spec, "team1", "my-agent", labels, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		ic := findProxyInit(spec)
+		if ic == nil {
+			t.Fatal("proxy-init should be injected when egressEnforcement=enforce")
+		}
+		var mode string
+		for _, e := range ic.Env {
+			if e.Name == "MODE" {
+				mode = e.Value
+			}
+		}
+		if mode != "enforce-drop" {
+			t.Errorf("proxy-init MODE = %q, want enforce-drop", mode)
+		}
+	})
+
+	t.Run("default off does not inject proxy-init", func(t *testing.T) {
+		m := newTestMutator(newAgentRuntimeWithMode("team1", "my-agent", ModeProxySidecar))
+		spec := makePod()
+		if _, err := m.InjectAuthBridge(ctx, spec, "team1", "my-agent", labels, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if findProxyInit(spec) != nil {
+			t.Error("proxy-init must not be injected when egressEnforcement is off (default)")
+		}
+	})
+
+	t.Run("does not duplicate an existing proxy-init", func(t *testing.T) {
+		m := newTestMutator(newAgentRuntimeWithMode("team1", "my-agent", ModeProxySidecar))
+		cfg := config.CompiledDefaults()
+		cfg.Proxy.EgressEnforcement = "enforce"
+		m.GetPlatformConfig = func() *config.PlatformConfig { return cfg }
+
+		spec := makePod()
+		spec.InitContainers = []corev1.Container{{Name: ProxyInitContainerName, Image: "preexisting"}}
+		if _, err := m.InjectAuthBridge(ctx, spec, "team1", "my-agent", labels, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		count := 0
+		for _, c := range spec.InitContainers {
+			if c.Name == ProxyInitContainerName {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Errorf("expected proxy-init not duplicated, got %d", count)
+		}
+	})
+}
+
 func TestInjectAuthBridge_ProxySidecarMode_InjectsCorrectly(t *testing.T) {
 	m := newTestMutator(newAgentRuntimeWithMode("team1", "my-agent", ModeProxySidecar))
 	ctx := context.Background()

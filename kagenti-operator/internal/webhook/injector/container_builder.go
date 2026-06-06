@@ -299,7 +299,13 @@ func (b *ContainerBuilder) BuildProxySidecarContainerWithPorts(spireEnabled bool
 		},
 		Resources: b.cfg.Resources.AuthBridge,
 		SecurityContext: &corev1.SecurityContext{
-			RunAsUser:                ptr.To(int64(1001)),
+			// Run as the dedicated proxy UID (default 1337), the SAME value the
+			// proxy-init enforce-drop guard exempts via `--uid-owner $PROXY_UID`.
+			// Deriving both from b.cfg.Proxy.UID keeps the exempted UID in lockstep
+			// with the process it exempts (a hardcoded literal could drift and
+			// silently break the proxy's own egress). Matches the envoy builder.
+			RunAsUser:                ptr.To(b.cfg.Proxy.UID),
+			RunAsGroup:               ptr.To(b.cfg.Proxy.UID),
 			RunAsNonRoot:             ptr.To(true),
 			AllowPrivilegeEscalation: ptr.To(false),
 		},
@@ -448,51 +454,81 @@ func (b *ContainerBuilder) buildEnvoyProxyEnvLegacy() []corev1.EnvVar {
 const mandatoryOutboundExclude = "8080"
 
 // BuildProxyInitContainer creates the proxy-init container.
-// outboundPortsExclude is a comma-separated list of additional ports to
-// exclude from outbound interception (mandatory 8080 is always included).
-// inboundPortsExclude is a comma-separated list of ports to exclude from
-// inbound interception (only set when non-empty). Both come from the
-// kagenti.io/outbound-ports-exclude and kagenti.io/inbound-ports-exclude
-// pod annotations.
-func (b *ContainerBuilder) BuildProxyInitContainer(outboundPortsExclude, inboundPortsExclude string) corev1.Container {
-	outboundValue := buildOutboundExcludeValue(outboundPortsExclude)
-	inboundValue := buildPortExcludeValue(inboundPortsExclude, "inbound-ports-exclude")
+// mode selects the interception strategy the init script runs:
+//   - "redirect" (envoy-sidecar): transparently REDIRECT pod traffic to the
+//     Envoy listeners. outboundPortsExclude / inboundPortsExclude (from the
+//     kagenti.io/outbound-ports-exclude and kagenti.io/inbound-ports-exclude
+//     pod annotations; mandatory 8080 always included outbound) tune it.
+//   - "enforce-drop" (proxy-sidecar): a fail-closed egress guard that DROPs any
+//     egress bypassing the forward proxy. Driven by PROXY_UID + CLUSTER_CIDRS;
+//     the exclude args do not apply (the script ignores them in this mode).
+func (b *ContainerBuilder) BuildProxyInitContainer(mode ProxyInitMode, outboundPortsExclude, inboundPortsExclude string) corev1.Container {
+	var env []corev1.EnvVar
+	switch mode {
+	case ProxyInitModeEnforceDrop:
+		// PROXY_UID is exempted from the DROP and MUST match the proxy
+		// container's RunAsUser (both derive from b.cfg.Proxy.UID). CLUSTER_CIDRS
+		// are allowed direct; everything else egressing the pod is dropped.
+		// POD_IP and the redirect-only exclude vars are unused in this mode.
+		clusterCIDRs := strings.Join(b.cfg.Proxy.ClusterCIDRs, ",")
+		env = []corev1.EnvVar{
+			{Name: "MODE", Value: string(ProxyInitModeEnforceDrop)},
+			{Name: "PROXY_UID", Value: fmt.Sprintf("%d", b.cfg.Proxy.UID)},
+			{Name: "CLUSTER_CIDRS", Value: clusterCIDRs},
+		}
+		builderLog.Info("building ProxyInit Container",
+			"mode", "enforce-drop",
+			"proxyUID", b.cfg.Proxy.UID,
+			"clusterCIDRs", clusterCIDRs)
+	case ProxyInitModeRedirect:
+		outboundValue := buildOutboundExcludeValue(outboundPortsExclude)
+		inboundValue := buildPortExcludeValue(inboundPortsExclude, "inbound-ports-exclude")
 
-	builderLog.Info("building ProxyInit Container",
-		"resolvedOutboundPortsExclude", outboundValue,
-		"resolvedInboundPortsExclude", inboundValue)
+		builderLog.Info("building ProxyInit Container",
+			"mode", "redirect",
+			"resolvedOutboundPortsExclude", outboundValue,
+			"resolvedInboundPortsExclude", inboundValue)
 
-	env := []corev1.EnvVar{
-		{
-			Name:  "PROXY_PORT",
-			Value: fmt.Sprintf("%d", b.cfg.Proxy.Port),
-		},
-		{
-			Name:  "INBOUND_PROXY_PORT",
-			Value: fmt.Sprintf("%d", b.cfg.Proxy.InboundProxyPort),
-		},
-		{
-			Name:  "PROXY_UID",
-			Value: fmt.Sprintf("%d", b.cfg.Proxy.UID),
-		},
-		{
-			Name:  "OUTBOUND_PORTS_EXCLUDE",
-			Value: outboundValue,
-		},
-		{
-			Name: "POD_IP",
-			ValueFrom: &corev1.EnvVarSource{
-				FieldRef: &corev1.ObjectFieldSelector{
-					FieldPath: "status.podIP",
+		env = []corev1.EnvVar{
+			{
+				Name:  "PROXY_PORT",
+				Value: fmt.Sprintf("%d", b.cfg.Proxy.Port),
+			},
+			{
+				Name:  "INBOUND_PROXY_PORT",
+				Value: fmt.Sprintf("%d", b.cfg.Proxy.InboundProxyPort),
+			},
+			{
+				Name:  "PROXY_UID",
+				Value: fmt.Sprintf("%d", b.cfg.Proxy.UID),
+			},
+			{
+				Name:  "OUTBOUND_PORTS_EXCLUDE",
+				Value: outboundValue,
+			},
+			{
+				Name: "POD_IP",
+				ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "status.podIP",
+					},
 				},
 			},
-		},
-	}
-	if inboundValue != "" {
-		env = append(env, corev1.EnvVar{
-			Name:  "INBOUND_PORTS_EXCLUDE",
-			Value: inboundValue,
-		})
+		}
+		if inboundValue != "" {
+			env = append(env, corev1.EnvVar{
+				Name:  "INBOUND_PORTS_EXCLUDE",
+				Value: inboundValue,
+			})
+		}
+	default:
+		// Fail closed. An unknown mode must NOT silently degrade to redirect:
+		// that would ship a proxy-init with no egress guard — fail-open, the
+		// worst outcome for a fail-closed control. Return a zero-value container
+		// so injection breaks visibly (empty name/image → admission/scheduler
+		// rejects it) rather than passing a security-defeating container through.
+		builderLog.Error(nil, "unknown proxy-init mode; refusing to build container (fail closed)", "mode", mode)
+		return corev1.Container{}
 	}
 
 	return corev1.Container{

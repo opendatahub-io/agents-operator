@@ -525,6 +525,21 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 			injectHTTPProxyEnv(c, forwardProxyPort)
 		}
 
+		// Fail-closed egress enforcement (opt-in via proxy.egressEnforcement,
+		// default "off"). HTTP_PROXY above is cooperative — an app that ignores
+		// it egresses directly. When enforcement is on, inject the proxy-init
+		// enforce-drop guard so any direct egress is dropped. envoy-sidecar
+		// already enforces structurally via transparent redirect, so this is the
+		// proxy-sidecar / lite path only. The exempted PROXY_UID equals the proxy
+		// container's RunAsUser (both b.cfg.Proxy.UID).
+		if currentConfig.Proxy.EgressEnforcement == config.EgressEnforcementEnforce &&
+			!containerExists(podSpec.InitContainers, ProxyInitContainerName) {
+			podSpec.InitContainers = append(podSpec.InitContainers,
+				builder.BuildProxyInitContainer(ProxyInitModeEnforceDrop, "", ""))
+			mutatorLog.Info("proxy-sidecar egress enforcement enabled (enforce-drop)",
+				"namespace", namespace, "crName", crName)
+		}
+
 		// spiffe-helper is bundled in the authbridge combined image and
 		// gated by SPIRE_ENABLED; client-registration is operator-managed.
 
@@ -608,7 +623,7 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 	if decision.ProxyInit.Inject && !containerExists(podSpec.InitContainers, ProxyInitContainerName) {
 		outboundExclude := annotations[OutboundPortsExcludeAnnotation]
 		inboundExclude := annotations[InboundPortsExcludeAnnotation]
-		podSpec.InitContainers = append(podSpec.InitContainers, builder.BuildProxyInitContainer(outboundExclude, inboundExclude))
+		podSpec.InitContainers = append(podSpec.InitContainers, builder.BuildProxyInitContainer(ProxyInitModeRedirect, outboundExclude, inboundExclude))
 	}
 
 	// Inject volumes

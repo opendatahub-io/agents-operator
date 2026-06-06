@@ -38,6 +38,23 @@ const (
 	ClientAuthTypeFederatedJWT = "federated-jwt"
 )
 
+// ProxyInitMode is the iptables strategy BuildProxyInitContainer passes to
+// init-iptables.sh. It is a named type so callsites read intent-fully and the
+// compiler rejects passing an unrelated typed value; BuildProxyInitContainer
+// additionally fails closed on any unknown value (see its default branch),
+// since an untyped string literal can still convert to this type at a callsite.
+type ProxyInitMode string
+
+// proxy-init MODE values.
+const (
+	// ProxyInitModeRedirect transparently REDIRECTs pod traffic to the Envoy
+	// listeners (envoy-sidecar mode).
+	ProxyInitModeRedirect ProxyInitMode = "redirect"
+	// ProxyInitModeEnforceDrop installs the fail-closed egress guard that DROPs
+	// any egress bypassing the forward proxy (proxy-sidecar egress enforcement).
+	ProxyInitModeEnforceDrop ProxyInitMode = "enforce-drop"
+)
+
 // mTLS modes for the proxy-sidecar / lite paths. Selected per workload
 // via AgentRuntime CR `Spec.MTLSMode`, falling back to the namespace
 // `authbridge-runtime-config` ConfigMap's `mtls.mode` field, then

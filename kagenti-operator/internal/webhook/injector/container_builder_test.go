@@ -17,6 +17,8 @@ limitations under the License.
 package injector
 
 import (
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/kagenti/operator/internal/webhook/config"
@@ -194,7 +196,7 @@ func TestBuildOutboundExcludeValue_BoundaryPorts(t *testing.T) {
 
 func TestBuildProxyInitContainer_DefaultExclude(t *testing.T) {
 	builder := NewContainerBuilder(config.CompiledDefaults())
-	container := builder.BuildProxyInitContainer("", "")
+	container := builder.BuildProxyInitContainer("redirect", "", "")
 
 	var foundOutbound bool
 	for _, env := range container.Env {
@@ -215,7 +217,7 @@ func TestBuildProxyInitContainer_DefaultExclude(t *testing.T) {
 
 func TestBuildProxyInitContainer_WithAnnotationPorts(t *testing.T) {
 	builder := NewContainerBuilder(config.CompiledDefaults())
-	container := builder.BuildProxyInitContainer("11434,4317", "")
+	container := builder.BuildProxyInitContainer("redirect", "11434,4317", "")
 
 	var foundOutbound bool
 	for _, env := range container.Env {
@@ -236,7 +238,7 @@ func TestBuildProxyInitContainer_WithAnnotationPorts(t *testing.T) {
 
 func TestBuildProxyInitContainer_WithInboundExclude(t *testing.T) {
 	builder := NewContainerBuilder(config.CompiledDefaults())
-	container := builder.BuildProxyInitContainer("", "8443,18789")
+	container := builder.BuildProxyInitContainer("redirect", "", "8443,18789")
 
 	var foundInbound bool
 	for _, env := range container.Env {
@@ -257,7 +259,7 @@ func TestBuildProxyInitContainer_WithInboundExclude(t *testing.T) {
 
 func TestBuildProxyInitContainer_WithBothExcludes(t *testing.T) {
 	builder := NewContainerBuilder(config.CompiledDefaults())
-	container := builder.BuildProxyInitContainer("11434", "8443")
+	container := builder.BuildProxyInitContainer("redirect", "11434", "8443")
 
 	var foundOutbound, foundInbound bool
 	for _, env := range container.Env {
@@ -279,6 +281,72 @@ func TestBuildProxyInitContainer_WithBothExcludes(t *testing.T) {
 	}
 	if !foundInbound {
 		t.Error("missing INBOUND_PORTS_EXCLUDE")
+	}
+}
+
+// The proxy-sidecar container must run as the configured Proxy.UID — the same
+// value the enforce-drop guard exempts via --uid-owner. If these drift, the
+// proxy's own egress would be dropped (or the agent would share the exempt UID).
+func TestBuildProxySidecarContainer_RunAsProxyUID(t *testing.T) {
+	cfg := config.CompiledDefaults()
+	builder := NewContainerBuilder(cfg)
+	container := builder.BuildProxySidecarContainer(true)
+
+	sc := container.SecurityContext
+	if sc == nil || sc.RunAsUser == nil {
+		t.Fatal("proxy-sidecar container missing SecurityContext.RunAsUser")
+	}
+	if got := *sc.RunAsUser; got != cfg.Proxy.UID {
+		t.Errorf("proxy-sidecar RunAsUser = %d, want Proxy.UID %d", got, cfg.Proxy.UID)
+	}
+	if sc.RunAsGroup == nil || *sc.RunAsGroup != cfg.Proxy.UID {
+		t.Errorf("proxy-sidecar RunAsGroup = %v, want Proxy.UID %d", sc.RunAsGroup, cfg.Proxy.UID)
+	}
+}
+
+// enforce-drop mode emits MODE / PROXY_UID / CLUSTER_CIDRS and none of the
+// redirect-only vars (POD_IP, OUTBOUND_PORTS_EXCLUDE).
+func TestBuildProxyInitContainer_EnforceDrop(t *testing.T) {
+	cfg := config.CompiledDefaults()
+	builder := NewContainerBuilder(cfg)
+	container := builder.BuildProxyInitContainer("enforce-drop", "", "")
+
+	got := map[string]string{}
+	for _, e := range container.Env {
+		if e.ValueFrom != nil {
+			t.Errorf("enforce-drop env %q must be a literal, not ValueFrom", e.Name)
+		}
+		got[e.Name] = e.Value
+	}
+	if got["MODE"] != "enforce-drop" {
+		t.Errorf("MODE = %q, want enforce-drop", got["MODE"])
+	}
+	if want := strconv.FormatInt(cfg.Proxy.UID, 10); got["PROXY_UID"] != want {
+		t.Errorf("PROXY_UID = %q, want %q", got["PROXY_UID"], want)
+	}
+	if want := strings.Join(cfg.Proxy.ClusterCIDRs, ","); got["CLUSTER_CIDRS"] != want {
+		t.Errorf("CLUSTER_CIDRS = %q, want %q", got["CLUSTER_CIDRS"], want)
+	}
+	if _, ok := got["POD_IP"]; ok {
+		t.Error("enforce-drop must not set POD_IP")
+	}
+	if _, ok := got["OUTBOUND_PORTS_EXCLUDE"]; ok {
+		t.Error("enforce-drop must not set OUTBOUND_PORTS_EXCLUDE")
+	}
+}
+
+// An unknown mode must fail closed: BuildProxyInitContainer returns a
+// zero-value container (no name/image/env) rather than silently degrading to
+// redirect, which would ship a proxy-init with no egress guard (fail-open).
+// This guards the exported API against a typo'd mode literal at a future
+// callsite — a typo in a fail-closed control is the worst failure mode.
+func TestBuildProxyInitContainer_InvalidMode(t *testing.T) {
+	builder := NewContainerBuilder(config.CompiledDefaults())
+	container := builder.BuildProxyInitContainer(ProxyInitMode("enfore-drop"), "", "")
+
+	if container.Name != "" || container.Image != "" || container.Env != nil {
+		t.Errorf("invalid mode must return a zero-value container, got name=%q image=%q env=%v",
+			container.Name, container.Image, container.Env)
 	}
 }
 

@@ -32,6 +32,12 @@ func CompiledDefaults() *PlatformConfig {
 			UID:              1337,
 			InboundProxyPort: 15124,
 			AdminPort:        9901,
+			// Off by default — proxy-sidecar stays cooperative (HTTP_PROXY only)
+			// until an operator opts in. Migrate to "enforce" in a future release.
+			EgressEnforcement: EgressEnforcementOff,
+			// Kind-shaped default (pods 10.244/16 + services 10.96/16). OCP/EKS
+			// MUST override (see ProxyConfig.ClusterCIDRs doc).
+			ClusterCIDRs: []string{"10.0.0.0/8"},
 		},
 		Resources: ResourcesConfig{
 			EnvoyProxy: corev1.ResourceRequirements{
