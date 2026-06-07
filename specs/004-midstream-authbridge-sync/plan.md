@@ -1,23 +1,23 @@
 # Implementation Plan: Midstream AuthBridge Sync
 
-**Branch**: `004-midstream-authbridge-sync` | **Date**: 2026-06-03 | **Spec**: [spec.md](./spec.md)
+**Branch**: `004-midstream-authbridge-sync` | **Date**: 2026-06-07 | **Spec**: [spec.md](./spec.md)
 **Input**: Feature specification from `/specs/004-midstream-authbridge-sync/spec.md`
 
 ## Summary
 
-Set up automated upstream-to-midstream synchronization for both kagenti-operator and kagenti-authbridge repositories into the midstream repo (`opendatahub-io/agents-operator`). The sync uses `openshift-knative/deviate` (or a similar tool) to mirror upstream releases, apply carried patches, and create PRs for human review. AuthBridge sidecar images use Go build tags (opt-out pattern) to exclude experimental plugins at compile time.
+Set up automated upstream-to-midstream synchronization for kagenti-authbridge into the midstream repo (`opendatahub-io/agents-operator`). A standalone sync script copies authbridge source into `kagenti-authbridge/`, applies carried patches, and creates PRs for human review. The sidecar image uses Go build tags (opt-out pattern) to exclude experimental plugins at compile time. The operator sync is out of scope (already handled by `rhods-devops-infra`).
 
 ## Technical Context
 
-**Language/Version**: Go 1.24, Bash (sync scripts), YAML (CI workflows)
-**Primary Dependencies**: `openshift-knative/deviate` (sync engine), `gh` CLI (PR creation), Go build tags
-**Storage**: Git state files tracking last synced upstream commit SHAs
+**Language/Version**: Bash (sync script), Go 1.24 (build tags, sidecar binary), YAML (CI workflows)
+**Primary Dependencies**: `gh` CLI (PR creation), `git` (sync operations), Go build tags
+**Storage**: `.sync-state` JSON file tracking last synced upstream commit SHA
 **Testing**: Manual sync validation, CI build verification, plugin catalog inspection
 **Target Platform**: GitHub Actions (CI), Konflux/Tekton (downstream builds)
 **Project Type**: Build/CI infrastructure + upstream Go build tag PR
 **Performance Goals**: Sync completes in under 5 minutes
-**Constraints**: No automatic merges; human review required for all sync PRs
-**Scale/Scope**: 2 upstream repos (kagenti-operator, kagenti-authbridge), 2 container images
+**Constraints**: No automatic merges; human review required. Must integrate with existing `rhods-devops-infra` infrastructure.
+**Scale/Scope**: 1 upstream repo (kagenti-authbridge), 1 new container image (sidecar), 1 existing image (operator, out of scope)
 
 ## Constitution Check
 
@@ -25,13 +25,13 @@ Set up automated upstream-to-midstream synchronization for both kagenti-operator
 
 | Principle | Applicable? | Status |
 |-----------|-------------|--------|
-| I. Reconciler Status Integrity | No - no reconciler code touched | N/A |
-| II. Spec-Anchored Testing | No - no controller tests | N/A |
-| III. Controller-Runtime Safety | No - no controller code | N/A |
-| IV. CRD-First Design | No - no CRD changes | N/A |
-| V. Feature-Gated Rollout | No - infrastructure/build changes only | N/A |
+| I. Reconciler Status Integrity | No | N/A |
+| II. Spec-Anchored Testing | No | N/A |
+| III. Controller-Runtime Safety | No | N/A |
+| IV. CRD-First Design | No | N/A |
+| V. Feature-Gated Rollout | No | N/A |
 
-All principles are not applicable to this feature. This is build infrastructure and CI automation, not operator controller code.
+All principles are not applicable. This is build infrastructure and CI automation, not operator controller code.
 
 ## Project Structure
 
@@ -43,37 +43,40 @@ specs/004-midstream-authbridge-sync/
 ├── research.md          # Phase 0 output
 ├── data-model.md        # Phase 1 output
 ├── quickstart.md        # Phase 1 output
-└── tasks.md             # Phase 2 output (via /speckit-tasks)
+├── tasks.md             # Task breakdown
+├── REVIEWERS.md         # Review guide
+└── checklists/
+    └── requirements.md  # Quality checklist
 ```
 
-### Source Code (repository root)
+### Source Code (midstream repo: opendatahub-io/agents-operator)
 
 ```text
-# Midstream repo layout (opendatahub-io/agents-operator)
-kagenti-operator/           # Synced from kagenti/kagenti-operator
-├── ...                     # Existing operator source
-└── Dockerfile              # Operator image build
+kagenti-operator/           # Synced by rhods-devops-infra (existing, out of scope)
+├── ...
+└── Dockerfile
 
 kagenti-authbridge/         # Synced from kagenti/kagenti-authbridge (NEW)
 ├── authlib/                # Core library + all plugins (including IBAC source)
 ├── cmd/authbridge-proxy/   # Proxy-sidecar binary
 ├── proxy-init/             # iptables init container
-└── Dockerfile              # Sidecar image build (with build tags)
+├── Dockerfile.midstream    # Midstream sidecar Dockerfile with build tags
+└── BUILD.md                # Build-tag documentation
 
 patches/                    # Midstream-carried patches (NEW)
-├── authbridge/             # Patches for kagenti-authbridge
-│   └── 001-ibac-build-tag.patch  # Adds //go:build !exclude_plugin_ibac
-└── operator/               # Patches for kagenti-operator (if any)
+└── authbridge/
+    └── 001-ibac-build-tag.patch
 
-scripts/                    # Sync and build scripts
-├── sync-upstream.sh        # Manual sync entry point (or deviate config)
-└── ...
+scripts/
+└── sync/
+    ├── config-authbridge.yaml  # Sync configuration
+    └── sync-authbridge.sh      # Sync script (callable from rhods-devops-infra)
 
-.github/workflows/          # CI automation
-└── sync-upstream.yml       # Scheduled sync job
+.github/workflows/
+└── sync-authbridge.yml     # Scheduled sync job
 
-deviate.yaml                # Deviate configuration (if adopted)
-.sync-state                 # Last synced commit SHAs per upstream repo
+.sync-state                 # Last synced commit SHA for kagenti-authbridge
+SYNC.md                     # Sync documentation
 ```
 
-**Structure Decision**: Sibling directories mirroring upstream repo names (`kagenti-operator/`, `kagenti-authbridge/`), with midstream-specific files (`patches/`, `deviate.yaml`, `.sync-state`) at the repo root. This keeps upstream content cleanly separated from midstream additions.
+**Structure Decision**: AuthBridge source lives under `kagenti-authbridge/` as a sibling to `kagenti-operator/`, mirroring the upstream repo name. Sync infrastructure lives under `scripts/sync/`. Carried patches under `patches/authbridge/`. This keeps upstream content cleanly separated from midstream additions and is compatible with the existing `rhods-devops-infra` infrastructure that handles operator sync.
