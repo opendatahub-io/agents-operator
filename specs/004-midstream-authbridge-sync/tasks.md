@@ -18,9 +18,8 @@
 **Purpose**: Prepare the midstream repo structure and tooling
 
 - [ ] T001 Create `kagenti-authbridge/` directory on midstream branch
-- [ ] T002 Create `patches/authbridge/` and `patches/operator/` directories on midstream branch
-- [ ] T003 [P] Create `.sync-state` JSON file with initial empty state at repo root on midstream branch
-- [ ] T004 [P] Evaluate `openshift-knative/deviate` (install, test with a dry-run against kagenti-operator upstream) and document findings in `scripts/sync/README.md`. If deviate is adopted, T009/T010 produce `deviate.yaml` configs instead of custom YAML; if not, T009/T010 produce custom configs consumed by T011's sync script
+- [ ] T002 Create `patches/authbridge/` directory on midstream branch for carried patches
+- [ ] T003 [P] Create `.sync-state` JSON file with initial empty state (kagenti-authbridge entry only) at repo root on midstream branch
 
 ---
 
@@ -41,20 +40,18 @@
 
 ## Phase 3: User Story 1 - Automated Upstream Sync (Priority: P1) MVP
 
-**Goal**: Upstream changes from both kagenti-operator and kagenti-authbridge appear as reviewable PRs in the midstream repo automatically.
+**Goal**: Upstream authbridge changes appear as reviewable PRs in the midstream repo automatically. (Operator sync is already handled by `rhods-devops-infra`.)
 
-**Independent Test**: Run the sync script manually against current upstream state; verify it creates a PR with the expected files under `kagenti-authbridge/` and `kagenti-operator/`.
+**Independent Test**: Run the sync script manually against current upstream state; verify it creates a PR with the expected files under `kagenti-authbridge/`.
 
 ### Implementation for User Story 1
 
-- [ ] T009 [US1] Create sync configuration for kagenti-authbridge: define include paths (`authlib/`, `cmd/authbridge-proxy/`, `proxy-init/`), exclude paths (`cmd/authbridge-envoy/`, `cmd/authbridge-lite/`, `cmd/abctl/`, `demos/`, `docs/`, `tests/`), and upstream URL in `scripts/sync/config-authbridge.yaml` (or `deviate.yaml` if using deviate)
-- [ ] T010 [P] [US1] Create sync configuration for kagenti-operator: define include/exclude paths and upstream URL in `scripts/sync/config-operator.yaml`
-- [ ] T011 [US1] Create sync script `scripts/sync/sync-upstream.sh` that: (a) reads config for a named upstream, (b) fetches upstream, (c) computes diff since last synced SHA, (d) detects non-fast-forward (force-push/rebase) and flags for manual review instead of auto-syncing, (e) copies changed files into target directory, (f) applies carried patches from `patches/<upstream>/`, (g) updates `.sync-state`, (h) creates/updates a GitHub PR via `gh`, (i) logs elapsed time for SC-004 validation
-- [ ] T012 [US1] Run initial manual sync of kagenti-authbridge into `kagenti-authbridge/` on midstream branch and verify file layout
-- [ ] T013 [US1] Run initial manual sync of kagenti-operator into `kagenti-operator/` on midstream branch (updating existing content) and verify
-- [ ] T014 [US1] Create GitHub Actions workflow `.github/workflows/sync-upstream.yml` that runs `scripts/sync/sync-upstream.sh` on a daily schedule (06:00 UTC) for both upstreams, with manual trigger support
+- [ ] T009 [US1] Create sync configuration for kagenti-authbridge in `scripts/sync/config-authbridge.yaml`: define include paths (`authlib/`, `cmd/authbridge-proxy/`, `proxy-init/`), exclude paths (`cmd/authbridge-envoy/`, `cmd/authbridge-lite/`, `cmd/abctl/`, `demos/`, `docs/`, `tests/`), upstream URL, and target directory (`kagenti-authbridge/`)
+- [ ] T010 [US1] Create sync script `scripts/sync/sync-authbridge.sh` that: (a) reads config from `config-authbridge.yaml`, (b) fetches upstream kagenti-extensions/authbridge, (c) computes diff since last synced SHA, (d) detects non-fast-forward (force-push/rebase) and flags for manual review, (e) copies changed files into `kagenti-authbridge/`, (f) applies carried patches from `patches/authbridge/`, (g) updates `.sync-state`, (h) creates/updates a GitHub PR via `gh`, (i) logs elapsed time for SC-004 validation. Script should be callable from `rhods-devops-infra` workflows.
+- [ ] T011 [US1] Run initial manual sync of kagenti-authbridge into `kagenti-authbridge/` on midstream branch and verify file layout
+- [ ] T012 [US1] Create GitHub Actions workflow `.github/workflows/sync-authbridge.yml` that runs `scripts/sync/sync-authbridge.sh` on a daily schedule (06:00 UTC) with manual trigger support. Coordinate with existing operator sync from `rhods-devops-infra`.
 
-**Checkpoint**: Both upstreams sync automatically via PR. Human review required before merge.
+**Checkpoint**: AuthBridge syncs automatically via PR. Human review required before merge. Operator sync continues via existing `rhods-devops-infra` infrastructure.
 
 ---
 
@@ -115,8 +112,8 @@
 
 - [ ] T026 [P] Update midstream repo `README.md` with sync process overview, build instructions, and links to upstream repos
 - [ ] T027 [P] Update `quickstart.md` in specs with actual paths and commands based on implementation
-- [ ] T028 Validate full end-to-end flow: sync both upstreams, apply patches, build both images, verify plugin exclusion
-- [ ] T029 Create `SYNC.md` at repo root documenting: how to add a new upstream, how to create/remove carried patches, how to add/remove plugin exclusions
+- [ ] T028 Validate full end-to-end flow: sync authbridge, apply patches, build both images, verify plugin exclusion
+- [ ] T029 Create `SYNC.md` at repo root documenting: how the authbridge sync works, how to create/remove carried patches, how to add/remove plugin exclusions, and how it relates to the existing operator sync via `rhods-devops-infra`
 
 ---
 
@@ -128,40 +125,35 @@
 - **Foundational (Phase 2)**: Independent of Phase 1, can start in parallel (upstream PR work)
 - **User Story 1 (Phase 3)**: Depends on Phase 1 (directories exist) and Phase 2 (carried patch available for initial sync)
 - **User Story 2 (Phase 4)**: Depends on Phase 2 (build tags exist) and Phase 3 (authbridge source synced)
-- **User Story 3 (Phase 5)**: Depends on Phase 3 (both sources synced) and Phase 4 (sidecar Dockerfile ready)
+- **User Story 3 (Phase 5)**: Depends on Phase 3 (authbridge synced) and Phase 4 (sidecar Dockerfile ready). Operator source is already present via existing `rhods-devops-infra` sync.
 - **User Story 4 (Phase 6)**: Depends on Phase 4 (sidecar image buildable)
 - **Polish (Phase 7)**: Depends on all previous phases
 
 ### User Story Dependencies
 
-- **US1 (Sync)**: Depends on Setup + Foundational. No dependency on other stories.
+- **US1 (AuthBridge Sync)**: Depends on Setup + Foundational. No dependency on other stories. Operator sync is handled externally by `rhods-devops-infra`.
 - **US2 (Plugin Exclusion)**: Depends on US1 (source must be synced first) and Foundational (build tags).
 - **US3 (Two Images)**: Depends on US1 + US2. Integration validation of both images.
 - **US4 (Runtime Config)**: Depends on US2 (needs buildable sidecar image). Mostly validation work.
 
 ### Parallel Opportunities
 
-- T003 and T004 can run in parallel (setup phase)
-- T009 and T010 can run in parallel (sync configs for different upstreams)
+- T002 and T003 can run in parallel (setup phase)
 - T015 and T018 can run in parallel (Dockerfile + docs)
 - T021 and T022 can run in parallel (CI config + docs)
 - T026 and T027 can run in parallel (docs)
-- Foundational phase (T005-T008) can run in parallel with Setup (T001-T004)
+- Foundational phase (T005-T008) can run in parallel with Setup (T001-T003)
 
 ---
 
 ## Parallel Example: User Story 1
 
 ```bash
-# Launch sync configs in parallel (different files):
+# Sequentially (each step depends on the previous):
 Task: "Create sync config for kagenti-authbridge in scripts/sync/config-authbridge.yaml"
-Task: "Create sync config for kagenti-operator in scripts/sync/config-operator.yaml"
-
-# Then sequentially:
-Task: "Create sync script scripts/sync/sync-upstream.sh"
+Task: "Create sync script scripts/sync/sync-authbridge.sh"
 Task: "Run initial sync of authbridge"
-Task: "Run initial sync of operator"
-Task: "Create GitHub Actions workflow"
+Task: "Create GitHub Actions workflow for authbridge sync"
 ```
 
 ---
@@ -179,7 +171,7 @@ Task: "Create GitHub Actions workflow"
 ### Incremental Delivery
 
 1. Setup + Foundational -> Infrastructure ready
-2. Add US1 (Sync) -> Both upstreams sync via automated PRs (MVP!)
+2. Add US1 (Sync) -> AuthBridge syncs via automated PRs (MVP!)
 3. Add US2 (Plugin Exclusion) -> Sidecar builds with correct plugin set
 4. Add US3 (Two Images) -> Both images build from one repo, path-based CI
 5. Add US4 (Runtime Config) -> Validation of runtime behavior
