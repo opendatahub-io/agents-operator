@@ -1,0 +1,682 @@
+# AI Gateway Policy Attachment
+
+## Status
+
+Proposal 
+
+## Summary
+
+Add AI Gateway capabilities to the Kagenti operator using the Gateway API
+policy attachment pattern. Users create a standard `Gateway` resource
+(managed by Envoy Gateway), then attach Kagenti policy CRDs to control
+LLM routing and access control. Each policy generates the downstream
+Envoy AI Gateway resources needed to implement the declared intent.
+
+Two CRDs cover the initial scope:
+
+- **AIRoutingPolicy** — providers, models, per-model failover,
+  credentials, and per-model token rate limiting.
+- **AIAccessPolicy** — gateway-level mTLS using SPIFFE trust bundles.
+
+Providers and models are separate concepts within AIRoutingPolicy.
+Providers define shared connection configuration (endpoint, schema,
+credentials). Models define what clients request, which provider
+backends serve them, and failover order — similar to
+[LiteLLM's model group pattern][LiteLLM Router]. Failover happens
+within a model's backend list, never across unrelated models.
+
+`AIAccessPolicy` is a novel feature intended to leverage our platform's 
+deep SPIFFE integration to provide tokenless inference access and governance to
+agent workloads.
+
+## Background
+
+### Gateway API 
+
+[Gateway API] is the Kubernetes-native standard for configuring network
+gateways. Because [Envoy Gateway] is an implementation that manages Envoy proxy
+data planes for Gateway API resources we are targeting it as our initial dataplane.
+
+The Envoy [AI Gateway extension] adds AI-aware capabilities on top of
+Envoy Gateway: protocol translation between LLM schemas, model-based
+routing, credential injection, and token accounting. It defines its own
+CRDs (`AIGatewayRoute`, `AIServiceBackend`, `BackendSecurityPolicy`)
+that the extension server translates into xDS configuration.
+
+These CRDs are powerful but low-level. A user wanting to route to Ollama
+with mTLS and token rate limiting needs to create and coordinate six or
+more resources. Our policy CRDs provide a higher-level abstraction.
+
+As additional proxies are supported, we will likewise translate as needed
+in order to program them.
+
+### WG AI Gateway
+
+The Kubernetes [WG AI Gateway] is defining standards for AI-aware
+networking in Gateway API. Two proposals are directly relevant:
+
+- [Proposal 10: Egress Gateways] — introduces a `Backend` resource
+  (`gateway.networking.k8s.io/v1alpha1`) as a first-class representation
+  of external destinations with inline TLS, credential injection
+  extensions, and MCP protocol support. Defines three-tier policy scoping
+  (Route > Backend > Gateway) with oldest-wins conflict resolution.
+  When this proposal matures, it could collapse the per-provider
+  Backend + AIServiceBackend + BackendSecurityPolicy into a single
+  resource, reducing the generated resource count without changing the
+  user-facing API.
+
+- [Proposal 7: Payload Processing] — introduces
+  `PayloadProcessingPipeline` for ordered, sequential body/header
+  processors (prompt validation, PII redaction, semantic routing) as
+  HTTPRoute filters. This is the emerging standard for guardrails and
+  is the intended generation target for per-provider processing
+  pipelines (see [Future: guardrails](#future-guardrails)).
+
+Our design generates the Envoy AI Gateway CRDs that exist today, but is
+structured so that when the WG proposals mature into accepted APIs, we
+can adopt them as generation targets without changing the user-facing
+policy CRDs. Translation from policy intent to data-plane resources is
+isolated in a renderer package to support this migration.
+
+[Gateway API]: https://gateway-api.sigs.k8s.io/
+[Envoy Gateway]: https://gateway.envoyproxy.io/
+[AI Gateway extension]: https://aigateway.envoyproxy.io/
+[WG AI Gateway]: https://github.com/kubernetes-sigs/wg-ai-gateway
+[Proposal 10: Egress Gateways]: https://github.com/kubernetes-sigs/wg-ai-gateway/blob/main/proposals/10-egress-gateways.md
+[Proposal 7: Payload Processing]: https://github.com/kubernetes-sigs/wg-ai-gateway/blob/main/proposals/7-payload-processing.md
+
+## Architecture
+
+```
+User creates                         Controller generates
+────────────                         ────────────────────
+
+┌──────────────┐
+│   Gateway    │ ◄── Envoy Gateway manages the Envoy proxy
+│  class: eg   │
+└──────┬───────┘
+       │ targetRef
+       │
+ ┌─────┴──────────────────────────────────────────────┐
+ │                                                     │
+ │ ┌────────────────┐          ┌───────────────┐       │
+ │ │AIRoutingPolicy │          │AIAccessPolicy │       │
+ │ │  (providers,   │          │  (mTLS)       │       │
+ │ │   models,      │          │               │       │
+ │ │   rate limits) │          │               │       │
+ │ └───────┬────────┘          └──────┬────────┘       │
+ │         │                         │                 │
+ │         ▼                         ▼                 │
+ │  Backend                     CA Secret              │
+ │  AIServiceBackend            Server cert            │
+ │  AIGatewayRoute              ClientTrafficPolicy    │
+ │  BackendSecurityPolicy                              │
+ │  BackendTrafficPolicy                               │
+ │   (retry + rate limits)                             │
+ └─────────────────────────────────────────────────────┘
+```
+
+Two controllers watch the same Gateway for different concerns:
+
+- **Envoy Gateway** — reconciles the Gateway, deploys the Envoy proxy,
+  processes BackendTrafficPolicy and ClientTrafficPolicy
+- **Kagenti operator** — reconciles the two AI policy CRDs and generates
+  downstream resources
+
+No conflict: our controller never modifies the Gateway. It creates
+sibling resources that reference it. The two Kagenti policy controllers
+are independent — they generate disjoint sets of resources and never
+write to each other's objects.
+
+## API group
+
+```
+aigateway.kagenti.dev/v1alpha1
+```
+
+Separate from the operator's agent CRDs (`agent.kagenti.dev`) and from
+Envoy AI Gateway's CRDs (`aigateway.envoyproxy.io`).
+
+## CRDs
+
+### AIRoutingPolicy
+
+The core policy — without it, the Gateway has no AI routing.
+
+Providers and models are separate concepts:
+
+- **Providers** define shared connection configuration: endpoint, API
+  schema, and credentials. A provider is referenced by name from model
+  backend entries. Each provider generates one Backend, one
+  AIServiceBackend, and (if credentials are set) one
+  BackendSecurityPolicy.
+
+- **Models** define the client-facing routing unit. Each model has a
+  `name` (the virtual name clients request), a list of `backends`
+  (provider references with the actual model name and failover
+  priority), and optional rate limiting. Each model generates one rule
+  in the AIGatewayRoute.
+
+A single controller owns all generated resources, eliminating
+cross-controller write conflicts.
+
+```yaml
+apiVersion: aigateway.kagenti.dev/v1alpha1
+kind: AIRoutingPolicy
+metadata:
+  name: my-routing
+  namespace: team1
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: ai-gateway
+
+  # Providers: shared endpoint + credential definitions
+  providers:
+  - name: ollama-local
+    endpoint: http://ollama.team1.svc:11434
+    schema: OpenAI
+
+  - name: openai
+    endpoint: https://api.openai.com/v1
+    schema: OpenAI
+    credentials:
+      type: APIKey
+      secretRef:
+        name: openai-secret
+        key: api-key
+
+  - name: azure-openai
+    endpoint: https://my-resource.openai.azure.com
+    schema: OpenAI
+    credentials:
+      type: AzureCredentials
+      tenantId: "..."
+      clientId: "..."
+      clientSecretRef:
+        name: azure-secret
+        key: client-secret
+
+  - name: bedrock
+    endpoint: https://bedrock-runtime.us-east-1.amazonaws.com
+    schema: AWSBedrock
+    credentials:
+      type: AWSCredentials
+      region: us-east-1
+
+  # Models: what clients request, with per-model failover
+  models:
+  - name: gpt-4o                       # virtual name (client-facing)
+    backends:
+    - provider: openai
+      model: gpt-4o                    # actual model name — always explicit
+      priority: 0
+    - provider: azure-openai
+      model: gpt-4o-2024-05-13        # Azure uses a different name
+      priority: 1
+    rateLimit:
+      tokensPerHour: 100000
+      tokenCountMode: TotalToken       # InputToken | OutputToken | TotalToken
+    failover:
+      retryOn: [502, 503, 429]
+      maxRetries: 2
+
+  - name: gpt-4o-mini
+    backends:
+    - provider: openai
+      model: gpt-4o-mini
+      priority: 0
+    rateLimit:
+      tokensPerHour: 1000000
+
+  - name: qwen2.5:3b
+    backends:
+    - provider: ollama-local
+      model: qwen2.5:3b               # single backend, no failover
+
+  - name: claude-sonnet
+    backends:
+    - provider: bedrock
+      model: anthropic.claude-sonnet-4-20250514-v1:0
+      priority: 0
+    rateLimit:
+      tokensPerHour: 100000
+```
+
+**What it generates:**
+
+| Generated resource | API group | Count |
+|----|----|----|
+| Backend | gateway.envoyproxy.io | one per provider |
+| AIServiceBackend | aigateway.envoyproxy.io | one per provider |
+| BackendSecurityPolicy | aigateway.envoyproxy.io | one per provider with credentials |
+| AIGatewayRoute | aigateway.envoyproxy.io | one (one rule per model + llmRequestCosts) |
+| BackendTrafficPolicy | gateway.envoyproxy.io | one (per-model failover + rate limit rules) |
+
+**Provider credential types:**
+
+| `type` | Generated BackendSecurityPolicy | Use case |
+|--------|--------------------------------|----------|
+| `APIKey` | `spec.apiKey.secretRef` | OpenAI, Anthropic, generic |
+| `AWSCredentials` | `spec.awsCredentials` with SigV4 | AWS Bedrock |
+| `AzureCredentials` | `spec.azureCredentials` | Azure OpenAI |
+| `GCPCredentials` | `spec.gcpCredentials` | Vertex AI |
+
+Protocol translation between schemas (e.g., OpenAI-format request routed
+to an Anthropic backend) is handled automatically by the AI Gateway
+extension server based on the provider's `schema` field. No code in our
+controller.
+
+**Failover behavior:**
+
+Failover is per model. Each model's `backends` list defines the failover
+order via the `priority` field (lowest = highest priority). If the
+primary backend fails (matching `retryOn` conditions), Envoy retries at
+the next priority level. Within the same priority, `weight` (default 1)
+distributes traffic for active-active scenarios.
+
+Each model can specify its own `failover` configuration (retryOn,
+maxRetries, backoff). A top-level `defaultFailover` field can set
+defaults to avoid repetition. Models with a single backend need no
+failover configuration.
+
+In the generated AIGatewayRoute, each model becomes one rule matching
+the `x-ai-eg-model` header, with multiple `backendRefs` when the model
+has multiple backends.
+
+**Rate limiting:**
+
+Rate limits are defined per model. Each model with a `rateLimit` field
+generates one rate limit rule in the BackendTrafficPolicy, matched by
+the `x-ai-eg-model` header that the AI Gateway extension sets during
+routing. This maps directly to Envoy AI Gateway's rate limiting
+mechanism — one rule, one model header selector, one Redis counter —
+with no ambiguity in descriptor grouping.
+
+A model with no `rateLimit` field has no token quota enforced. The
+`tokenCountMode` defaults to `TotalToken` and can be set to
+`InputToken` or `OutputToken` for finer-grained accounting.
+
+When any model specifies a `rateLimit`, the controller adds
+`llmRequestCosts` entries to the AIGatewayRoute (telling the AI Gateway
+extension to extract token counts into Envoy dynamic metadata under the
+`io.envoy.ai_gateway` namespace) and rate limit rules with
+`cost.response.from: Metadata` to the BackendTrafficPolicy. Both
+resources are already owned by this controller for routing and failover,
+so no coordination is needed.
+
+Requires Envoy Gateway's global rate limit service (Redis-backed) for
+cross-instance quota enforcement.
+
+Per-user or per-tenant rate limiting (multi-tenant cost allocation) is
+a separate concern. If needed, a future policy CRD could attach to the
+Gateway to layer per-client quotas on top of per-model limits.
+
+### AIAccessPolicy
+
+Controls which clients can reach the Gateway. Phase 1 implements mTLS
+with SPIFFE trust bundles. Future phases could add JWT validation or
+API key authentication.
+
+This is a gateway-level concern — it applies uniformly to all traffic
+entering the gateway, independent of which provider handles the request.
+
+```yaml
+apiVersion: aigateway.kagenti.dev/v1alpha1
+kind: AIAccessPolicy
+metadata:
+  name: my-access
+  namespace: team1
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: ai-gateway
+
+  mtls:
+    trustDomain: localtest.me
+    trustBundleConfigMap:
+      name: spire-bundle
+      namespace: spire-system
+      key: bundle.spiffe               # default
+    serverCertRef:                      # optional — auto-generated if omitted
+      name: my-server-cert
+```
+
+**What it generates:**
+
+| Generated resource | Purpose |
+|----|-----|
+| Secret `<name>-mtls-ca` | PEM-encoded CA certs extracted from the SPIFFE JSON trust bundle |
+| Secret `<name>-mtls-server` | Self-signed ECDSA server cert (only if `serverCertRef` is omitted) |
+| ClientTrafficPolicy | Requires client certs, validated against the CA Secret |
+
+The controller reads the SPIRE trust bundle ConfigMap (which contains a
+SPIFFE-format JWK set), extracts the `x509-svid` certificates, converts
+them to PEM, and writes a Secret. It skips expired certificates (SPIRE
+bundles retain rotated CAs that Envoy rejects).
+
+When an AIAccessPolicy targets a Gateway, the controller also ensures
+the Gateway's listeners use HTTPS with TLS termination. If the user's
+AIRoutingPolicy specifies HTTP listeners, the AIAccessPolicy overrides
+them to HTTPS — access policy takes precedence over routing config for
+the listener protocol.
+
+### Future: guardrails
+
+Content filtering, prompt injection detection, and PII redaction are
+per-provider concerns — trust boundaries differ between a local Ollama
+instance and an external API endpoint. The natural home for guardrails
+is inline on the provider definition, as an ordered processing pipeline:
+
+```yaml
+providers:
+- name: openai
+  endpoint: https://api.openai.com/v1
+  schema: OpenAI
+  credentials: ...
+  processing:                          # future — not in initial scope
+  - name: pii-redaction
+    phase: request
+    extProc:
+      serviceRef:
+        name: pii-service
+        port: 50051
+  - name: toxicity-check
+    phase: response
+    extProc:
+      serviceRef:
+        name: toxicity-service
+        port: 50051
+
+- name: ollama
+  endpoint: http://ollama.svc:11434
+  schema: OpenAI
+  # no processing — trusted local endpoint
+```
+
+The `processing` list is ordered, giving pipeline semantics. The
+controller would generate per-route ext-proc filter chains so that
+different providers get different processing.
+
+The WG AI Gateway's [Proposal 7: Payload Processing] defines a
+`PayloadProcessingPipeline` CRD for ordered body/header processors as
+HTTPRoute filters. When that proposal matures into an accepted API, the
+`processing` field should generate `PayloadProcessingPipeline` resources
+rather than raw ext-proc configuration. This follows the same principle
+as routing: the user-facing spec stays stable while the generated
+resources change as standards evolve.
+
+Gateway-wide guardrails (compliance requirements that apply regardless
+of provider) are a separate concern. If needed, a future
+`AIGuardrailsPolicy` could attach to the Gateway using the same policy
+attachment pattern as AIAccessPolicy. That would be a separate design
+proposal.
+
+Not in scope for the initial implementation.
+
+## Example: complete deployment
+
+A platform admin sets up a Gateway with mTLS. A team lead configures
+the LLM providers and models with per-model failover and rate limits.
+
+```yaml
+# Platform admin creates the Gateway
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ai-gateway
+  namespace: team1
+spec:
+  gatewayClassName: eg
+  listeners:
+  - name: https
+    port: 8443
+    protocol: HTTPS
+---
+# Platform admin sets access policy
+apiVersion: aigateway.kagenti.dev/v1alpha1
+kind: AIAccessPolicy
+metadata:
+  name: ai-gateway-access
+  namespace: team1
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: ai-gateway
+  mtls:
+    trustDomain: localtest.me
+    trustBundleConfigMap:
+      name: spire-bundle
+      namespace: spire-system
+---
+# Team lead configures providers and models
+apiVersion: aigateway.kagenti.dev/v1alpha1
+kind: AIRoutingPolicy
+metadata:
+  name: ai-gateway-routing
+  namespace: team1
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: ai-gateway
+
+  providers:
+  - name: ollama
+    endpoint: http://ollama.team1.svc:11434
+    schema: OpenAI
+  - name: openai
+    endpoint: https://api.openai.com/v1
+    schema: OpenAI
+    credentials:
+      type: APIKey
+      secretRef:
+        name: openai-secret
+        key: api-key
+  - name: azure-openai
+    endpoint: https://my-resource.openai.azure.com
+    schema: OpenAI
+    credentials:
+      type: AzureCredentials
+      tenantId: "..."
+      clientId: "..."
+      clientSecretRef:
+        name: azure-secret
+        key: client-secret
+
+  models:
+  - name: gpt-4o
+    backends:
+    - provider: openai
+      model: gpt-4o
+      priority: 0
+    - provider: azure-openai
+      model: gpt-4o-2024-05-13
+      priority: 1
+    rateLimit:
+      tokensPerHour: 100000
+    failover:
+      retryOn: [502, 503, connect-failure]
+      maxRetries: 2
+  - name: qwen2.5:3b
+    backends:
+    - provider: ollama
+      model: qwen2.5:3b
+```
+
+## Reconciliation
+
+Each policy has its own controller. They run independently, generate
+disjoint resource sets, and can be applied in any order. A missing
+policy simply means that capability isn't configured.
+
+```
+AIRoutingPolicyReconciler
+  ├── parse provider endpoints (URL → host + port)
+  ├── for each provider:
+  │     ├── create/update Backend (gateway.envoyproxy.io)
+  │     ├── create/update AIServiceBackend (aigateway.envoyproxy.io)
+  │     └── create/update BackendSecurityPolicy (if credentials set)
+  ├── create/update AIGatewayRoute
+  │     ├── one rule per model (x-ai-eg-model match → backendRefs)
+  │     └── llmRequestCosts (if any model has rateLimit)
+  ├── create/update BackendTrafficPolicy
+  │     ├── per-model failover/retry config
+  │     └── per-model rate limit rules (x-ai-eg-model header selectors)
+  ├── clean up orphaned resources for removed providers
+  └── update status conditions
+
+AIAccessPolicyReconciler
+  ├── read SPIRE trust bundle ConfigMap
+  ├── parse SPIFFE JSON → extract x509-svid certs → PEM
+  ├── create/update CA Secret
+  ├── create/update self-signed server cert (if no serverCertRef)
+  ├── create/update ClientTrafficPolicy
+  └── update status conditions
+```
+
+All generated resources carry an owner reference to their policy CR.
+Deleting a policy garbage-collects its generated resources.
+
+## Code structure
+
+Translation from policy intent to data-plane-specific resources is
+isolated in a renderer package. Phase 1 ships with an Envoy AI Gateway
+renderer. This boundary exists so that alternative data planes (or
+future WG AI Gateway standard resources) can be supported by adding a
+renderer without modifying reconciliation logic.
+
+```
+internal/aigateway/
+  intent.go              # data-plane-agnostic representation of routing intent
+  reconciler.go          # shared reconciliation orchestration
+  envoy/
+    renderer.go          # intent → Envoy AI Gateway CRDs
+    renderer_test.go
+```
+
+## RBAC
+
+The policy attachment model maps naturally to organizational roles:
+
+| Role | Creates | Why |
+|------|---------|-----|
+| Platform admin | Gateway, AIAccessPolicy | Controls infra and security |
+| Team lead | AIRoutingPolicy (providers, models, rate limits) | Decides which providers, models, and quotas the team uses |
+| Developer | nothing — calls the gateway endpoint | Consumes inference through the gateway |
+
+The operator service account needs:
+
+| API group | Resources | Verbs |
+|-----------|-----------|-------|
+| aigateway.kagenti.dev | airoutingpolicies, aiaccesspolicies + /status + /finalizers | all |
+| gateway.networking.k8s.io | gateways | get, list, watch |
+| gateway.envoyproxy.io | backends, clienttrafficpolicies, backendtrafficpolicies | all |
+| aigateway.envoyproxy.io | aiservicebackends, aigatewayroutes, backendsecuritypolicies | all |
+| (core) | secrets | all |
+| (core) | configmaps | get, list, watch |
+
+## Infrastructure prerequisites
+
+The Ansible installer deploys these before the operator runs:
+
+| Component | Version | Helm chart | Purpose |
+|-----------|---------|------------|---------|
+| Envoy Gateway | v1.7.0 | `oci://docker.io/envoyproxy/gateway-helm` | Data plane management, must have `extensionManager` configured |
+| AI Gateway controller | v0.6.0 | `oci://docker.io/envoyproxy/ai-gateway-helm` | Extension server for AIGatewayRoute/AIServiceBackend |
+| AI Gateway CRDs | v0.6.0 | `oci://docker.io/envoyproxy/ai-gateway-crds-helm` | CRD definitions |
+| GatewayClass `eg` | — | kubectl apply | Links Gateways to Envoy Gateway's controller |
+| SPIRE | — | spire-crds + spire charts | Trust bundle for mTLS (optional) |
+
+Envoy Gateway must be configured with the `extensionManager` pointing
+to the AI Gateway controller's gRPC service:
+
+```yaml
+config:
+  envoyGateway:
+    extensionApis:
+      enableBackend: true
+    extensionManager:
+      hooks:
+        xdsTranslator:
+          post: [Translation, Cluster, Route]
+      service:
+        fqdn:
+          hostname: ai-gateway-controller.<ns>.svc.cluster.local
+          port: 1063
+```
+
+## Implementation plan
+
+### Phase 1: AIRoutingPolicy
+
+The minimum viable feature. A user creates a Gateway and an
+AIRoutingPolicy; the controller generates the Envoy AI Gateway
+resources to make inference routing work. Per-model rate limits and
+per-model failover are included from the start since they share
+generated resources with routing (AIGatewayRoute and
+BackendTrafficPolicy) and map directly to the Envoy data plane model.
+
+Files:
+- `api/aigateway/v1alpha1/types.go` — shared types (targetRef, provider, model, backend, credentials, rateLimit)
+- `api/aigateway/v1alpha1/airoutingpolicy_types.go`
+- `internal/aigateway/intent.go` — data-plane-agnostic routing intent
+- `internal/aigateway/envoy/renderer.go` — Envoy AI Gateway renderer
+- `internal/aigateway/envoy/renderer_test.go`
+- `internal/controller/airoutingpolicy_controller.go`
+- `internal/controller/airoutingpolicy_controller_test.go`
+
+### Phase 2: AIAccessPolicy
+
+mTLS enforcement using SPIRE trust bundles. Adds the gateway-level
+access control layer on top of routing.
+
+Files:
+- `api/aigateway/v1alpha1/aiaccesspolicy_types.go`
+- `internal/controller/aiaccesspolicy_controller.go`
+- `internal/spiffe/bundle.go` — SPIFFE JSON → PEM conversion
+
+### Future: AIProvider extraction
+
+If the provider spec grows significantly (credentials, processing
+pipelines, additional metadata), it may warrant extraction into its own
+CRD (`AIProvider`) referenced by name from AIRoutingPolicy. This would
+enable provider reuse across gateways and finer-grained RBAC. The
+internal `RoutingIntent` model should be structured so that this
+extraction is a mechanical refactor.
+
+### Future: guardrails
+
+Per-provider guardrails via the `processing` field (see
+[Future: guardrails](#future-guardrails) above). Depends on the
+WG AI Gateway [Proposal 7: Payload Processing] maturing. Gateway-wide
+guardrails would be a separate policy CRD and a separate design
+proposal.
+
+## Compatibility notes
+
+- AI Gateway v0.6.0 requires `AIServiceBackend.backendRef` to point to
+  an Envoy Gateway `Backend` resource, not a raw Service.
+  See: https://github.com/envoyproxy/ai-gateway/issues/902
+
+- `AIGatewayRoute.backendRefs` must omit `group` and `kind` to default
+  to `AIServiceBackend`. Explicit values are rejected unless they
+  specify `InferencePool`.
+
+- The AI Gateway CRDs emit deprecation warnings for `v1alpha1` in favor
+  of `v1beta1`. The controller should target `v1alpha1` initially and
+  migrate when the beta API stabilizes.
+
+## References
+
+- [Gateway API Policy Attachment (GEP-713)](https://gateway-api.sigs.k8s.io/geps/gep-713/)
+- [WG AI Gateway](https://github.com/kubernetes-sigs/wg-ai-gateway)
+- [WG AI Gateway Charter](https://github.com/kubernetes/community/blob/master/wg-ai-gateway/charter.md)
+- [Proposal 10: Egress Gateways](https://github.com/kubernetes-sigs/wg-ai-gateway/blob/main/proposals/10-egress-gateways.md)
+- [Proposal 7: Payload Processing](https://github.com/kubernetes-sigs/wg-ai-gateway/blob/main/proposals/7-payload-processing.md)
+- [LiteLLM Router](https://docs.litellm.ai/docs/routing)
+- [Envoy AI Gateway v0.6.0](https://aigateway.envoyproxy.io/)
+- [Envoy Gateway extensionManager](https://gateway.envoyproxy.io/docs/tasks/extensibility/extension-server/)
