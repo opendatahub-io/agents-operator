@@ -2163,16 +2163,13 @@ rules:
 				return err
 			}, 1*time.Minute, 5*time.Second).Should(Succeed())
 
-			By("waiting for AgentRuntime Ready=True")
+			By("waiting for AgentRuntime Ready=True with linkedSkills populated")
 			Eventually(func(g Gomega) {
 				readyStatus, err := utils.KubectlGetJsonpath("agentruntime", "skill-discovery-agent",
 					skillDiscoveryTestNamespace, "{.status.conditions[?(@.type=='Ready')].status}")
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(readyStatus).To(Equal("True"))
-			}).Should(Succeed())
 
-			By("verifying status.linkedSkills contains discovered skills")
-			Eventually(func(g Gomega) {
 				raw, err := utils.KubectlGetJsonpath("agentruntime", "skill-discovery-agent",
 					skillDiscoveryTestNamespace, "{.status.linkedSkills}")
 				g.Expect(err).NotTo(HaveOccurred())
