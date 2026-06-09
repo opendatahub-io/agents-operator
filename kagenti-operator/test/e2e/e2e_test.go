@@ -470,6 +470,28 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 			_, err := utils.KubectlApplyStdin(authBridgeAgentFixture(), authBridgeTestNamespace)
 			Expect(err).NotTo(HaveOccurred())
 
+			By("waiting for operator to apply kagenti.io/type label via AgentRuntime")
+			Eventually(func(g Gomega) {
+				typeLabel, labelErr := utils.KubectlGetJsonpath("deployment", "authbridge-agent", authBridgeTestNamespace,
+					"{.metadata.labels.kagenti\\.io/type}")
+				g.Expect(labelErr).NotTo(HaveOccurred())
+				g.Expect(typeLabel).To(Equal("agent"))
+			}, 1*time.Minute, 2*time.Second).Should(Succeed())
+
+			By("waiting for pod template to have kagenti.io/type label (triggers rolling update)")
+			Eventually(func(g Gomega) {
+				tmplLabel, labelErr := utils.KubectlGetJsonpath("deployment", "authbridge-agent", authBridgeTestNamespace,
+					"{.spec.template.metadata.labels.kagenti\\.io/type}")
+				g.Expect(labelErr).NotTo(HaveOccurred())
+				g.Expect(tmplLabel).To(Equal("agent"))
+			}, 1*time.Minute, 2*time.Second).Should(Succeed())
+
+			By("waiting for rollout to complete")
+			rolloutCmd := exec.Command("kubectl", "rollout", "status",
+				"deployment/authbridge-agent", "-n", authBridgeTestNamespace, "--timeout=3m")
+			_, rolloutErr := utils.Run(rolloutCmd)
+			Expect(rolloutErr).NotTo(HaveOccurred())
+
 			By("waiting for deployment to be ready")
 			Expect(utils.WaitForDeploymentReady("authbridge-agent", authBridgeTestNamespace, 3*time.Minute)).To(Succeed())
 
@@ -529,11 +551,11 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 		})
 
 		It("should not duplicate sidecars on pod recreation (idempotency)", func() {
-			By("getting current pod name")
+			By("getting current injected pod name")
 			var oldPodName string
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "pods",
-					"-l", "app.kubernetes.io/name=authbridge-agent",
+					"-l", "app.kubernetes.io/name=authbridge-agent,kagenti.io/type=agent",
 					"-n", authBridgeTestNamespace,
 					"-o", "jsonpath={.items[0].metadata.name}")
 				output, err := utils.Run(cmd)
@@ -550,7 +572,7 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 			By("waiting for new pod to be running with a different name")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "pods",
-					"-l", "app.kubernetes.io/name=authbridge-agent",
+					"-l", "app.kubernetes.io/name=authbridge-agent,kagenti.io/type=agent",
 					"-n", authBridgeTestNamespace,
 					"-o", "jsonpath={.items[0].metadata.name}")
 				output, err := utils.Run(cmd)
@@ -565,7 +587,7 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 
 			By("verifying exactly 1 envoy-proxy and 1 proxy-init (no separate spiffe-helper)")
 			cmd = exec.Command("kubectl", "get", "pods",
-				"-l", "app.kubernetes.io/name=authbridge-agent",
+				"-l", "app.kubernetes.io/name=authbridge-agent,kagenti.io/type=agent",
 				"-n", authBridgeTestNamespace,
 				"-o", "jsonpath={.items[0].spec.containers[*].name}")
 			containers, err := utils.Run(cmd)
@@ -575,7 +597,7 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 				"spiffe-helper is bundled inside envoy-proxy, should not appear as a separate container")
 
 			cmd = exec.Command("kubectl", "get", "pods",
-				"-l", "app.kubernetes.io/name=authbridge-agent",
+				"-l", "app.kubernetes.io/name=authbridge-agent,kagenti.io/type=agent",
 				"-n", authBridgeTestNamespace,
 				"-o", "jsonpath={.items[0].spec.initContainers[*].name}")
 			initContainers, err := utils.Run(cmd)
@@ -586,9 +608,12 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 
 	Context("Injection opt-out", func() {
 		It("should not inject when kagenti.io/inject=disabled", func() {
+			var err error
 			By("creating AgentRuntime for disabled agent")
-			_, err := utils.KubectlApplyStdin(authBridgeDisabledAgentRuntimeFixture(), authBridgeTestNamespace)
-			Expect(err).NotTo(HaveOccurred())
+			Eventually(func(g Gomega) {
+				_, applyErr := utils.KubectlApplyStdin(authBridgeDisabledAgentRuntimeFixture(), authBridgeTestNamespace)
+				g.Expect(applyErr).NotTo(HaveOccurred())
+			}, 2*time.Minute, 2*time.Second).Should(Succeed())
 
 			By("verifying AgentRuntime CR exists")
 			_, err = utils.KubectlGetJsonpath("agentruntime", "authbridge-disabled-agent",
@@ -598,6 +623,14 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 			By("deploying disabled agent")
 			_, err = utils.KubectlApplyStdin(authBridgeDisabledAgentFixture(), authBridgeTestNamespace)
 			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for operator to apply kagenti.io/type label via AgentRuntime")
+			Eventually(func(g Gomega) {
+				typeLabel, labelErr := utils.KubectlGetJsonpath("deployment", "authbridge-disabled-agent",
+					authBridgeTestNamespace, "{.metadata.labels.kagenti\\.io/type}")
+				g.Expect(labelErr).NotTo(HaveOccurred())
+				g.Expect(typeLabel).To(Equal("agent"))
+			}, 1*time.Minute, 2*time.Second).Should(Succeed())
 
 			By("waiting for deployment to be ready")
 			Expect(utils.WaitForDeploymentReady(
@@ -820,6 +853,20 @@ var _ = Describe("AgentCard E2E", Ordered, func() {
 			_, err := utils.KubectlApplyStdin(noProtocolAgentFixture(), testNamespace)
 			Expect(err).NotTo(HaveOccurred())
 
+			By("creating AgentRuntime for noproto-agent")
+			Eventually(func(g Gomega) {
+				_, applyErr := utils.KubectlApplyStdin(noProtoAgentRuntimeFixture(), testNamespace)
+				g.Expect(applyErr).NotTo(HaveOccurred())
+			}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+			By("waiting for operator to apply kagenti.io/type label")
+			Eventually(func(g Gomega) {
+				typeLabel, labelErr := utils.KubectlGetJsonpath("deployment", "noproto-agent", testNamespace,
+					"{.metadata.labels.kagenti\\.io/type}")
+				g.Expect(labelErr).NotTo(HaveOccurred())
+				g.Expect(typeLabel).To(Equal("agent"))
+			}, 1*time.Minute, 2*time.Second).Should(Succeed())
+
 			By("waiting for deployment to be ready")
 			Expect(utils.WaitForDeploymentReady("noproto-agent", testNamespace, 2*time.Minute)).To(Succeed())
 
@@ -833,9 +880,23 @@ var _ = Describe("AgentCard E2E", Ordered, func() {
 		})
 
 		It("should auto-create AgentCard for labelled workload", func() {
-			By("deploying echo-agent with agent and protocol labels")
+			By("deploying echo-agent with protocol label")
 			_, err := utils.KubectlApplyStdin(echoAgentFixture(), testNamespace)
 			Expect(err).NotTo(HaveOccurred())
+
+			By("creating AgentRuntime for echo-agent")
+			Eventually(func(g Gomega) {
+				_, applyErr := utils.KubectlApplyStdin(echoAgentRuntimeFixture(), testNamespace)
+				g.Expect(applyErr).NotTo(HaveOccurred())
+			}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+			By("waiting for operator to apply kagenti.io/type label")
+			Eventually(func(g Gomega) {
+				typeLabel, labelErr := utils.KubectlGetJsonpath("deployment", "echo-agent", testNamespace,
+					"{.metadata.labels.kagenti\\.io/type}")
+				g.Expect(labelErr).NotTo(HaveOccurred())
+				g.Expect(typeLabel).To(Equal("agent"))
+			}, 1*time.Minute, 2*time.Second).Should(Succeed())
 
 			By("waiting for deployment to be ready")
 			Expect(utils.WaitForDeploymentReady("echo-agent", testNamespace, 2*time.Minute)).To(Succeed())
@@ -963,6 +1024,21 @@ var _ = Describe("AgentCard E2E", Ordered, func() {
 				By("deploying audit-agent (unsigned)")
 				_, err := utils.KubectlApplyStdin(auditAgentFixture(), testNamespace)
 				Expect(err).NotTo(HaveOccurred())
+
+				By("creating AgentRuntime for audit-agent")
+				Eventually(func(g Gomega) {
+					_, applyErr := utils.KubectlApplyStdin(auditAgentRuntimeFixture(), testNamespace)
+					g.Expect(applyErr).NotTo(HaveOccurred())
+				}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+				By("waiting for operator to apply kagenti.io/type label")
+				Eventually(func(g Gomega) {
+					typeLabel, labelErr := utils.KubectlGetJsonpath("deployment", "audit-agent", testNamespace,
+						"{.metadata.labels.kagenti\\.io/type}")
+					g.Expect(labelErr).NotTo(HaveOccurred())
+					g.Expect(typeLabel).To(Equal("agent"))
+				}, 1*time.Minute, 2*time.Second).Should(Succeed())
+
 				Expect(utils.WaitForDeploymentReady("audit-agent", testNamespace, 2*time.Minute)).To(Succeed())
 
 				By("updating auto-created AgentCard for audit-agent")
@@ -1004,6 +1080,21 @@ var _ = Describe("AgentCard E2E", Ordered, func() {
 			By("deploying signed-agent stack")
 			_, err = utils.KubectlApplyStdin(signedAgentFixture(), testNamespace)
 			Expect(err).NotTo(HaveOccurred())
+
+			By("creating AgentRuntime for signed-agent")
+			Eventually(func(g Gomega) {
+				_, applyErr := utils.KubectlApplyStdin(signedAgentRuntimeFixture(), testNamespace)
+				g.Expect(applyErr).NotTo(HaveOccurred())
+			}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+			By("waiting for operator to apply kagenti.io/type label")
+			Eventually(func(g Gomega) {
+				typeLabel, labelErr := utils.KubectlGetJsonpath("deployment", "signed-agent", testNamespace,
+					"{.metadata.labels.kagenti\\.io/type}")
+				g.Expect(labelErr).NotTo(HaveOccurred())
+				g.Expect(typeLabel).To(Equal("agent"))
+			}, 1*time.Minute, 2*time.Second).Should(Succeed())
+
 			Expect(utils.WaitForDeploymentReady("signed-agent", testNamespace, 3*time.Minute)).To(Succeed())
 
 			By("updating auto-created AgentCard with identityBinding")
