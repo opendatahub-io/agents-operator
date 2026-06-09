@@ -1,0 +1,109 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: authorizationpolicies.agent.kagenti.dev
+spec:
+  group: agent.kagenti.dev
+  names:
+    kind: AuthorizationPolicy
+    listKind: AuthorizationPolicyList
+    plural: authorizationpolicies
+    singular: authorizationpolicy
+    shortNames:
+      - ap
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Scope
+          type: string
+          jsonPath: .spec.scope
+        - name: ClientID
+          type: string
+          jsonPath: .spec.clientID
+        - name: Hash
+          type: string
+          jsonPath: .status.bundleHash
+          priority: 1
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - scope
+                - policies
+              properties:
+                scope:
+                  type: string
+                  enum:
+                    - global
+                    - namespace
+                    - client
+                  default: client
+                clientID:
+                  type: string
+                  maxLength: 253
+                  pattern: "^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$"
+                policies:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required:
+                      - path
+                      - content
+                    properties:
+                      path:
+                        type: string
+                        minLength: 1
+                        pattern: "^[a-z0-9][a-z0-9/_.-]*\\.rego$"
+                      content:
+                        type: string
+                        minLength: 1
+              x-kubernetes-validations:
+                - rule: "self.scope == 'client' ? self.clientID != '' : true"
+                  message: "clientID is required when scope is 'client'"
+                - rule: "self.scope != 'client' ? !has(self.clientID) || self.clientID == '' : true"
+                  message: "clientID must not be set when scope is 'global' or 'namespace'"
+            status:
+              type: object
+              properties:
+                bundleHash:
+                  type: string
+                lastBuilt:
+                  type: string
+                  format: date-time
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - "Unknown"
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string

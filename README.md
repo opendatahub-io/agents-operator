@@ -95,6 +95,22 @@ The operator runs the following controllers and webhooks:
 | **NetworkPolicy Controller** | Creates permissive or restrictive NetworkPolicies based on signature verification status |
 | **MLflow Controller** | Auto-discovers MLflow instances, creates experiments per agent, injects tracking env vars and RBAC |
 
+## Bundle Service
+
+Kagenti includes a dedicated bundle service used by AuthBridge clients to fetch authorization bundles.
+
+This service is deployed using the manifests in `kagenti-operator/config/bundleservice/` and is intended for SRE operational use.
+
+Key facts:
+
+- Deployment name: `bundle-service`
+- Namespace: `system`
+- Service type: `ClusterIP`
+- Port: `8080`
+- Health endpoints: `/healthz`, `/readyz`
+
+Use `kagenti-operator/kagenti-operator/cmd/bundle-service/README.md` for SRE runbook guidance and operational details.
+
 ## Quick Start
 
 ### Prerequisites
