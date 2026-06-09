@@ -324,6 +324,7 @@ Source: `internal/controller/agentruntime_controller.go`
 | `agent.kagenti.dev` | `agentruntimes/finalizers` | update | Add/remove `kagenti.io/cleanup` finalizer for graceful deletion |
 | `apps` | `deployments`, `statefulsets` | get, list, watch, update, patch | Resolve targetRef, apply labels (`kagenti.io/type`, `managed-by`) and config-hash annotation |
 | `""` (core) | `configmaps` | get, list, watch | Read cluster defaults (`kagenti-platform-config`), feature gates (`kagenti-feature-gates`), and namespace defaults |
+| `""` (core) | `namespaces` | get, list, watch, patch | Read and label namespaces for Istio ambient mesh enrollment |
 | `""` (core) | `pods` | get, list, watch | Count configured pods and verify ownership chains |
 | `""` (core) | `events` | create, patch | Record reconciliation events (TargetNotFound, ConfigWarning, Configured) |
 

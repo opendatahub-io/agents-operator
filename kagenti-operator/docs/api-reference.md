@@ -476,7 +476,13 @@ The AgentRuntime controller applies the following labels and annotations to the 
 | `Ready` | True | `Configured` | Labels and config-hash applied to the target workload |
 | `Ready` | False | `ConfigHashError` | Failed to compute the config hash |
 | `Ready` | False | `ConfigApplyError` | Failed to apply labels/annotations to the workload |
+| `IstioMeshEnrolled` | True | `NamespaceLabeled` | Namespace labeled with `istio-discovery=enabled` and `istio.io/dataplane-mode=ambient` for Istio ambient mesh enrollment |
+| `IstioMeshEnrolled` | False | `OptedOut` | Namespace has `kagenti.io/istio-mesh=disabled` annotation; Istio mesh labels not applied |
+| `IstioMeshEnrolled` | False | `PatchFailed` | Failed to patch namespace labels (e.g., RBAC misconfiguration). Non-fatal; reconcile continues. |
 | `SkillsDiscovered` | True | `SkillsFound` | Linked skills discovered from `kagenti.io/skills` annotation on the target workload |
+| `SkillsMounted` | True | `SkillsApplied` | OCI skill ImageVolumes applied to the target workload |
+| `SkillsMounted` | False | `FeatureGateDisabled` | Skills defined but `skillImageVolumes` feature gate is disabled |
+| `SkillsMounted` | False | `UnsupportedWorkloadKind` | Skills defined but the target workload kind (e.g., Sandbox) does not support skill ImageVolumes |
 
 ### Admission Validation
 

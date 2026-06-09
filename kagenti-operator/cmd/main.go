@@ -514,6 +514,18 @@ func main() {
 			os.Exit(1)
 		}
 		setupLog.Info("MLflow experiment tracking controller enabled")
+
+		uiConfigBootstrap := &bootstrap.UIConfigBootstrapRunnable{
+			Client:    mgr.GetClient(),
+			APIReader: mgr.GetAPIReader(),
+			Namespace: getOperatorNamespace(),
+			Log:       ctrl.Log.WithName("bootstrap"),
+		}
+		if err := mgr.Add(uiConfigBootstrap); err != nil {
+			setupLog.Error(err, "unable to add UI config bootstrap runnable")
+			os.Exit(1)
+		}
+		setupLog.Info("MLflow UI config bootstrap enabled")
 	}
 
 	if enableClientRegistration {

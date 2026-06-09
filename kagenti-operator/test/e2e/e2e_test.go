@@ -2411,3 +2411,205 @@ rules:
 		})
 	})
 })
+
+var _ = Describe("Istio Mesh Enrollment E2E", Ordered, func() {
+	const controllerNamespace = "kagenti-operator-system"
+
+	BeforeAll(func() {
+		Expect(utils.DeployController(controllerNamespace, projectImage)).To(Succeed(), "Failed to deploy controller")
+
+		By("waiting for controller-manager to be ready")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+				"-n", controllerNamespace,
+				"-o", "go-template={{ range .items }}{{ if not .metadata.deletionTimestamp }}{{ .status.phase }}{{ end }}{{ end }}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(ContainSubstring("Running"))
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+		By("waiting for webhook endpoint to be ready")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "endpoints",
+				"kagenti-operator-webhook-service", "-n", controllerNamespace,
+				"-o", "jsonpath={.subsets[0].addresses[0].ip}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).NotTo(BeEmpty(), "webhook endpoint not yet populated")
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+		By("creating test namespace")
+		cmd := exec.Command("kubectl", "create", "ns", istioMeshTestNamespace)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("creating opt-out test namespace")
+		cmd = exec.Command("kubectl", "create", "ns", istioMeshOptOutTestNamespace)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("annotating opt-out namespace")
+		cmd = exec.Command("kubectl", "annotate", "ns", istioMeshOptOutTestNamespace,
+			"kagenti.io/istio-mesh=disabled")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("ensuring kagenti-system namespace exists")
+		cmd = exec.Command("kubectl", "create", "ns", "kagenti-system")
+		_, _ = utils.Run(cmd)
+
+		By("creating cluster defaults ConfigMap")
+		_, err = utils.KubectlApplyStdin(runtimeClusterDefaultsConfigMapFixture(), "kagenti-system")
+		Expect(err).NotTo(HaveOccurred())
+
+		By("deploying workload")
+		_, err = utils.KubectlApplyStdin(istioMeshDeploymentFixture(), istioMeshTestNamespace)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("creating AgentRuntime (retry until webhook is ready)")
+		Eventually(func(g Gomega) {
+			_, applyErr := utils.KubectlApplyStdin(istioMeshAgentRuntimeFixture(), istioMeshTestNamespace)
+			g.Expect(applyErr).NotTo(HaveOccurred())
+		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("deploying opt-out workload")
+		_, err = utils.KubectlApplyStdin(istioMeshOptOutDeploymentFixture(), istioMeshOptOutTestNamespace)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("creating opt-out AgentRuntime (retry until webhook is ready)")
+		Eventually(func(g Gomega) {
+			_, applyErr := utils.KubectlApplyStdin(istioMeshOptOutAgentRuntimeFixture(), istioMeshOptOutTestNamespace)
+			g.Expect(applyErr).NotTo(HaveOccurred())
+		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+	})
+
+	AfterAll(func() {
+		By("deleting test namespaces")
+		cmd := exec.Command("kubectl", "delete", "ns", istioMeshTestNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		cmd = exec.Command("kubectl", "delete", "ns", istioMeshOptOutTestNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		By("cleaning up cluster defaults ConfigMap")
+		cmd = exec.Command("kubectl", "delete", "configmap", "kagenti-platform-config",
+			"-n", "kagenti-system", "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		utils.UndeployController()
+	})
+
+	It("should auto-label namespace with Istio mesh labels", func() {
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "ns", istioMeshTestNamespace,
+				"-o", "jsonpath={.metadata.labels.istio-discovery}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(output)).To(Equal("enabled"))
+
+			cmd = exec.Command("kubectl", "get", "ns", istioMeshTestNamespace,
+				"-o", `jsonpath={.metadata.labels.istio\.io/dataplane-mode}`)
+			output, err = utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(output)).To(Equal("ambient"))
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+	})
+
+	It("should set IstioMeshEnrolled condition to True", func() {
+		Eventually(func(g Gomega) {
+			output, err := utils.KubectlGetJsonpath("agentruntime", "istio-mesh-test-runtime",
+				istioMeshTestNamespace,
+				`{.status.conditions[?(@.type=="IstioMeshEnrolled")].status}`)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("True"))
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+	})
+
+	It("should respect opt-out annotation and not label namespace", func() {
+		Eventually(func(g Gomega) {
+			output, err := utils.KubectlGetJsonpath("agentruntime", "istio-mesh-optout-runtime",
+				istioMeshOptOutTestNamespace,
+				`{.status.conditions[?(@.type=="IstioMeshEnrolled")].reason}`)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("OptedOut"))
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+		cmd := exec.Command("kubectl", "get", "ns", istioMeshOptOutTestNamespace,
+			"-o", "jsonpath={.metadata.labels.istio-discovery}")
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(output)).To(BeEmpty())
+	})
+
+	It("should preserve labels after AgentRuntime deletion", func() {
+		By("verifying namespace is labeled")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "ns", istioMeshTestNamespace,
+				"-o", "jsonpath={.metadata.labels.istio-discovery}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(output)).To(Equal("enabled"))
+		}, 1*time.Minute, 2*time.Second).Should(Succeed())
+
+		By("deleting AgentRuntime")
+		cmd := exec.Command("kubectl", "delete", "agentruntime", "istio-mesh-test-runtime",
+			"-n", istioMeshTestNamespace)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("verifying labels persist on namespace")
+		cmd = exec.Command("kubectl", "get", "ns", istioMeshTestNamespace,
+			"-o", "jsonpath={.metadata.labels.istio-discovery}")
+		output, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(output)).To(Equal("enabled"))
+
+		cmd = exec.Command("kubectl", "get", "ns", istioMeshTestNamespace,
+			"-o", `jsonpath={.metadata.labels.istio\.io/dataplane-mode}`)
+		output, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(output)).To(Equal("ambient"))
+	})
+
+	It("should recover from label drift", func() {
+		By("re-creating AgentRuntime after previous test deleted it")
+		_, err := utils.KubectlApplyStdin(istioMeshAgentRuntimeFixture(), istioMeshTestNamespace)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("waiting for labels to be applied")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "ns", istioMeshTestNamespace,
+				"-o", "jsonpath={.metadata.labels.istio-discovery}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(output)).To(Equal("enabled"))
+		}, 1*time.Minute, 2*time.Second).Should(Succeed())
+
+		By("removing Istio labels manually")
+		cmd := exec.Command("kubectl", "label", "ns", istioMeshTestNamespace,
+			"istio-discovery-", "istio.io/dataplane-mode-")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("triggering reconcile via annotation change")
+		cmd = exec.Command("kubectl", "annotate", "agentruntime", "istio-mesh-test-runtime",
+			"-n", istioMeshTestNamespace, "trigger-reconcile=drift-test", "--overwrite")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("verifying labels are re-applied")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "ns", istioMeshTestNamespace,
+				"-o", "jsonpath={.metadata.labels.istio-discovery}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(output)).To(Equal("enabled"))
+
+			cmd = exec.Command("kubectl", "get", "ns", istioMeshTestNamespace,
+				"-o", `jsonpath={.metadata.labels.istio\.io/dataplane-mode}`)
+			output, err = utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(output)).To(Equal("ambient"))
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+	})
+})

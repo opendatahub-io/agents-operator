@@ -82,10 +82,8 @@ type SpiffeConfig struct {
 }
 
 type ObservabilityConfig struct {
-	LogLevel       string `json:"logLevel" yaml:"logLevel"`
-	EnableMetrics  bool   `json:"enableMetrics" yaml:"enableMetrics"`
-	EnableTracing  bool   `json:"enableTracing" yaml:"enableTracing"`
-	TracingBackend string `json:"tracingBackend" yaml:"tracingBackend"`
+	LogLevel      string `json:"logLevel" yaml:"logLevel"`
+	EnableMetrics bool   `json:"enableMetrics" yaml:"enableMetrics"`
 }
 
 // DeepCopy creates a copy of the config

@@ -28,10 +28,10 @@ rules:
   - ""
   resources:
   - namespaces
-  - services
   verbs:
   - get
   - list
+  - patch
   - watch
 - apiGroups:
   - ""
@@ -51,6 +51,14 @@ rules:
   - create
   - get
   - update
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - agent.kagenti.dev
   resources:

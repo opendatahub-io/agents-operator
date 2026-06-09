@@ -1543,3 +1543,110 @@ spec:
       kagenti-enabled: "true"
 `
 }
+
+// --- Istio Mesh Enrollment E2E Fixtures ---
+
+const istioMeshTestNamespace = "e2e-istio-mesh-test"
+const istioMeshOptOutTestNamespace = "e2e-istio-mesh-optout-test"
+
+func istioMeshDeploymentFixture() string {
+	return `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: istio-mesh-agent
+  namespace: ` + istioMeshTestNamespace + `
+  labels:
+    app.kubernetes.io/name: istio-mesh-agent
+    protocol.kagenti.io/a2a: ""
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: istio-mesh-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: istio-mesh-agent
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+`
+}
+
+func istioMeshAgentRuntimeFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: istio-mesh-test-runtime
+  namespace: ` + istioMeshTestNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: istio-mesh-agent
+`
+}
+
+func istioMeshOptOutDeploymentFixture() string {
+	return `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: istio-mesh-optout-agent
+  namespace: ` + istioMeshOptOutTestNamespace + `
+  labels:
+    app.kubernetes.io/name: istio-mesh-optout-agent
+    protocol.kagenti.io/a2a: ""
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: istio-mesh-optout-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: istio-mesh-optout-agent
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+`
+}
+
+func istioMeshOptOutAgentRuntimeFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: istio-mesh-optout-runtime
+  namespace: ` + istioMeshOptOutTestNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: istio-mesh-optout-agent
+`
+}

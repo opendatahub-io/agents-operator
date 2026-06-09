@@ -184,6 +184,27 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 	}
 
+	// 4.6. Ensure namespace has Istio ambient mesh labels for ztunnel mTLS.
+	istioLabeled, istioErr := r.ensureIstioMeshLabels(ctx, rt.Namespace)
+	switch {
+	case istioErr != nil:
+		logger.Error(istioErr, "Failed to ensure Istio mesh labels")
+		r.setCondition(rt, ConditionTypeIstioMeshEnrolled, metav1.ConditionFalse, "PatchFailed", istioErr.Error())
+		if r.Recorder != nil {
+			r.Recorder.Event(rt, corev1.EventTypeWarning, "IstioMeshLabelError", istioErr.Error())
+		}
+	case istioLabeled:
+		r.setCondition(rt, ConditionTypeIstioMeshEnrolled, metav1.ConditionTrue, "NamespaceLabeled",
+			fmt.Sprintf("Namespace %s enrolled in Istio ambient mesh", rt.Namespace))
+		if r.Recorder != nil {
+			r.Recorder.Event(rt, corev1.EventTypeNormal, "IstioMeshEnrolled",
+				fmt.Sprintf("Namespace %s labeled for Istio ambient mesh", rt.Namespace))
+		}
+	default:
+		r.setCondition(rt, ConditionTypeIstioMeshEnrolled, metav1.ConditionFalse, "OptedOut",
+			fmt.Sprintf("Namespace %s opted out of Istio mesh enrollment", rt.Namespace))
+	}
+
 	// 5. Compute config hash from merged configuration (cluster → namespace → CR)
 	configResult, err := ComputeConfigHash(ctx, r.Client, rt.Namespace, &rt.Spec)
 	if err != nil {
