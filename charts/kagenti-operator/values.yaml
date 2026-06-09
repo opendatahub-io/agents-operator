@@ -76,6 +76,15 @@ metrics:
 webhook:
   enable: true
 
+# [VAP]: ValidatingAdmissionPolicy for agent label protection.
+# Prevents manual application of the kagenti.io/type label on Deployments and
+# StatefulSets (both top-level metadata and pod template spec). Only the operator
+# SA (derived from controllerManager.serviceAccountName and the release namespace)
+# is exempt.
+vap:
+  agentLabelProtection:
+    enable: true
+
 # [PROMETHEUS]: To enable a ServiceMonitor to export metrics to Prometheus set true
 prometheus:
   enable: false
