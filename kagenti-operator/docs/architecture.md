@@ -41,7 +41,7 @@ The Kagenti Operator is a Kubernetes controller that implements the [Operator Pa
 #### AgentRuntime CRD
 - The declarative way to enroll a workload into the Kagenti platform
 - Developer creates an AgentRuntime CR with `targetRef` — the controller applies labels and triggers injection
-- Configures identity (SPIFFE) per workload via 3-layer defaults (cluster → namespace → CR)
+- Platform-level config (cluster → namespace) drives the config hash; per-CR overrides are read by the webhook at pod CREATE time
 - Uses `targetRef` to reference backing workloads (Deployment, StatefulSet)
 - The `kagenti.io/type` label applied by the controller triggers the webhook's `objectSelector`
 - Developer workloads only need a `protocol.kagenti.io/a2a` label — the controller applies `kagenti.io/type` and `managed-by` labels automatically
@@ -69,7 +69,7 @@ The Kagenti Operator is a Kubernetes controller that implements the [Operator Pa
 #### AgentRuntime Controller
 - Watches AgentRuntime CRs, Deployments, StatefulSets, and ConfigMaps
 - Applies `kagenti.io/type` label and `kagenti.io/config-hash` annotation to target workloads
-- Computes config hash from 3-layer merged configuration (cluster defaults → namespace defaults → CR overrides)
+- Computes config hash from 2-layer merged configuration (cluster defaults → namespace defaults)
 - Discovers linked skills by reading the `kagenti.io/skills` annotation from target workloads when the `skillDiscovery` feature gate is enabled
 - Triggers rolling updates when configuration changes
 - On CR deletion: removes type label, managed-by label and config-hash annotation (causing the workload to lose sidecars)
@@ -206,7 +206,7 @@ The AgentRuntime Controller reconciles AgentRuntime CRs by resolving the target 
       Note: feature gates are platform-wide policy — they are NOT
       overrideable by namespace defaults or AgentRuntime CRs.
    c. Read namespace defaults (ConfigMap with kagenti.io/defaults=true)
-   d. Merge defaults: cluster → namespace → CR spec (CR wins)
+   d. Merge defaults: cluster → namespace (2-layer, no CR fields)
    e. Hash the merged result (deterministic SHA256)
    f. Surface warnings (e.g., multiple namespace defaults ConfigMaps)
       as a ConfigResolved condition on the AgentRuntime status
@@ -231,10 +231,10 @@ AgentRuntime CR created/updated
 
 | Concern | Controller | Webhook |
 |---------|-----------|---------|
-| Detect config change | Yes (3-layer merge + hash) | No |
+| Detect config change | Yes (2-layer merge + hash) | No |
 | Trigger pod restart | Yes (annotation on PodTemplateSpec) | No |
 | Read ConfigMap data | Yes (for hash computation) | Yes (for sidecar configuration) |
-| Merge config values | Yes (same 3-layer merge) | Yes (independently) |
+| Merge config values | Yes (2-layer platform config) | Yes (independently) |
 | Mutate pod spec | No | Yes (sidecar injection) |
 
 #### Watches

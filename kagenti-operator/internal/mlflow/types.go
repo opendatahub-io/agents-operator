@@ -26,10 +26,13 @@ var (
 	// SchemeGroupVersion is the GVK for the mlflows.mlflow.opendatahub.io CRD.
 	SchemeGroupVersion = schema.GroupVersion{Group: "mlflow.opendatahub.io", Version: "v1"}
 
-	// SchemeBuilder is used to add the MLflow types to a scheme.
+	// DSCSchemeGroupVersion is the GVK for datascienceclusters.datasciencecluster.opendatahub.io.
+	DSCSchemeGroupVersion = schema.GroupVersion{Group: "datasciencecluster.opendatahub.io", Version: "v2"}
+
+	// SchemeBuilder is used to add the MLflow and DSC types to a scheme.
 	SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)
 
-	// AddToScheme registers the MLflow types with a runtime.Scheme.
+	// AddToScheme registers the MLflow and DSC types with a runtime.Scheme.
 	AddToScheme = SchemeBuilder.AddToScheme
 )
 
@@ -39,15 +42,39 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&MLflowList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
+
+	scheme.AddKnownTypes(DSCSchemeGroupVersion,
+		&DataScienceCluster{},
+		&DataScienceClusterList{},
+	)
+	metav1.AddToGroupVersion(scheme, DSCSchemeGroupVersion)
 	return nil
 }
 
 // MLflow is a minimal representation of the mlflows.mlflow.opendatahub.io/v1 CR.
-// Only the fields needed for tracking URI discovery are included.
 type MLflow struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Spec              MLflowSpec   `json:"spec,omitempty"`
 	Status            MLflowStatus `json:"status,omitempty"`
+}
+
+// MLflowSpec contains the desired state for an MLflow instance.
+// Only the fields used by the operator for CR creation are included.
+type MLflowSpec struct {
+	Storage              *MLflowStorage `json:"storage,omitempty"`
+	BackendStoreURI      string         `json:"backendStoreUri,omitempty"`
+	ArtifactsDestination string         `json:"artifactsDestination,omitempty"`
+	ServeArtifacts       bool           `json:"serveArtifacts,omitempty"`
+}
+
+type MLflowStorage struct {
+	AccessModes []string                   `json:"accessModes,omitempty"`
+	Resources   *MLflowStorageResourceReqs `json:"resources,omitempty"`
+}
+
+type MLflowStorageResourceReqs struct {
+	Requests map[string]string `json:"requests,omitempty"`
 }
 
 type MLflowStatus struct {
@@ -86,7 +113,38 @@ func (in *MLflow) DeepCopyInto(out *MLflow) {
 	*out = *in
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	in.Spec.DeepCopyInto(&out.Spec)
 	in.Status.DeepCopyInto(&out.Status)
+}
+
+func (in *MLflowSpec) DeepCopyInto(out *MLflowSpec) {
+	*out = *in
+	if in.Storage != nil {
+		out.Storage = new(MLflowStorage)
+		in.Storage.DeepCopyInto(out.Storage)
+	}
+}
+
+func (in *MLflowStorage) DeepCopyInto(out *MLflowStorage) {
+	*out = *in
+	if in.AccessModes != nil {
+		out.AccessModes = make([]string, len(in.AccessModes))
+		copy(out.AccessModes, in.AccessModes)
+	}
+	if in.Resources != nil {
+		out.Resources = new(MLflowStorageResourceReqs)
+		in.Resources.DeepCopyInto(out.Resources)
+	}
+}
+
+func (in *MLflowStorageResourceReqs) DeepCopyInto(out *MLflowStorageResourceReqs) {
+	*out = *in
+	if in.Requests != nil {
+		out.Requests = make(map[string]string, len(in.Requests))
+		for k, v := range in.Requests {
+			out.Requests[k] = v
+		}
+	}
 }
 
 func (in *MLflowStatus) DeepCopyInto(out *MLflowStatus) {
@@ -121,6 +179,80 @@ func (in *MLflowList) DeepCopyInto(out *MLflowList) {
 	in.ListMeta.DeepCopyInto(&out.ListMeta)
 	if in.Items != nil {
 		out.Items = make([]MLflow, len(in.Items))
+		for i := range in.Items {
+			in.Items[i].DeepCopyInto(&out.Items[i])
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DataScienceCluster — minimal representation for DSC state inspection.
+// Only spec.components.mlflowoperator.managementState is needed.
+// ---------------------------------------------------------------------------
+
+type DataScienceCluster struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Spec              DSCSpec `json:"spec,omitempty"`
+}
+
+type DSCSpec struct {
+	Components DSCComponents `json:"components,omitempty"`
+}
+
+type DSCComponents struct {
+	MLflowOperator DSCComponentState `json:"mlflowoperator,omitempty"`
+}
+
+type DSCComponentState struct {
+	ManagementState string `json:"managementState,omitempty"`
+}
+
+type DataScienceClusterList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []DataScienceCluster `json:"items"`
+}
+
+func (in *DataScienceCluster) DeepCopyObject() runtime.Object {
+	return in.DeepCopy()
+}
+
+func (in *DataScienceCluster) DeepCopy() *DataScienceCluster {
+	if in == nil {
+		return nil
+	}
+	out := new(DataScienceCluster)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *DataScienceCluster) DeepCopyInto(out *DataScienceCluster) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	out.Spec = in.Spec
+}
+
+func (in *DataScienceClusterList) DeepCopyObject() runtime.Object {
+	return in.DeepCopy()
+}
+
+func (in *DataScienceClusterList) DeepCopy() *DataScienceClusterList {
+	if in == nil {
+		return nil
+	}
+	out := new(DataScienceClusterList)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *DataScienceClusterList) DeepCopyInto(out *DataScienceClusterList) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ListMeta.DeepCopyInto(&out.ListMeta)
+	if in.Items != nil {
+		out.Items = make([]DataScienceCluster, len(in.Items))
 		for i := range in.Items {
 			in.Items[i].DeepCopyInto(&out.Items[i])
 		}

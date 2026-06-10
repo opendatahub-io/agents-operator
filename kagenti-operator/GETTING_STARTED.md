@@ -131,7 +131,7 @@ EOF
 The controller will:
 1. Resolve `targetRef` and verify the Deployment exists
 2. Apply `kagenti.io/type: agent` and `app.kubernetes.io/managed-by: kagenti-operator` labels
-3. Compute a config hash from cluster/namespace/CR configuration and set it as a `kagenti.io/config-hash` annotation on the PodTemplateSpec
+3. Compute a config hash from cluster/namespace platform configuration and set it as a `kagenti.io/config-hash` annotation on the PodTemplateSpec
 4. Trigger a rolling update — new Pods are created with the `kagenti.io/type` label, which the AuthBridge webhook matches to inject sidecars
 
 ### Step 3: Check Status
@@ -156,7 +156,7 @@ kubectl get pods -n team1 -l kagenti.io/type=agent -o jsonpath='{.items[0].spec.
 
 ### Updating Configuration
 
-When you update the AgentRuntime CR (e.g., changing the trust domain), the controller recomputes the config hash and triggers a rolling update automatically:
+When you update the AgentRuntime CR (e.g., changing the trust domain), the webhook picks up the new values at pod CREATE time. CR spec changes do **not** trigger a rolling update — only platform config changes (cluster or namespace ConfigMaps) do:
 
 ```bash
 kubectl patch agentruntime weather-agent-runtime -n team1 --type merge -p '

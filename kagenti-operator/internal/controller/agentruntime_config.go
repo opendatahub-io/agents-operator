@@ -27,8 +27,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-
-	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
 )
 
 const (
@@ -52,24 +50,12 @@ const (
 )
 
 // resolvedConfig is the canonical representation used for hash computation.
-// It captures the merged result of cluster defaults → namespace defaults → CR overrides.
-//
-// Structured fields (Type, TrustDomain) hold CR-level overrides.
-// FeatureGates and Defaults hold the raw ConfigMap data. The hash is computed
-// from the full struct — the webhook performs the same merge independently
-// at Pod CREATE time.
+// It captures the 2-layer merge of cluster defaults → namespace defaults.
+// CR-level fields (type, identity, skills, etc.) are NOT included — the
+// webhook reads those at pod CREATE time (RHAIENG-4936).
 type resolvedConfig struct {
-	Type         string            `json:"type"`
-	TrustDomain  string            `json:"trustDomain,omitempty"`
 	FeatureGates map[string]string `json:"featureGates,omitempty"`
 	Defaults     map[string]string `json:"defaults,omitempty"`
-	// AuthBridgeMode and MTLSMode change the injected sidecar shape /
-	// transport posture, both of which require a pod restart to take
-	// effect. Including them here folds CR-edit changes into the
-	// config-hash so applyWorkloadConfig stamps a new hash on the pod
-	// template and the Deployment rolls.
-	AuthBridgeMode string `json:"authBridgeMode,omitempty"`
-	MTLSMode       string `json:"mtlsMode,omitempty"`
 
 	// AuthBridgeRuntime captures the namespace authbridge-runtime-config
 	// ConfigMap's config.yaml content so namespace-level edits flow into
@@ -77,15 +63,6 @@ type resolvedConfig struct {
 	// pipelines/listener/mtls config drift through here in any shape and
 	// we want any byte change to roll the workload. Empty string when
 	// the ConfigMap doesn't exist in the namespace.
-	//
-	// Operational note: a single edit to authbridge-runtime-config
-	// re-hashes every AgentRuntime in the namespace and reconciles them
-	// in a burst. Kubernetes sequences the actual pod rolls per
-	// Deployment, but the controller's reconcile load scales linearly
-	// with the number of AgentRuntimes. For typical small namespaces
-	// (single-digit agents) this is fine; in larger deployments,
-	// formatting / whitespace edits to this CM during peak hours will
-	// trigger a noticeable rollout fan-out.
 	AuthBridgeRuntime string `json:"authBridgeRuntime,omitempty"`
 }
 
@@ -95,11 +72,11 @@ type ConfigResult struct {
 	Warnings []string
 }
 
-// ComputeConfigHash computes a deterministic SHA256 hash from the 3-layer
-// merged configuration: cluster defaults → namespace defaults → AgentRuntime CR.
-// Both the controller and webhook perform the same merge independently.
-func ComputeConfigHash(ctx context.Context, c client.Reader, namespace string, spec *agentv1alpha1.AgentRuntimeSpec) (ConfigResult, error) {
-	resolved, warnings := resolveConfig(ctx, c, namespace, spec)
+// ComputeConfigHash computes a deterministic SHA256 hash from the 2-layer
+// merged configuration: cluster defaults → namespace defaults.
+// CR-level fields are excluded — the webhook reads those at pod CREATE time.
+func ComputeConfigHash(ctx context.Context, c client.Reader, namespace string) (ConfigResult, error) {
+	resolved, warnings := resolveConfig(ctx, c, namespace)
 	hash, err := hashResolvedConfig(resolved)
 	if err != nil {
 		return ConfigResult{}, err
@@ -107,20 +84,10 @@ func ComputeConfigHash(ctx context.Context, c client.Reader, namespace string, s
 	return ConfigResult{Hash: hash, Warnings: warnings}, nil
 }
 
-// ComputeDefaultsOnlyHash computes a hash using only cluster + namespace defaults
-// (no CR overrides). Used when an AgentRuntime is deleted to trigger a rolling
-// update back to platform defaults.
-func ComputeDefaultsOnlyHash(ctx context.Context, c client.Reader, namespace string) (string, error) {
-	resolved, _ := resolveConfig(ctx, c, namespace, nil)
-	return hashResolvedConfig(resolved)
-}
-
-// resolveConfig merges the three configuration layers:
+// resolveConfig merges the two platform configuration layers:
 // 1. Cluster defaults (ConfigMaps in kagenti-system)
 // 2. Namespace defaults (ConfigMap with kagenti.io/defaults=true label)
-// 3. AgentRuntime CR spec (highest priority)
-func resolveConfig(ctx context.Context, c client.Reader, namespace string, spec *agentv1alpha1.AgentRuntimeSpec) (resolvedConfig, []string) {
-	logger := log.FromContext(ctx)
+func resolveConfig(ctx context.Context, c client.Reader, namespace string) (resolvedConfig, []string) {
 	var warnings []string
 
 	// Layer 1: cluster defaults
@@ -143,30 +110,11 @@ func resolveConfig(ctx context.Context, c client.Reader, namespace string, spec 
 		abRuntime = data["config.yaml"]
 	}
 
-	resolved := resolvedConfig{
+	return resolvedConfig{
 		FeatureGates:      featureGates,
 		Defaults:          merged,
 		AuthBridgeRuntime: abRuntime,
-	}
-
-	if spec == nil {
-		logger.V(2).Info("Resolved config with defaults only", "namespace", namespace)
-		return resolved, warnings
-	}
-
-	// Layer 3: CR overrides (highest priority).
-	// Structured fields capture only CR-level overrides so they don't
-	// duplicate values already present in the Defaults map.
-	resolved.Type = string(spec.Type)
-
-	if spec.Identity != nil && spec.Identity.SPIFFE != nil && spec.Identity.SPIFFE.TrustDomain != "" {
-		resolved.TrustDomain = spec.Identity.SPIFFE.TrustDomain
-	}
-
-	resolved.AuthBridgeMode = spec.AuthBridgeMode
-	resolved.MTLSMode = spec.MTLSMode
-
-	return resolved, warnings
+	}, warnings
 }
 
 // readConfigMapData reads a specific ConfigMap by name and namespace.

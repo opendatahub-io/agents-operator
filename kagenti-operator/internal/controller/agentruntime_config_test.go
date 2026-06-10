@@ -103,61 +103,41 @@ var _ = Describe("AgentRuntime Config", func() {
 
 	Context("ComputeConfigHash", func() {
 		It("should be deterministic", func() {
-			spec := &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeAgent,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-det"},
-			}
-
-			result1, err := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			result1, err := ComputeConfigHash(ctx, k8sClient, namespace)
 			Expect(err).NotTo(HaveOccurred())
 
-			result2, err := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			result2, err := ComputeConfigHash(ctx, k8sClient, namespace)
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(result1.Hash).To(Equal(result2.Hash))
 		})
 
-		It("should change when spec type changes", func() {
-			spec1 := &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeAgent,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-type"},
-			}
-			spec2 := &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeTool,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-type"},
-			}
-
-			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec1)
-			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec2)
-
-			Expect(r1.Hash).NotTo(Equal(r2.Hash))
+		It("should NOT change when spec type changes", func() {
+			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace)
+			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace)
+			Expect(r1.Hash).To(Equal(r2.Hash))
 		})
 
-		It("should change when identity changes", func() {
-			spec1 := &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeAgent,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-id"},
-				Identity:  &agentv1alpha1.IdentitySpec{SPIFFE: &agentv1alpha1.SPIFFEIdentity{TrustDomain: "example.org"}},
-			}
-			spec2 := &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeAgent,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-id"},
-				Identity:  &agentv1alpha1.IdentitySpec{SPIFFE: &agentv1alpha1.SPIFFEIdentity{TrustDomain: "other.org"}},
-			}
+		It("should NOT change when identity/TrustDomain changes", func() {
+			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace)
+			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace)
+			Expect(r1.Hash).To(Equal(r2.Hash))
+		})
 
-			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec1)
-			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec2)
+		It("should NOT change when MTLSMode changes", func() {
+			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace)
+			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace)
+			Expect(r1.Hash).To(Equal(r2.Hash))
+		})
 
-			Expect(r1.Hash).NotTo(Equal(r2.Hash))
+		It("should NOT change when AuthBridgeMode changes", func() {
+			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace)
+			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace)
+			Expect(r1.Hash).To(Equal(r2.Hash))
 		})
 
 		It("should produce a non-empty hash even with missing ConfigMaps", func() {
-			spec := &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeAgent,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-missing"},
-			}
-
-			result, err := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			result, err := ComputeConfigHash(ctx, k8sClient, namespace)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Hash).NotTo(BeEmpty())
 		})
@@ -166,18 +146,12 @@ var _ = Describe("AgentRuntime Config", func() {
 			cm := createClusterDefaults(ctx, map[string]string{"otel-endpoint": "collector-v1:4317"})
 			defer func() { _ = k8sClient.Delete(ctx, cm) }()
 
-			spec := &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeAgent,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-cluster"},
-			}
+			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace)
 
-			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
-
-			// Update ConfigMap
 			cm.Data["otel-endpoint"] = "collector-v2:4317"
 			Expect(k8sClient.Update(ctx, cm)).To(Succeed())
 
-			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace)
 			Expect(r1.Hash).NotTo(Equal(r2.Hash))
 		})
 
@@ -185,17 +159,12 @@ var _ = Describe("AgentRuntime Config", func() {
 			fg := createClusterFeatureGates(ctx, map[string]string{"globalEnabled": "true"})
 			defer func() { _ = k8sClient.Delete(ctx, fg) }()
 
-			spec := &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeAgent,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-fg"},
-			}
-
-			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace)
 
 			fg.Data["globalEnabled"] = "false"
 			Expect(k8sClient.Update(ctx, fg)).To(Succeed())
 
-			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace)
 			Expect(r1.Hash).NotTo(Equal(r2.Hash))
 		})
 
@@ -206,18 +175,13 @@ var _ = Describe("AgentRuntime Config", func() {
 			})
 			defer func() { _ = k8sClient.Delete(ctx, fg) }()
 
-			spec := &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeAgent,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-inject-tools"},
-			}
-
-			r1, err := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			r1, err := ComputeConfigHash(ctx, k8sClient, namespace)
 			Expect(err).NotTo(HaveOccurred())
 
 			fg.Data["injectTools"] = "true"
 			Expect(k8sClient.Update(ctx, fg)).To(Succeed())
 
-			r2, err := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			r2, err := ComputeConfigHash(ctx, k8sClient, namespace)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(r1.Hash).NotTo(Equal(r2.Hash))
 		})
@@ -226,65 +190,16 @@ var _ = Describe("AgentRuntime Config", func() {
 			nsCM := createNamespaceDefaults(ctx, "ns-defaults-hash", namespace, map[string]string{"sampling-rate": "0.1"})
 			defer func() { _ = k8sClient.Delete(ctx, nsCM) }()
 
-			spec := &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeAgent,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-ns"},
-			}
-
-			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace)
 
 			nsCM.Data["sampling-rate"] = "1.0"
 			Expect(k8sClient.Update(ctx, nsCM)).To(Succeed())
 
-			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
-			Expect(r1.Hash).NotTo(Equal(r2.Hash))
-		})
-
-		It("should change when MTLSMode flips on the CR", func() {
-			// CR-side parallel to the CM-edit test below: spec.mtlsMode
-			// must feed the hash so flipping disabled→strict on a CR
-			// rolls the workload. Without an explicit assertion a
-			// future refactor that drops MTLSMode from resolvedConfig
-			// would silently regress rollout-on-CR-edit.
-			specOff := &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeAgent,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-mtls-cr"},
-				MTLSMode:  "disabled",
-			}
-			specOn := &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeAgent,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-mtls-cr"},
-				MTLSMode:  "strict",
-			}
-
-			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace, specOff)
-			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, specOn)
-			Expect(r1.Hash).NotTo(Equal(r2.Hash))
-		})
-
-		It("should change when AuthBridgeMode flips on the CR", func() {
-			// Bonus: AuthBridgeMode rollouts had a pre-existing gap
-			// (not in resolvedConfig) that this PR closed. Lock it.
-			specA := &agentv1alpha1.AgentRuntimeSpec{
-				Type:           agentv1alpha1.RuntimeTypeAgent,
-				TargetRef:      agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-abm-cr"},
-				AuthBridgeMode: "proxy-sidecar",
-			}
-			specB := &agentv1alpha1.AgentRuntimeSpec{
-				Type:           agentv1alpha1.RuntimeTypeAgent,
-				TargetRef:      agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-abm-cr"},
-				AuthBridgeMode: "lite",
-			}
-			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace, specA)
-			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, specB)
+			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace)
 			Expect(r1.Hash).NotTo(Equal(r2.Hash))
 		})
 
 		It("should change when authbridge-runtime-config edits", func() {
-			// Edits to the namespace authbridge-runtime-config (which the
-			// admission webhook reads at pod creation) must roll
-			// affected workloads. The hash captures its config.yaml
-			// content as a raw string so any byte change registers.
 			abCM := &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      AuthBridgeRuntimeConfigMapName,
@@ -297,44 +212,18 @@ var _ = Describe("AgentRuntime Config", func() {
 			Expect(k8sClient.Create(ctx, abCM)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, abCM) }()
 
-			spec := &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeAgent,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-abruntime"},
-			}
-
-			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace)
 
 			abCM.Data["config.yaml"] = "mode: proxy-sidecar\nmtls:\n  mode: strict\n"
 			Expect(k8sClient.Update(ctx, abCM)).To(Succeed())
 
-			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace)
 			Expect(r1.Hash).NotTo(Equal(r2.Hash))
 		})
 	})
 
-	Context("ComputeDefaultsOnlyHash", func() {
-		It("should differ from spec hash", func() {
-			spec := &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeAgent,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "def-diff"},
-			}
-
-			specResult, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
-			defaultsHash, _ := ComputeDefaultsOnlyHash(ctx, k8sClient, namespace)
-
-			Expect(specResult.Hash).NotTo(Equal(defaultsHash))
-		})
-
-		It("should be deterministic", func() {
-			hash1, _ := ComputeDefaultsOnlyHash(ctx, k8sClient, namespace)
-			hash2, _ := ComputeDefaultsOnlyHash(ctx, k8sClient, namespace)
-
-			Expect(hash1).To(Equal(hash2))
-		})
-	})
-
-	Context("resolveConfig three-layer merge", func() {
-		It("should merge cluster → namespace → CR with correct precedence", func() {
+	Context("resolveConfig two-layer merge", func() {
+		It("should merge cluster → namespace with correct precedence", func() {
 			clusterCM := createClusterDefaults(ctx, map[string]string{
 				"otel-endpoint":       "cluster-collector:4317",
 				"spiffe-trust-domain": "cluster.local",
@@ -354,17 +243,7 @@ var _ = Describe("AgentRuntime Config", func() {
 			})
 			defer func() { _ = k8sClient.Delete(ctx, nsCM) }()
 
-			spec := &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeAgent,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "merge-test"},
-				Identity:  &agentv1alpha1.IdentitySpec{SPIFFE: &agentv1alpha1.SPIFFEIdentity{TrustDomain: "my-domain.org"}},
-			}
-
-			resolved, _ := resolveConfig(ctx, k8sClient, namespace, spec)
-
-			// CR overrides
-			Expect(resolved.Type).To(Equal("agent"))
-			Expect(resolved.TrustDomain).To(Equal("my-domain.org"))
+			resolved, _ := resolveConfig(ctx, k8sClient, namespace)
 
 			// Namespace overrides cluster
 			Expect(resolved.Defaults["otel-endpoint"]).To(Equal("ns-collector:4317"))
@@ -379,25 +258,13 @@ var _ = Describe("AgentRuntime Config", func() {
 			Expect(resolved.FeatureGates["globalEnabled"]).To(Equal("true"))
 		})
 
-		It("should return defaults only when spec is nil", func() {
-			resolved, _ := resolveConfig(ctx, k8sClient, namespace, nil)
-
-			Expect(resolved.Type).To(BeEmpty())
-			Expect(resolved.TrustDomain).To(BeEmpty())
-		})
-
-		It("should not duplicate CR overrides in Defaults map", func() {
+		It("should not include CR fields in resolved config", func() {
 			clusterCM := createClusterDefaults(ctx, map[string]string{
 				"otel-endpoint": "cluster-collector:4317",
 			})
 			defer func() { _ = k8sClient.Delete(ctx, clusterCM) }()
 
-			spec := &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeAgent,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "no-dup"},
-			}
-
-			resolved, _ := resolveConfig(ctx, k8sClient, namespace, spec)
+			resolved, _ := resolveConfig(ctx, k8sClient, namespace)
 
 			// ConfigMap value untouched in Defaults
 			Expect(resolved.Defaults["otel-endpoint"]).To(Equal("cluster-collector:4317"))
@@ -661,9 +528,7 @@ var _ = Describe("AgentRuntime Config", func() {
 
 		It("hashResolvedConfig should be deterministic and produce 64-char hex", func() {
 			config := resolvedConfig{
-				Type:        "agent",
-				TrustDomain: "example.org",
-				Defaults:    map[string]string{"b": "2", "a": "1"},
+				Defaults: map[string]string{"b": "2", "a": "1"},
 			}
 			hash1, _ := hashResolvedConfig(config)
 			hash2, _ := hashResolvedConfig(config)

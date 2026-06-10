@@ -1459,9 +1459,9 @@ rules:
 				overridesHash = hash
 			}).Should(Succeed())
 
-			By("verifying config-hashes differ")
-			Expect(overridesHash).NotTo(Equal(minimalHash),
-				"identity overrides should produce a different config-hash")
+			By("verifying config-hashes are the same (CR fields excluded from 2-layer hash)")
+			Expect(overridesHash).To(Equal(minimalHash),
+				"identity overrides should NOT affect config-hash (CR fields excluded)")
 
 			By("cleaning up")
 			cmd := exec.Command("kubectl", "delete", "agentruntime", "test-minimal-runtime", "test-overrides-runtime",

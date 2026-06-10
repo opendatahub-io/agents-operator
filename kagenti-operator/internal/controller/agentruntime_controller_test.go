@@ -459,7 +459,7 @@ var _ = Describe("AgentRuntime Controller", func() {
 			_ = k8sClient.Delete(ctx, dep)
 		})
 
-		It("should produce a different config-hash than a minimal AgentRuntime", func() {
+		It("should produce the same config-hash as a minimal AgentRuntime (CR fields excluded from hash)", func() {
 			r := newReconciler()
 
 			// Reconcile the override RT
@@ -474,14 +474,11 @@ var _ = Describe("AgentRuntime Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "override-deploy", Namespace: namespace}, overrideDep)).To(Succeed())
 			overrideHash := overrideDep.Spec.Template.Annotations[AnnotationConfigHash]
 
-			// Compute hash for a minimal spec (no overrides)
-			minimalResult, err := ComputeConfigHash(ctx, k8sClient, namespace, &agentv1alpha1.AgentRuntimeSpec{
-				Type:      agentv1alpha1.RuntimeTypeAgent,
-				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "x"},
-			})
+			// Compute hash (no CR fields — same namespace = same hash)
+			minimalResult, err := ComputeConfigHash(ctx, k8sClient, namespace)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(overrideHash).NotTo(Equal(minimalResult.Hash), "CR with overrides should have a different hash")
+			Expect(overrideHash).To(Equal(minimalResult.Hash), "CR with overrides should have the same hash (CR fields excluded)")
 		})
 	})
 

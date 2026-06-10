@@ -33,7 +33,7 @@ sequenceDiagram
     Ctrl->>API: Get cluster defaults ConfigMap (kagenti-platform-config)
     Ctrl->>API: Get feature gates ConfigMap (kagenti-feature-gates)
     Ctrl->>API: List namespace defaults ConfigMaps (kagenti.io/defaults=true)
-    Note over Ctrl: Merge config: cluster → namespace → CR spec
+    Note over Ctrl: Merge config: cluster → namespace (2-layer)
     Note over Ctrl: Compute SHA256 config hash
 
     Ctrl->>API: Patch Deployment:<br/>+ kagenti.io/type label<br/>+ managed-by label<br/>+ config-hash annotation on PodTemplateSpec
@@ -63,16 +63,11 @@ sequenceDiagram
     API-->>Ctrl: Reconcile event
 
     Ctrl->>API: Get target Deployment
-    Note over Ctrl: Recompute config hash with updated CR values
-    Note over Ctrl: New hash ≠ old hash → update needed
+    Note over Ctrl: Recompute config hash (2-layer, no CR fields)
+    Note over Ctrl: Hash unchanged → no rolling update needed
 
-    Ctrl->>API: Patch Deployment config-hash annotation
-    API-->>K8s: PodTemplateSpec changed → rolling update
-    K8s->>API: Create new Pod
-    API->>WH: Mutating admission (Pod CREATE)
-    Note over WH: Resolve config with updated AgentRuntime values
-    WH-->>API: Patch Pod with updated sidecar config
-    API-->>K8s: Pod created with new config
+    Note over Ctrl: CR spec changes do NOT trigger rolling updates.
+    Note over Ctrl: The webhook reads CR overrides at pod CREATE time.
 
     Ctrl->>API: Update AgentRuntime status
 ```
@@ -91,12 +86,12 @@ sequenceDiagram
 
     loop For each AgentRuntime targeting a workload
         Ctrl->>API: Get target Deployment
-        Note over Ctrl: Recompute config hash with new defaults
+        Note over Ctrl: Recompute config hash (2-layer)
         alt Hash changed
             Ctrl->>API: Patch Deployment config-hash annotation
             API-->>K8s: Rolling update → new Pods with updated sidecars
         else Hash unchanged
-            Note over Ctrl: No-op (CR overrides masked the change)
+            Note over Ctrl: No-op (defaults unchanged)
         end
         Ctrl->>API: Update AgentRuntime status
     end
@@ -128,39 +123,38 @@ sequenceDiagram
 
 | Concern | Controller | Webhook |
 |---------|-----------|---------|
-| Detect config change | Yes (3-layer merge + hash) | No |
+| Detect config change | Yes (2-layer merge + hash) | No |
 | Trigger pod restart | Yes (annotation on PodTemplateSpec) | No |
 | Read ConfigMap data | Yes (for hash computation) | Yes (for sidecar configuration) |
-| Merge config values | Yes (same 3-layer merge) | Yes (independently, same algorithm) |
+| Merge config values | Yes (2-layer platform config) | Yes (independently, includes CR overrides at admission time) |
 | Mutate pod spec | No | Yes (sidecar injection) |
 | Read AgentRuntime CR | Yes (primary resource) | Yes (for per-workload overrides) |
 | Apply workload labels | Yes | No |
 | Decide injection eligibility | No (encodes in labels) | Yes (objectSelector + precedence chain) |
 
-## 3-Layer Configuration Merge
+## 2-Layer Configuration Merge (Controller)
 
-Both the controller and webhook perform the same 3-layer configuration merge independently:
+The controller computes the config hash from platform-level configuration only (no CR fields):
 
 ```
 ┌──────────────────────────────────────┐
-│ Layer 3: AgentRuntime CR overrides   │  ← highest precedence
-│   (spec.identity)                    │
-├──────────────────────────────────────┤
-│ Layer 2: Namespace defaults          │
+│ Layer 2: Namespace defaults          │  ← higher precedence
 │   (ConfigMap with                    │
 │    kagenti.io/defaults=true label)   │
 ├──────────────────────────────────────┤
-│ Layer 1: Cluster defaults            │  ← lowest precedence
+│ Layer 1: Cluster defaults            │  ← lower precedence
 │   (kagenti-platform-config in        │
 │    kagenti-system namespace)         │
 └──────────────────────────────────────┘
 ```
 
+**CR-level overrides** (type, identity, authBridgeMode, mtlsMode, skills) are **not** included in the controller's config hash. The webhook reads these fields at pod CREATE time.
+
 **Feature gates** (`kagenti-feature-gates` ConfigMap) are platform-wide policy and are **not** part of the merge hierarchy. They control which sidecar components are enabled globally and cannot be overridden by namespace defaults or AgentRuntime CRs.
 
-The controller uses the merged config to compute a deterministic SHA256 hash. This hash is set as the `kagenti.io/config-hash` annotation on the workload's PodTemplateSpec. When any layer changes, the hash changes, which triggers a Kubernetes rolling update.
+The controller uses the merged config to compute a deterministic SHA256 hash. This hash is set as the `kagenti.io/config-hash` annotation on the workload's PodTemplateSpec. When platform config changes (cluster or namespace ConfigMaps), the hash changes, which triggers a Kubernetes rolling update. CR spec changes do **not** change the hash.
 
-The webhook performs the same merge at Pod CREATE time to resolve the actual configuration values used for sidecar container environment variables.
+The webhook performs its own merge at Pod CREATE time, including CR overrides, to resolve the actual configuration values used for sidecar container environment variables.
 
 > **Note:** The controller and webhook use slightly different sources for layer 1. The controller reads the `kagenti-platform-config` ConfigMap from `kagenti-system` via the API server. The webhook uses compiled defaults overlaid with `/etc/kagenti/config.yaml` (PlatformConfig), which is designed to carry equivalent values. Both produce the same effective defaults in a correctly deployed cluster.
 
@@ -178,7 +172,7 @@ The webhook loads **PlatformConfig** at startup from compiled defaults overlaid 
 - SPIFFE trust domain and socket path
 - Observability settings (trace endpoint, protocol, sampling)
 
-PlatformConfig is hot-reloaded via fsnotify when the config file changes. It forms **layer 1** (lowest precedence) of the 3-layer merge.
+PlatformConfig is hot-reloaded via fsnotify when the config file changes. It forms **layer 1** (lowest precedence) of the configuration merge.
 
 ### Feature Gates (Global Policy)
 
@@ -193,7 +187,7 @@ Feature gates are loaded from the `kagenti-feature-gates` ConfigMap (mounted at 
 | `injectTools` | `false` | Allow injection for `kagenti.io/type=tool` workloads |
 | `perWorkloadConfigResolution` | `false` | Switch from ValueFrom refs to literal env var injection |
 
-Feature gates are **not** part of the 3-layer merge — they cannot be overridden by namespace defaults or AgentRuntime CRs.
+Feature gates are **not** part of the config merge — they cannot be overridden by namespace defaults or AgentRuntime CRs.
 
 ### Config Resolution Modes
 
@@ -206,7 +200,7 @@ When `perWorkloadConfigResolution` is **true**, the webhook resolves all config 
 When a workload has `kagenti.io/type` labels applied manually (without an AgentRuntime CR):
 
 - The webhook still evaluates the workload for injection using PlatformConfig and feature gates
-- The AgentRuntime override layer (layer 3) is skipped — configuration comes from PlatformConfig (layer 1) and namespace ConfigMaps (layer 2) only
+- Configuration comes from PlatformConfig (layer 1) and namespace ConfigMaps (layer 2) only
 - No controller manages the config hash — configuration drift is not detected automatically, and changes to cluster/namespace defaults do not trigger rolling updates
 - The controller does not watch or reconcile these workloads
 - Per-workload identity (SPIFFE trust domain) overrides are not available

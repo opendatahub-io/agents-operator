@@ -76,7 +76,7 @@ type MLflowReconciler struct {
 	ResolveTrackingURI func(ctx context.Context) string
 }
 
-// +kubebuilder:rbac:groups=mlflow.opendatahub.io,resources=mlflows,verbs=get;list;watch
+// +kubebuilder:rbac:groups=mlflow.opendatahub.io,resources=mlflows,verbs=create;get;list;update;watch
 // +kubebuilder:rbac:groups=mlflow.opendatahub.io,resources=mlflowexperiments,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=create;get;list;watch;update
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=create;get;list;watch;update

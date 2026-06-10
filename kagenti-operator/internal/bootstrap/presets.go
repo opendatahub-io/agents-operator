@@ -113,8 +113,6 @@ exporters:
     traces_endpoint: http://mlflow:5000/v1/traces
     tls:
       insecure: true
-    headers:
-      x-mlflow-experiment-id: "0"
     retry_on_failure:
       enabled: true
       initial_interval: 5s
@@ -161,8 +159,6 @@ exporters:
     compression: none
     retry_on_failure:
       enabled: false
-    tls:
-      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt
 extensions:
   bearertokenauth/mlflow:
     filename: /var/run/secrets/kubernetes.io/serviceaccount/token

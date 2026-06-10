@@ -143,12 +143,30 @@ rules:
   verbs:
   - update
 - apiGroups:
+  - discovery.k8s.io
+  resources:
+  - endpointslices
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - datasciencecluster.opendatahub.io
+  resources:
+  - datascienceclusters
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - mlflow.opendatahub.io
   resources:
   - mlflows
   verbs:
+  - create
   - get
   - list
+  - update
   - watch
 - apiGroups:
   - mlflow.opendatahub.io
@@ -181,6 +199,7 @@ rules:
 - apiGroups:
   - operator.openshift.io
   resources:
+  - networks
   - zerotrustworkloadidentitymanagers
   verbs:
   - get
@@ -201,6 +220,21 @@ rules:
   - list
   - patch
   - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterroles
+  verbs:
+  - get
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterroles
+  resourceNames:
+  - mlflow-operator-mlflow-integration
+  - mlflow-operator-mlflow-edit
+  verbs:
+  - bind
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:

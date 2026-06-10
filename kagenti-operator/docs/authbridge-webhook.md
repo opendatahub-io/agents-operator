@@ -125,7 +125,7 @@ Pod CREATE request
   └─ Mount operator Keycloak Secret (if annotation present) → PATCH
 ```
 
-## Configuration Merge (3-Layer Config Resolution)
+## Configuration Merge (Webhook Config Resolution)
 
 When the `perWorkloadConfigResolution` feature gate is enabled, the webhook resolves configuration values at admission time instead of deferring to kubelet's ConfigMapKeyRef/SecretKeyRef resolution. This merge happens in `ResolveConfig()` (`internal/webhook/injector/resolved_config.go`).
 
@@ -285,7 +285,7 @@ Per-workload iptables overrides for proxy-init:
 | `internal/webhook/injector/pod_mutator.go` | Central orchestrator — pre-filtering, precedence evaluation, AgentRuntime gate, container/volume injection |
 | `internal/webhook/injector/precedence.go` | Per-sidecar 2-layer precedence chain (feature gate > workload label); opt-in semantics for client-registration |
 | `internal/webhook/injector/keycloak_client_credentials.go` | Operator-managed Keycloak Secret volume mounts and reinvocation patch logic |
-| `internal/webhook/injector/resolved_config.go` | 3-layer config merge: PlatformConfig < namespace CMs < AgentRuntime CR |
+| `internal/webhook/injector/resolved_config.go` | Webhook config merge: PlatformConfig < namespace CMs < AgentRuntime CR overrides (at admission time) |
 | `internal/webhook/injector/agentruntime_config.go` | Typed AgentRuntime CR lookup and override extraction |
 | `internal/webhook/injector/namespace_config.go` | Reads well-known ConfigMaps from workload namespace |
 | `internal/webhook/injector/container_builder.go` | Dual-mode container construction (ValueFrom vs literal env vars) |

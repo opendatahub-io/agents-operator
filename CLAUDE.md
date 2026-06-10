@@ -45,3 +45,9 @@ Orchestrate skills for enhancing related repositories:
 | `skills:scan` | Audit repository skills |
 | `skills:write` | Create or edit skills following the standard |
 | `skills:validate` | Validate skill format and structure |
+
+<!-- SPECKIT START -->
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan
+at specs/003-mtls-transport-security/plan.md
+<!-- SPECKIT END -->

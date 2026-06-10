@@ -398,11 +398,12 @@ Both resources use the shared `TargetRef` type to reference the backing workload
 
 ### Configuration Precedence
 
-The controller merges configuration from three layers (highest priority wins):
+The controller computes the config hash from two platform layers (highest priority wins):
 
-1. **AgentRuntime CR spec** — per-workload overrides (trust domain, etc.)
-2. **Namespace defaults** — ConfigMap with `kagenti.io/defaults=true` label in the workload's namespace
-3. **Cluster defaults** — `kagenti-platform-config` ConfigMap in `kagenti-system`
+1. **Namespace defaults** — ConfigMap with `kagenti.io/defaults=true` label in the workload's namespace
+2. **Cluster defaults** — `kagenti-platform-config` ConfigMap in `kagenti-system`
+
+> **Note:** Per-CR overrides (identity, authBridgeMode, mtlsMode) are **not** included in the controller's config hash. The webhook reads these fields at pod CREATE time.
 
 > **Note:** Feature gates (`kagenti-feature-gates`) are platform-wide policy and are **not** overrideable by namespace defaults or AgentRuntime CRs. They control which AuthBridge components (envoy proxy, SPIFFE helper, client registration) are enabled globally, and whether skill discovery (`skillDiscovery`) is active.
 

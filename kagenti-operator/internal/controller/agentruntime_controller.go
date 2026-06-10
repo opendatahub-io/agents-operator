@@ -124,6 +124,7 @@ func (r *AgentRuntimeReconciler) getFeatureGates() *webhookconfig.FeatureGates {
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=operator.openshift.io,resources=networks,verbs=get
 
 func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -205,8 +206,8 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			fmt.Sprintf("Namespace %s opted out of Istio mesh enrollment", rt.Namespace))
 	}
 
-	// 5. Compute config hash from merged configuration (cluster → namespace → CR)
-	configResult, err := ComputeConfigHash(ctx, r.Client, rt.Namespace, &rt.Spec)
+	// 5. Compute config hash from merged configuration (cluster → namespace)
+	configResult, err := ComputeConfigHash(ctx, r.Client, rt.Namespace)
 	if err != nil {
 		logger.Error(err, "Failed to compute config hash")
 		r.setPhase(rt, agentv1alpha1.RuntimePhaseError)
