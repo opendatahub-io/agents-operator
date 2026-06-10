@@ -26,6 +26,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/discovery"
@@ -34,6 +35,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -100,6 +102,7 @@ var (
 
 type SharedTrustReconciler struct {
 	client.Client
+	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 }
 
@@ -224,6 +227,9 @@ func (r *SharedTrustReconciler) reconcileCacertsSecrets(ctx context.Context) (bo
 			secret.Namespace = ic.Namespace
 			secret.Type = corev1.SecretTypeOpaque
 			secret.Data = desired
+			if err := controllerutil.SetOwnerReference(intSecret, secret, r.Scheme); err != nil {
+				return false, fmt.Errorf("setting owner reference for cacerts secret in %s: %w", ic.Namespace, err)
+			}
 			if err := r.Create(ctx, secret); err != nil {
 				return false, fmt.Errorf("creating cacerts secret in %s: %w", ic.Namespace, err)
 			}

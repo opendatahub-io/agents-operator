@@ -587,6 +587,7 @@ func main() {
 	if controller.CertManagerCRDExists(mgr.GetConfig()) {
 		if err = (&controller.SharedTrustReconciler{
 			Client:   mgr.GetClient(),
+			Scheme:   mgr.GetScheme(),
 			Recorder: mgr.GetEventRecorderFor("shared-trust-controller"), //nolint:staticcheck
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "SharedTrust")
@@ -633,6 +634,7 @@ func main() {
 			Client:               mgr.GetClient(),
 			APIReader:            mgr.GetAPIReader(),
 			Config:               mgr.GetConfig(),
+			Scheme:               mgr.GetScheme(),
 			Namespace:            getOperatorNamespace(),
 			Log:                  ctrl.Log.WithName("bootstrap"),
 			MLflowWorkspace:      mlflowWorkspace,

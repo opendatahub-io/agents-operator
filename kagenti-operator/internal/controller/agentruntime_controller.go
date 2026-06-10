@@ -154,11 +154,7 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// 4. Resolve targetRef (existence check)
 	if err := r.resolveTargetRef(ctx, rt); err != nil {
 		logger.Error(err, "Failed to resolve targetRef")
-		r.setPhase(rt, agentv1alpha1.RuntimePhaseError)
-		r.setCondition(rt, ConditionTypeTargetResolved, metav1.ConditionFalse, "TargetNotFound", err.Error())
-		if statusErr := r.Status().Update(ctx, rt); statusErr != nil {
-			logger.Error(statusErr, "Failed to update status")
-		}
+		r.updateErrorStatus(ctx, req.NamespacedName, ConditionTypeTargetResolved, "TargetNotFound", err.Error())
 		if r.Recorder != nil {
 			r.Recorder.Event(rt, corev1.EventTypeWarning, "TargetNotFound", err.Error())
 		}
@@ -210,11 +206,7 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	configResult, err := ComputeConfigHash(ctx, r.Client, rt.Namespace)
 	if err != nil {
 		logger.Error(err, "Failed to compute config hash")
-		r.setPhase(rt, agentv1alpha1.RuntimePhaseError)
-		r.setCondition(rt, ConditionTypeReady, metav1.ConditionFalse, "ConfigHashError", err.Error())
-		if statusErr := r.Status().Update(ctx, rt); statusErr != nil {
-			logger.Error(statusErr, "Failed to update status")
-		}
+		r.updateErrorStatus(ctx, req.NamespacedName, ConditionTypeReady, "ConfigHashError", err.Error())
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
@@ -238,11 +230,7 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// 6. Apply labels and annotations to the target workload
 	if err := r.applyWorkloadConfig(ctx, rt, configResult.Hash); err != nil {
 		logger.Error(err, "Failed to apply workload config")
-		r.setPhase(rt, agentv1alpha1.RuntimePhaseError)
-		r.setCondition(rt, ConditionTypeReady, metav1.ConditionFalse, "ConfigApplyError", err.Error())
-		if statusErr := r.Status().Update(ctx, rt); statusErr != nil {
-			logger.Error(statusErr, "Failed to update status")
-		}
+		r.updateErrorStatus(ctx, req.NamespacedName, ConditionTypeReady, "ConfigApplyError", err.Error())
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
@@ -775,6 +763,23 @@ func (r *AgentRuntimeReconciler) setCondition(rt *agentv1alpha1.AgentRuntime, co
 		Reason:             reason,
 		Message:            message,
 	})
+}
+
+// updateErrorStatus sets the AgentRuntime phase to Error and updates a condition
+// with retry-on-conflict semantics, re-fetching the object on each attempt.
+func (r *AgentRuntimeReconciler) updateErrorStatus(ctx context.Context, key types.NamespacedName, condType, reason, message string) {
+	logger := log.FromContext(ctx)
+	if statusErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &agentv1alpha1.AgentRuntime{}
+		if err := r.Get(ctx, key, latest); err != nil {
+			return err
+		}
+		r.setPhase(latest, agentv1alpha1.RuntimePhaseError)
+		r.setCondition(latest, condType, metav1.ConditionFalse, reason, message)
+		return r.Status().Update(ctx, latest)
+	}); statusErr != nil {
+		logger.Error(statusErr, "Failed to update error status", "condition", condType, "reason", reason)
+	}
 }
 
 // fetchAndUpdateCard discovers the agent card from the workload's Service endpoint

@@ -34,11 +34,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/yaml"
 
 	"github.com/kagenti/operator/internal/mlflow"
@@ -76,6 +78,7 @@ type OtelBootstrapRunnable struct {
 	Client    client.Client
 	APIReader client.Reader
 	Config    *rest.Config
+	Scheme    *runtime.Scheme
 	Namespace string
 	Log       logr.Logger
 
@@ -93,11 +96,45 @@ type OtelBootstrapRunnable struct {
 	EnsureExperiment func(ctx context.Context, baseURL, workspace string) (string, error)
 }
 
+// operatorDeploymentNames lists possible Deployment names for the operator itself,
+// used to set OwnerReferences on bootstrap-created resources.
+var operatorDeploymentNames = []string{
+	"kagenti-controller-manager",
+	"controller-manager",
+}
+
+// getOperatorOwner looks up the operator's own Deployment to use as an OwnerReference.
+// Returns nil if the deployment cannot be found (best-effort).
+func (r *OtelBootstrapRunnable) getOperatorOwner(ctx context.Context, log logr.Logger) *appsv1.Deployment {
+	for _, name := range operatorDeploymentNames {
+		deploy := &appsv1.Deployment{}
+		key := types.NamespacedName{Name: name, Namespace: r.Namespace}
+		if err := r.Client.Get(ctx, key, deploy); err == nil {
+			return deploy
+		}
+	}
+	log.Info("Could not find operator Deployment for OwnerReference, ConfigMaps will be unowned")
+	return nil
+}
+
+// setOwnerIfAvailable sets an OwnerReference on the given object if an owner is available.
+func (r *OtelBootstrapRunnable) setOwnerIfAvailable(owner *appsv1.Deployment, obj client.Object, log logr.Logger) {
+	if owner == nil || r.Scheme == nil {
+		return
+	}
+	if err := controllerutil.SetOwnerReference(owner, obj, r.Scheme); err != nil {
+		log.Error(err, "Failed to set OwnerReference on resource", "name", obj.GetName())
+	}
+}
+
 // Start runs the bootstrap sequence. Called by the manager after leader election
 // and cache sync, before controllers start processing events.
 func (r *OtelBootstrapRunnable) Start(ctx context.Context) error {
 	log := r.Log.WithName("otel-bootstrap")
 	log.Info("Starting OTel collector bootstrap")
+
+	// Look up operator Deployment once for OwnerReference on created resources.
+	owner := r.getOperatorOwner(ctx, log)
 
 	isOCP, err := r.detectOpenShift(ctx)
 	if err != nil {
@@ -106,14 +143,14 @@ func (r *OtelBootstrapRunnable) Start(ctx context.Context) error {
 
 	if isOCP {
 		log.Info("OpenShift detected, reconciling ingress CA trust")
-		if err := r.reconcileIngressCA(ctx, log); err != nil {
+		if err := r.reconcileIngressCA(ctx, log, owner); err != nil {
 			return fmt.Errorf("ingress CA bootstrap: %w", err)
 		}
 	} else {
 		log.Info("Not running on OpenShift, skipping ingress CA trust")
 	}
 
-	if err := r.reconcileCollectorConfig(ctx, log, isOCP); err != nil {
+	if err := r.reconcileCollectorConfig(ctx, log, isOCP, owner); err != nil {
 		return fmt.Errorf("collector config bootstrap: %w", err)
 	}
 
@@ -156,7 +193,7 @@ func (r *OtelBootstrapRunnable) detectOpenShift(ctx context.Context) (bool, erro
 
 // reconcileIngressCA reads the OpenShift ingress CA and root CA, then creates
 // or updates the otel-ingress-ca ConfigMap in the operator namespace.
-func (r *OtelBootstrapRunnable) reconcileIngressCA(ctx context.Context, log logr.Logger) error {
+func (r *OtelBootstrapRunnable) reconcileIngressCA(ctx context.Context, log logr.Logger, owner *appsv1.Deployment) error {
 	ingressCert := &corev1.ConfigMap{}
 	key := types.NamespacedName{Name: ingressCertConfigMap, Namespace: ingressCertNamespace}
 	if err := r.APIReader.Get(ctx, key, ingressCert); err != nil {
@@ -197,6 +234,7 @@ func (r *OtelBootstrapRunnable) reconcileIngressCA(ctx context.Context, log logr
 			},
 			Data: map[string]string{caBundleKey: caBundle},
 		}
+		r.setOwnerIfAvailable(owner, cm, log)
 		if err := r.Client.Create(ctx, cm); err != nil {
 			if !errors.IsAlreadyExists(err) {
 				return fmt.Errorf("creating %s ConfigMap: %w", ingressCAConfigMap, err)
@@ -231,7 +269,7 @@ func (r *OtelBootstrapRunnable) reconcileIngressCA(ctx context.Context, log logr
 
 // reconcileCollectorConfig discovers available components and assembles the
 // OTel collector ConfigMap from preset configurations.
-func (r *OtelBootstrapRunnable) reconcileCollectorConfig(ctx context.Context, log logr.Logger, isOCP bool) error {
+func (r *OtelBootstrapRunnable) reconcileCollectorConfig(ctx context.Context, log logr.Logger, isOCP bool, owner *appsv1.Deployment) error {
 	mf, err := r.discoverMLflow(ctx, log)
 	if err != nil {
 		return err
@@ -291,6 +329,7 @@ func (r *OtelBootstrapRunnable) reconcileCollectorConfig(ctx context.Context, lo
 			},
 			Data: map[string]string{configMapDataKey: configStr},
 		}
+		r.setOwnerIfAvailable(owner, cm, log)
 		if err := r.Client.Create(ctx, cm); err != nil {
 			if !errors.IsAlreadyExists(err) {
 				return fmt.Errorf("creating collector ConfigMap: %w", err)
