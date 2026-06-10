@@ -62,7 +62,6 @@ metadata:
   name: weather-agent
   namespace: agents
   labels:
-    kagenti.io/type: agent
     protocol.kagenti.io/a2a: ""
     app.kubernetes.io/name: weather-agent
 spec:
@@ -158,3 +157,17 @@ spec:
   ports:
     - port: 8080
       targetPort: 8080
+---
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: weather-agent-runtime
+  namespace: agents
+  labels:
+    app.kubernetes.io/name: weather-agent
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: weather-agent

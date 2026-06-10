@@ -7,7 +7,7 @@
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-agents}"
-AGENTCARD="${AGENTCARD:-weather-agent-card}"
+AGENTCARD="${AGENTCARD:-weather-agent-deployment-card}"
 
 echo "=== AgentCard Enforcement Demo Teardown ==="
 echo ""

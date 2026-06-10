@@ -7,7 +7,7 @@
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-agents}"
-AGENTCARD="${AGENTCARD:-weather-agent-card}"
+AGENTCARD="${AGENTCARD:-weather-agent-deployment-card}"
 DEPLOYMENT="${DEPLOYMENT:-weather-agent}"
 
 get_status() {

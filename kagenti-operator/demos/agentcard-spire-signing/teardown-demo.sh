@@ -15,7 +15,6 @@ echo "=== SPIRE Signing Demo Teardown ==="
 echo ""
 
 echo "Deleting Kubernetes resources..."
-kubectl delete -f "${K8S_DIR}/agentcard.yaml" --ignore-not-found=true 2>/dev/null || true
 kubectl delete -f "${K8S_DIR}/agent-deployment.yaml" --ignore-not-found=true 2>/dev/null || true
 kubectl delete -f "${K8S_DIR}/clusterspiffeid.yaml" --ignore-not-found=true 2>/dev/null || true
 echo "Kubernetes resources deleted."
