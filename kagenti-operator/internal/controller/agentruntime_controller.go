@@ -28,6 +28,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -154,11 +155,7 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// 4. Resolve targetRef (existence check)
 	if err := r.resolveTargetRef(ctx, rt); err != nil {
 		logger.Error(err, "Failed to resolve targetRef")
-		r.setPhase(rt, agentv1alpha1.RuntimePhaseError)
-		r.setCondition(rt, ConditionTypeTargetResolved, metav1.ConditionFalse, "TargetNotFound", err.Error())
-		if statusErr := r.Status().Update(ctx, rt); statusErr != nil {
-			logger.Error(statusErr, "Failed to update status")
-		}
+		r.updateErrorStatus(ctx, req.NamespacedName, ConditionTypeTargetResolved, "TargetNotFound", err.Error())
 		if r.Recorder != nil {
 			r.Recorder.Event(rt, corev1.EventTypeWarning, "TargetNotFound", err.Error())
 		}
@@ -206,15 +203,29 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			fmt.Sprintf("Namespace %s opted out of Istio mesh enrollment", rt.Namespace))
 	}
 
+	// 4.7. Ensure SCC RoleBinding exists in the namespace.
+	// Creates a RoleBinding granting all ServiceAccounts in the namespace
+	// access to the kagenti-authbridge SCC. No-op on non-OpenShift clusters.
+	// On OpenShift, a transient failure is retried via requeue to prevent
+	// agent pods from failing with SCC violations at runtime.
+	if err := r.ensureNamespaceSCCBinding(ctx, rt.Namespace); err != nil {
+		logger.Error(err, "Failed to ensure SCC RoleBinding")
+		if r.Recorder != nil {
+			r.Recorder.Event(rt, corev1.EventTypeWarning, "SCCBindingError", err.Error())
+		}
+		r.setPhase(rt, agentv1alpha1.RuntimePhaseError)
+		r.setCondition(rt, ConditionTypeReady, metav1.ConditionFalse, "SCCBindingError", err.Error())
+		if statusErr := r.Status().Update(ctx, rt); statusErr != nil {
+			logger.Error(statusErr, "Failed to update status")
+		}
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
 	// 5. Compute config hash from merged configuration (cluster → namespace)
 	configResult, err := ComputeConfigHash(ctx, r.Client, rt.Namespace)
 	if err != nil {
 		logger.Error(err, "Failed to compute config hash")
-		r.setPhase(rt, agentv1alpha1.RuntimePhaseError)
-		r.setCondition(rt, ConditionTypeReady, metav1.ConditionFalse, "ConfigHashError", err.Error())
-		if statusErr := r.Status().Update(ctx, rt); statusErr != nil {
-			logger.Error(statusErr, "Failed to update status")
-		}
+		r.updateErrorStatus(ctx, req.NamespacedName, ConditionTypeReady, "ConfigHashError", err.Error())
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
@@ -238,27 +249,15 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// 6. Apply labels and annotations to the target workload
 	if err := r.applyWorkloadConfig(ctx, rt, configResult.Hash); err != nil {
 		logger.Error(err, "Failed to apply workload config")
-		r.setPhase(rt, agentv1alpha1.RuntimePhaseError)
-		r.setCondition(rt, ConditionTypeReady, metav1.ConditionFalse, "ConfigApplyError", err.Error())
-		if statusErr := r.Status().Update(ctx, rt); statusErr != nil {
-			logger.Error(statusErr, "Failed to update status")
-		}
+		r.updateErrorStatus(ctx, req.NamespacedName, ConditionTypeReady, "ConfigApplyError", err.Error())
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	// 6.5. Discover linked skills from workload annotation (set by kagenti backend or user)
 	fg := r.getFeatureGates()
+	var linkedSkills []string
 	if fg.SkillDiscovery {
-		rt.Status.LinkedSkills = r.readLinkedSkills(ctx, rt)
-		if len(rt.Status.LinkedSkills) > 0 {
-			r.setCondition(rt, ConditionTypeSkillsDiscovered, metav1.ConditionTrue, "SkillsFound",
-				fmt.Sprintf("%d linked skill(s) discovered from workload annotation", len(rt.Status.LinkedSkills)))
-		} else {
-			meta.RemoveStatusCondition(&rt.Status.Conditions, ConditionTypeSkillsDiscovered)
-		}
-	} else {
-		rt.Status.LinkedSkills = nil
-		meta.RemoveStatusCondition(&rt.Status.Conditions, ConditionTypeSkillsDiscovered)
+		linkedSkills = r.readLinkedSkills(ctx, rt)
 	}
 
 	// 7. Count configured pods
@@ -267,12 +266,31 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		logger.V(1).Info("Failed to count configured pods", "error", err)
 	}
 
-	// 8. Update status
+	// 8. Update status (retry on conflict to preserve all conditions computed above)
 	rt.Status.ConfiguredPods = configuredPods
 	r.setPhase(rt, agentv1alpha1.RuntimePhaseActive)
 	r.setCondition(rt, ConditionTypeReady, metav1.ConditionTrue, "Configured",
 		fmt.Sprintf("Workload %s configured with config-hash %s", rt.Spec.TargetRef.Name, configResult.Hash[:12]))
-	if err := r.Status().Update(ctx, rt); err != nil {
+	if fg.SkillDiscovery {
+		rt.Status.LinkedSkills = linkedSkills
+		if len(linkedSkills) > 0 {
+			r.setCondition(rt, ConditionTypeSkillsDiscovered, metav1.ConditionTrue, "SkillsFound",
+				fmt.Sprintf("%d linked skill(s) discovered from workload annotation", len(linkedSkills)))
+		} else {
+			meta.RemoveStatusCondition(&rt.Status.Conditions, ConditionTypeSkillsDiscovered)
+		}
+	} else {
+		rt.Status.LinkedSkills = nil
+		meta.RemoveStatusCondition(&rt.Status.Conditions, ConditionTypeSkillsDiscovered)
+	}
+	desired := rt.Status.DeepCopy()
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := r.Get(ctx, req.NamespacedName, rt); err != nil {
+			return err
+		}
+		rt.Status = *desired // safe: this controller is the sole status owner
+		return r.Status().Update(ctx, rt)
+	}); err != nil {
 		logger.Error(err, "Failed to update status")
 		return ctrl.Result{}, err
 	}
@@ -708,10 +726,6 @@ func (r *AgentRuntimeReconciler) handleDeletion(ctx context.Context, rt *agentv1
 			delete(workloadLabels, LabelManagedBy)
 			acc.obj.SetLabels(workloadLabels)
 
-			// Remove skills annotation from workload metadata.
-			workloadAnnotations := acc.obj.GetAnnotations()
-			delete(workloadAnnotations, AnnotationSkills)
-			acc.obj.SetAnnotations(workloadAnnotations)
 
 			// Remove kagenti.io/type from PodTemplateSpec pod labels so future pods
 			// are not presented to the webhook with the type label.
@@ -768,6 +782,23 @@ func (r *AgentRuntimeReconciler) setCondition(rt *agentv1alpha1.AgentRuntime, co
 		Reason:             reason,
 		Message:            message,
 	})
+}
+
+// updateErrorStatus sets the AgentRuntime phase to Error and updates a condition
+// with retry-on-conflict semantics, re-fetching the object on each attempt.
+func (r *AgentRuntimeReconciler) updateErrorStatus(ctx context.Context, key types.NamespacedName, condType, reason, message string) {
+	logger := log.FromContext(ctx)
+	if statusErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &agentv1alpha1.AgentRuntime{}
+		if err := r.Get(ctx, key, latest); err != nil {
+			return err
+		}
+		r.setPhase(latest, agentv1alpha1.RuntimePhaseError)
+		r.setCondition(latest, condType, metav1.ConditionFalse, reason, message)
+		return r.Status().Update(ctx, latest)
+	}); statusErr != nil {
+		logger.Error(statusErr, "Failed to update error status", "condition", condType, "reason", reason)
+	}
 }
 
 // fetchAndUpdateCard discovers the agent card from the workload's Service endpoint
@@ -1017,6 +1048,72 @@ func (r *AgentRuntimeReconciler) ensureNamespaceConfigMaps(ctx context.Context, 
 		}
 		logger.Info("Created ConfigMap from template", "namespace", namespace, "name", name)
 	}
+	return nil
+}
+
+const (
+	sccClusterRoleName = "system:openshift:scc:kagenti-authbridge"
+	sccRoleBindingName = "agent-authbridge-scc"
+)
+
+// ensureNamespaceSCCBinding creates a RoleBinding in the target namespace that
+// grants all ServiceAccounts access to the kagenti-authbridge SCC via the
+// system:openshift:scc:kagenti-authbridge ClusterRole. On non-OpenShift clusters
+// (ClusterRole absent), this is a silent no-op.
+func (r *AgentRuntimeReconciler) ensureNamespaceSCCBinding(ctx context.Context, namespace string) error {
+	logger := log.FromContext(ctx)
+	reader := r.uncachedReader()
+
+	// Check if the SCC ClusterRole exists — if not, skip (non-OpenShift).
+	cr := &rbacv1.ClusterRole{}
+	if err := reader.Get(ctx, client.ObjectKey{Name: sccClusterRoleName}, cr); err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.V(1).Info("SCC ClusterRole not found, skipping SCC RoleBinding",
+				"clusterRole", sccClusterRoleName)
+			return nil
+		}
+		return fmt.Errorf("failed to check SCC ClusterRole %s: %w", sccClusterRoleName, err)
+	}
+
+	// Check if the RoleBinding already exists.
+	existing := &rbacv1.RoleBinding{}
+	err := reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: sccRoleBindingName}, existing)
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to check RoleBinding %s/%s: %w", namespace, sccRoleBindingName, err)
+	}
+
+	// Create the RoleBinding.
+	rb := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      sccRoleBindingName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				LabelManagedBy: LabelManagedByValue,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "ClusterRole",
+			Name:     sccClusterRoleName,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:     rbacv1.GroupKind,
+				APIGroup: rbacv1.GroupName,
+				Name:     "system:serviceaccounts:" + namespace,
+			},
+		},
+	}
+	if err := r.Create(ctx, rb); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to create SCC RoleBinding %s/%s: %w", namespace, sccRoleBindingName, err)
+	}
+	logger.Info("Created SCC RoleBinding", "namespace", namespace, "name", sccRoleBindingName)
 	return nil
 }
 

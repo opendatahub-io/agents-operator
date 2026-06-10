@@ -2133,6 +2133,13 @@ rules:
 
 	Context("Feature gate enabled", Ordered, func() {
 		BeforeAll(func() {
+			By("re-applying target Deployment to restore skills annotation after prior deletion cleanup")
+			_, err := utils.KubectlApplyStdin(skillDiscoveryDeploymentFixture(), skillDiscoveryTestNamespace)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(utils.WaitForDeploymentReady(
+				"skill-discovery-agent", skillDiscoveryTestNamespace, 2*time.Minute,
+			)).To(Succeed())
+
 			By("enabling skillDiscovery feature gate")
 			Expect(utils.EnableSkillDiscovery(controllerNamespace, controllerDeployment)).To(Succeed())
 

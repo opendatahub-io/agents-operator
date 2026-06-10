@@ -187,6 +187,7 @@ func newReconciler(t *testing.T, objs ...runtime.Object) *SharedTrustReconciler 
 	cb := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(clientObjs...)
 	return &SharedTrustReconciler{
 		Client:   cb.Build(),
+		Scheme:   scheme,
 		Recorder: record.NewFakeRecorder(10),
 	}
 }

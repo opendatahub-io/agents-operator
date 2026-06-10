@@ -1,0 +1,24 @@
+# SPIFFE helper configuration template.
+# The operator copies this to agent namespaces via ensureNamespaceConfigMaps.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spiffe-helper-config
+  namespace: kagenti-operator-system
+  labels:
+    app.kubernetes.io/name: kagenti-operator
+    app.kubernetes.io/component: authbridge
+    app.kubernetes.io/managed-by: kustomize
+data:
+  helper.conf: |
+    agent_address = "/spiffe-workload-api/spire-agent.sock"
+    cmd = ""
+    cmd_args = ""
+    svid_file_name = "/opt/svid.pem"
+    svid_key_file_name = "/opt/svid_key.pem"
+    svid_bundle_file_name = "/opt/svid_bundle.pem"
+    cert_file_mode = 0644
+    key_file_mode = 0640
+    jwt_svids = [{jwt_audience="http://keycloak.localtest.me:8080/realms/kagenti", jwt_svid_file_name="/opt/jwt_svid.token"}]
+    jwt_svid_file_mode = 0644
+    include_federated_domains = true

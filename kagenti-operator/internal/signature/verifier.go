@@ -353,8 +353,26 @@ func removeEmptyFields(m map[string]interface{}) map[string]interface{} {
 				result[k] = cleaned
 			}
 		case []interface{}:
-			if len(val) > 0 {
-				result[k] = val
+			var cleaned []interface{}
+			for _, elem := range val {
+				switch e := elem.(type) {
+				case map[string]interface{}:
+					c := removeEmptyFields(e)
+					if len(c) > 0 {
+						cleaned = append(cleaned, c)
+					}
+				case string:
+					if e != "" {
+						cleaned = append(cleaned, e)
+					}
+				case nil:
+					// skip nil elements
+				default:
+					cleaned = append(cleaned, e)
+				}
+			}
+			if len(cleaned) > 0 {
+				result[k] = cleaned
 			}
 		case string:
 			if val != "" {

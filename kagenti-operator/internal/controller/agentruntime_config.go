@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -36,8 +37,8 @@ const (
 	// ClusterFeatureGatesConfigMapName is the ConfigMap containing feature gate settings.
 	ClusterFeatureGatesConfigMapName = "kagenti-feature-gates"
 
-	// ClusterDefaultsNamespace is the namespace where cluster-level ConfigMaps live.
-	ClusterDefaultsNamespace = "kagenti-system"
+	// clusterDefaultsNamespaceDefault is the fallback namespace when POD_NAMESPACE is not set.
+	clusterDefaultsNamespaceDefault = "kagenti-system"
 
 	// LabelNamespaceDefaults identifies namespace-level defaults ConfigMaps.
 	LabelNamespaceDefaults = "kagenti.io/defaults"
@@ -48,6 +49,25 @@ const (
 	// hash picks them up and rolls affected workloads.
 	AuthBridgeRuntimeConfigMapName = "authbridge-runtime-config"
 )
+
+// ClusterDefaultsNamespace is the namespace where cluster-level ConfigMaps
+// and template ConfigMaps live. Defaults to "kagenti-system"; set once to the
+// operator's own namespace by main() via SetClusterDefaultsNamespace.
+//
+// Write-once semantics: SetClusterDefaultsNamespace must be called exactly once
+// from main() before the manager starts. Subsequent calls are no-ops.
+var (
+	ClusterDefaultsNamespace     = clusterDefaultsNamespaceDefault
+	clusterDefaultsNamespaceOnce sync.Once
+)
+
+func SetClusterDefaultsNamespace(ns string) {
+	clusterDefaultsNamespaceOnce.Do(func() {
+		if ns != "" {
+			ClusterDefaultsNamespace = ns
+		}
+	})
+}
 
 // resolvedConfig is the canonical representation used for hash computation.
 // It captures the 2-layer merge of cluster defaults → namespace defaults.

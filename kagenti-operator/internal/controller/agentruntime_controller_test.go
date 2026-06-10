@@ -209,6 +209,47 @@ var _ = Describe("AgentRuntime Controller", func() {
 			Expect(k8sClient.Get(ctx, nn, updatedRT)).To(Succeed())
 			Expect(updatedRT.Status.LinkedSkills).To(ConsistOf("summarizer", "translator"))
 		})
+
+		It("should persist linkedSkills even after a concurrent status modification", func() {
+			dep := newDeployment("skills-conflict-deploy", namespace)
+			dep.Annotations = map[string]string{
+				AnnotationSkills: `["skill-a","skill-b"]`,
+			}
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+
+			rt := newAgentRuntime("skills-conflict-rt", namespace, "skills-conflict-deploy", agentv1alpha1.RuntimeTypeAgent)
+			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, rt) }()
+
+			r := newReconciler()
+			r.GetFeatureGates = func() *webhookconfig.FeatureGates {
+				return &webhookconfig.FeatureGates{SkillDiscovery: true}
+			}
+			nn := types.NamespacedName{Name: "skills-conflict-rt", Namespace: namespace}
+
+			// First reconcile to set up finalizer
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+
+			// Simulate a concurrent modification by updating the object's status
+			// from another controller (this bumps resourceVersion)
+			current := &agentv1alpha1.AgentRuntime{}
+			Expect(k8sClient.Get(ctx, nn, current)).To(Succeed())
+			current.Status.ConfiguredPods = 99
+			Expect(k8sClient.Status().Update(ctx, current)).To(Succeed())
+
+			// Now reconcile — the status update inside Reconcile will initially
+			// hit a conflict (stale resourceVersion), but retry should succeed
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			updatedRT := &agentv1alpha1.AgentRuntime{}
+			Expect(k8sClient.Get(ctx, nn, updatedRT)).To(Succeed())
+			Expect(updatedRT.Status.LinkedSkills).To(ConsistOf("skill-a", "skill-b"))
+
+			configCond := meta.FindStatusCondition(updatedRT.Status.Conditions, ConditionTypeConfigResolved)
+			Expect(configCond).NotTo(BeNil(), "ConfigResolved condition must survive the retry re-fetch")
+		})
 	})
 
 	Context("When setting status", func() {

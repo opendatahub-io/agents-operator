@@ -223,22 +223,35 @@ func (r *MLflowReconciler) configureDeployment(ctx context.Context, dep *appsv1.
 		if annotations == nil {
 			annotations = make(map[string]string)
 		}
-		annotations[AnnotationMLflowExperimentID] = experimentID
-		annotations[AnnotationMLflowExperimentName] = experimentName
-		annotations[AnnotationMLflowTrackingURI] = trackingURI
-		annotations[AnnotationMLflowTrackingAuth] = "kubernetes-namespaced"
+
+		annotationsChanged := false
+		for k, v := range map[string]string{
+			AnnotationMLflowExperimentID:   experimentID,
+			AnnotationMLflowExperimentName: experimentName,
+			AnnotationMLflowTrackingURI:    trackingURI,
+			AnnotationMLflowTrackingAuth:   "kubernetes-namespaced",
+		} {
+			if annotations[k] != v {
+				annotations[k] = v
+				annotationsChanged = true
+			}
+		}
 		latest.Spec.Template.Annotations = annotations
 
-		changed := false
+		envChanged := false
 		for i := range latest.Spec.Template.Spec.Containers {
 			for name, value := range desired {
 				if setEnvVar(&latest.Spec.Template.Spec.Containers[i], name, value) {
-					changed = true
+					envChanged = true
 				}
 			}
 		}
 
-		if changed {
+		if !envChanged && !annotationsChanged {
+			return nil
+		}
+
+		if envChanged {
 			logger.Info("Injected MLflow env vars into Deployment containers", "deployment", dep.Name)
 		}
 

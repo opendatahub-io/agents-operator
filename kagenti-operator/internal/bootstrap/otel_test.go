@@ -52,6 +52,7 @@ func newRunnable(cl client.Client, isOCP func(context.Context) (bool, error), ml
 	return &OtelBootstrapRunnable{
 		Client:          cl,
 		APIReader:       cl,
+		Scheme:          testScheme(),
 		Namespace:       testNamespace,
 		Log:             testLogger(),
 		IsOpenShift:     isOCP,
