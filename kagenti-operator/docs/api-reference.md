@@ -149,9 +149,9 @@ Represents the A2A agent card structure based on the [A2A specification](https:/
 
 ### Examples
 
-#### Deploy Agent as a Standard Deployment (Recommended)
+#### Deploy Agent with AgentRuntime (Recommended)
 
-Create a standard Deployment with agent labels, and an AgentCard with `targetRef`:
+Create a Deployment with a protocol label and an `AgentRuntime` CR to enroll it. The operator applies `kagenti.io/type: agent` to the Deployment, and the AgentCardSync controller auto-creates an AgentCard named `weather-agent-deployment-card` (pattern: `{name}-{kind}-card`):
 
 ```yaml
 apiVersion: apps/v1
@@ -161,7 +161,6 @@ metadata:
   namespace: default
   labels:
     app.kubernetes.io/name: weather-agent
-    kagenti.io/type: agent
     protocol.kagenti.io/a2a: ""
 spec:
   replicas: 1
@@ -183,25 +182,27 @@ spec:
           value: "8000"
 ---
 apiVersion: agent.kagenti.dev/v1alpha1
-kind: AgentCard
+kind: AgentRuntime
 metadata:
-  name: weather-agent-card
+  name: weather-agent
   namespace: default
 spec:
-  syncPeriod: 30s
+  type: agent
   targetRef:
     apiVersion: apps/v1
     kind: Deployment
     name: weather-agent
 ```
 
-#### AgentCard with Identity Binding
+#### Manual AgentCard with Identity Binding
+
+If you need `identityBinding.strict: true` (enforcement mode), create the AgentCard before the workload is labeled. The sync controller will skip auto-creation when it finds an existing card targeting the same workload:
 
 ```yaml
 apiVersion: agent.kagenti.dev/v1alpha1
 kind: AgentCard
 metadata:
-  name: weather-agent-card
+  name: weather-agent-deployment-card
   namespace: default
 spec:
   syncPeriod: "30s"
@@ -212,8 +213,6 @@ spec:
   identityBinding:
     strict: true
 ```
-
-The AgentCard can also be automatically created by the operator when agent labels are present on the Deployment.
 
 #### View Discovered Agents
 
@@ -308,23 +307,23 @@ status:
 
 ```bash
 # Get agent name from card
-kubectl get agentcard weather-agent-card \
+kubectl get agentcard weather-agent-deployment-card \
   -o jsonpath='{.status.card.name}'
 
 # List all skills
-kubectl get agentcard weather-agent-card \
+kubectl get agentcard weather-agent-deployment-card \
   -o jsonpath='{.status.card.skills[*].name}'
 
 # Get agent endpoint
-kubectl get agentcard weather-agent-card \
+kubectl get agentcard weather-agent-deployment-card \
   -o jsonpath='{.status.card.url}'
 
 # Check signature verification
-kubectl get agentcard weather-agent-card \
+kubectl get agentcard weather-agent-deployment-card \
   -o jsonpath='{.status.validSignature}'
 
 # Check identity binding
-kubectl get agentcard weather-agent-card \
+kubectl get agentcard weather-agent-deployment-card \
   -o jsonpath='{.status.bindingStatus.bound}'
 ```
 
@@ -366,13 +365,13 @@ spec:
 
 ## Required Labels for Workload-Based Agents
 
-For Deployments and StatefulSets to be automatically discovered by the operator, the following labels are required:
+For Deployments and StatefulSets to be automatically discovered by the operator, the following labels are needed on the workload. `kagenti.io/type` is applied by the operator via an AgentRuntime CR (a `ValidatingAdmissionPolicy` prevents setting it directly). Protocol labels are set by the user:
 
-| Label | Value | Required | Description |
-|-------|-------|----------|-------------|
-| `kagenti.io/type` | `agent` | Yes | Identifies the workload as an agent |
-| `protocol.kagenti.io/<name>` | `""` (existence implies support) | Yes (at least one) | Protocol(s) the agent speaks (e.g., `protocol.kagenti.io/a2a`, `protocol.kagenti.io/mcp`) |
-| `app.kubernetes.io/name` | `<agent-name>` | Recommended | Standard Kubernetes app name label |
+| Label | Value | Set By | Description |
+|-------|-------|--------|-------------|
+| `kagenti.io/type` | `agent` or `tool` | Operator (via AgentRuntime) | Classifies the workload. Applied automatically when an AgentRuntime CR targets it. |
+| `protocol.kagenti.io/<name>` | `""` (existence implies support) | User | Protocol(s) the agent speaks (e.g., `protocol.kagenti.io/a2a`, `protocol.kagenti.io/mcp`). Required for AgentCard auto-creation. |
+| `app.kubernetes.io/name` | `<agent-name>` | User | Standard Kubernetes app name label (recommended) |
 
 ---
 

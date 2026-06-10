@@ -176,8 +176,7 @@ spec:
 // noProtocolAgentFixture returns YAML for noproto-agent Deployment (S2) - receives
 // kagenti.io/type=agent via AgentRuntime but has NO protocol.kagenti.io/* label.
 // kagenti.io/inject=disabled is set because this test validates AgentCard sync
-// behaviour, not sidecar injection. Without the opt-out the defaults-only
-// injection path would inject sidecars that the pause container cannot support.
+// behaviour, not sidecar injection.
 func noProtocolAgentFixture() string {
 	return `apiVersion: apps/v1
 kind: Deployment

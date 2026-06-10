@@ -104,7 +104,7 @@ Other workloads are ignored by this controller.
 ### 3.2 Workload
 
 - **Deployment** or **StatefulSet** (not bare Pods for operator ownership of Secrets).
-- Pod template labels: `kagenti.io/type: agent` or `tool` (subject to `injectTools`). Do **not** set `kagenti.io/client-registration-inject: "true"` unless you require the legacy sidecar.
+- An **AgentRuntime** CR targeting the workload — the operator applies `kagenti.io/type` to the Deployment/StatefulSet and its PodTemplateSpec (a `ValidatingAdmissionPolicy` prevents manual application). Do **not** set `kagenti.io/client-registration-inject: "true"` unless you require the legacy sidecar.
 - For **SPIRE-enabled** namespaces: `spec.template.spec.serviceAccountName` must be a **dedicated** ServiceAccount (not `default`).
 
 ### 3.3 Operator configuration

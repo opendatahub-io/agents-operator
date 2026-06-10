@@ -40,10 +40,14 @@ This scenario demonstrates the complete lifecycle of an AI agent deployment on t
 ## Overview
 
 ### Kagenti Operator
-The Kagenti Operator discovers, indexes, and secures AI agents deployed in Kubernetes. There are two ways to enroll workloads:
+The Kagenti Operator discovers, indexes, and secures AI agents deployed in Kubernetes. Enroll workloads by creating an `AgentRuntime` CR:
 
-1. **AgentRuntime CR (Recommended)** — Create a Deployment with a `protocol.kagenti.io/a2a` label and an `AgentRuntime` CR pointing to it. The controller applies `kagenti.io/type` labels and triggers sidecar injection automatically. The protocol label enables automatic AgentCard creation for agent discovery.
-2. **Manual labels** — Add the `kagenti.io/type: agent` label directly to your Deployment or StatefulSet. This is simpler for quick tests but does not provide identity or observability configuration.
+1. Create a Deployment with a `protocol.kagenti.io/a2a` label
+2. Create an `AgentRuntime` CR pointing to it
+3. The controller applies `kagenti.io/type` labels and triggers sidecar injection automatically
+4. The protocol label enables automatic AgentCard creation for agent discovery
+
+A `ValidatingAdmissionPolicy` prevents the `kagenti.io/type` label from being set directly on Deployments or StatefulSets — it can only be applied by the operator via an AgentRuntime CR.
 
 > **Note:** The `Agent` Custom Resource is deprecated and will be removed in a future release.
 
@@ -180,86 +184,6 @@ kubectl delete agentruntime weather-agent-runtime -n team1
 
 ---
 
-## Deploy an Agent with Manual Labels (Alternative)
-
-Deploy an agent as a standard Kubernetes Deployment with the required `kagenti.io/type: agent` label. The operator will automatically discover the workload and create an AgentCard for it. This approach does not provide AgentRuntime's identity or observability configuration.
-
-### Quick Example Deployment
-
-```yaml
-kubectl apply -f - <<EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: weather-agent
-  namespace: team1
-  labels:
-    app.kubernetes.io/name: weather-agent
-    kagenti.io/type: agent
-    protocol.kagenti.io/a2a: ""
-    kagenti.io/framework: LangGraph
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: weather-agent
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: weather-agent
-        kagenti.io/type: agent
-    spec:
-      containers:
-      - name: agent
-        image: "ghcr.io/kagenti/agent-examples/weather_service:v0.0.1-alpha.3"
-        ports:
-        - containerPort: 8000
-        imagePullPolicy: Always
-        env:
-        - name: PORT
-          value: "8000"
-        - name: UV_CACHE_DIR
-          value: /app/.cache/uv
-        - name: MCP_URL
-          value: http://weather-tool-mcp.team1.svc.cluster.local:8000/mcp
-        - name: LLM_API_BASE
-          value: http://host.docker.internal:11434/v1
-        - name: LLM_API_KEY
-          value: dummy
-        - name: LLM_MODEL
-          value: llama3.2:3b-instruct-fp16
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: weather-agent
-  namespace: team1
-spec:
-  selector:
-    app.kubernetes.io/name: weather-agent
-  ports:
-  - name: http
-    port: 8000
-    targetPort: 8000
-EOF
-
-```
-
-**Check Status**:
-```bash
-
-# Check discovered agent cards
-kubectl get agentcards -n team1
-
-# Check deployment status
-kubectl get deployment weather-agent -n team1
-
-# View logs
-kubectl logs -l app.kubernetes.io/name=weather-agent -n team1
-```
-
----
-
 ## Deploy an MCP Server
 
 MCP (Model Context Protocol) servers provide tools and resources that your agents can use. Deploy an MCP server after your agent is running.
@@ -273,18 +197,15 @@ metadata:
   name: weather-tool
   labels:
     app.kubernetes.io/name: weather-tool
-    kagenti.io/type: tool
 spec:
   replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: weather-tool
-      kagenti.io/type: tool
   template:
     metadata:
       labels:
         app.kubernetes.io/name: weather-tool
-        kagenti.io/type: tool
     spec:
       containers:
       - name: mcp
@@ -306,6 +227,18 @@ spec:
       - name: cache
         emptyDir: {}
 ---
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: weather-tool
+  namespace: team1
+spec:
+  type: tool
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: weather-tool
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -315,7 +248,6 @@ metadata:
     app.kubernetes.io/name: weather-service
     kagenti.io/framework: LangGraph
     kagenti.io/inject: enabled
-    kagenti.io/type: agent
     kagenti.io/workload-type: deployment
     protocol.kagenti.io/a2a: ""
   name: weather-service

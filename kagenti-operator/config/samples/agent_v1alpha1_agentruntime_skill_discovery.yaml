@@ -29,7 +29,6 @@ metadata:
   name: my-agent
   labels:
     app.kubernetes.io/name: my-agent
-    kagenti.io/type: agent
     protocol.kagenti.io/a2a: ""
   annotations:
     kagenti.io/skills: '["openshift-review"]'
