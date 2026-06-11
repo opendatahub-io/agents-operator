@@ -596,6 +596,37 @@ spec:
       model: qwen2.5:3b
 ```
 
+### Client integration
+
+This proposal covers the **gateway side**: programming the proxy to
+require mTLS, route to LLM backends, and enforce access control. The
+gateway validates client certificates against the SPIFFE trust bundle
+CA and either accepts or rejects the TLS handshake. It does not care
+how the client obtained its certificate.
+
+From the client's perspective, consuming the gateway requires two
+things:
+
+1. **Endpoint** — the gateway's in-cluster Service address
+   (e.g. `https://<gateway-svc>.<ns>.svc:8443`)
+2. **Client certificate** — a valid X.509 SVID from the same trust
+   domain, presented during the TLS handshake
+
+Any workload with a SPIFFE identity can call the gateway. The agent
+code itself doesn't change — it uses the standard OpenAI-compatible
+`/v1/chat/completions` endpoint. How the workload acquires and
+presents its SPIFFE certificate (CSI driver, spiffe-helper sidecar,
+AuthBridge integration, or native go-spiffe) is the client-side
+concern and is out of scope for this proposal.
+
+AuthBridge (agent-to-agent OAuth/OIDC) and the MCP Gateway (MCP
+protocol routing) are orthogonal to AI Gateway (model routing and
+inference access control). They target different traffic flows and
+do not conflict.
+
+Client-side configuration for connecting workloads to AI Gateways
+with SPIFFE identity may be addressed in a separate proposal.
+
 ## Reconciliation
 
 Each policy has its own controller. They run independently, generate
