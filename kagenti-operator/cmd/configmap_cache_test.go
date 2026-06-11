@@ -79,7 +79,7 @@ func TestConfigMapCacheVisibility(t *testing.T) {
 
 	// 4. Build the scoped cache config (function under test) and start a
 	//    manager whose ConfigMap informers are restricted to those selectors.
-	cmCacheNamespaces := buildConfigMapCacheNamespaces(true, spireBundleName, spireNS)
+	cmCacheNamespaces := buildConfigMapCacheNamespaces(true, spireBundleName, spireNS, false, "", "")
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:         clientgoscheme.Scheme,

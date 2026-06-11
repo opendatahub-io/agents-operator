@@ -77,3 +77,25 @@ func NewProvider(config *Config) (Provider, error) {
 		return nil, fmt.Errorf("unknown provider type: %s (only 'x5c' is supported)", config.Type)
 	}
 }
+
+// BundleVerificationResult is the outcome of Sigstore bundle verification on a
+// SignedAgentCard (sigstore-a2a output).
+type BundleVerificationResult struct {
+	Verified bool
+	Details  string
+	// Absent is true when no attestations/signatureBundle was present (plain agent card).
+	// Per RFC, this is a graceful adoption path and must not hard-fail Ready.
+	Absent bool
+
+	Identity       string // Fulcio/OIDC identity (certificate SAN summary)
+	RekorLogIndex  string
+	SLSARepository string
+	SLSACommitSHA  string
+}
+
+// BundleVerifier verifies embedded Sigstore bundles inside SignedAgentCard JSON.
+type BundleVerifier interface {
+	VerifySignedAgentCard(ctx context.Context, signedAgentCardJSON []byte,
+		identityOverride *agentv1alpha1.SigstoreVerification) (*BundleVerificationResult, error)
+	Name() string
+}

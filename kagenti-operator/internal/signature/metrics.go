@@ -46,6 +46,38 @@ var (
 		},
 		[]string{"provider", "error_type"},
 	)
+
+	SigstoreVerificationTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "kagenti_sigstore_verification_total",
+			Help: "Sigstore SignedAgentCard bundle verification attempts",
+		},
+		[]string{"result", "reason"},
+	)
+
+	SigstoreVerificationDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "kagenti_sigstore_verification_duration_seconds",
+			Help:    "Sigstore bundle verification latency",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"provider"},
+	)
+
+	SigstoreTrustedRootAgeSeconds = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "kagenti_sigstore_trusted_root_age_seconds",
+			Help: "Age of the cached Sigstore trusted root material",
+		},
+	)
+
+	SLSAProvenanceVerifiedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "kagenti_slsa_provenance_verified_total",
+			Help: "SLSA provenance bundle observations after Sigstore verify",
+		},
+		[]string{"result"},
+	)
 )
 
 func init() {
@@ -53,6 +85,10 @@ func init() {
 		SignatureVerificationTotal,
 		SignatureVerificationDuration,
 		SignatureVerificationErrors,
+		SigstoreVerificationTotal,
+		SigstoreVerificationDuration,
+		SigstoreTrustedRootAgeSeconds,
+		SLSAProvenanceVerifiedTotal,
 	} {
 		if err := metrics.Registry.Register(c); err != nil {
 			if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
@@ -76,4 +112,20 @@ func RecordVerification(provider string, verified bool, auditMode bool) {
 
 func RecordError(provider string, errorType string) {
 	SignatureVerificationErrors.WithLabelValues(provider, errorType).Inc()
+}
+
+func RecordSigstoreVerification(success bool, reason string) {
+	res := "failure"
+	if success {
+		res = "success"
+	}
+	SigstoreVerificationTotal.WithLabelValues(res, reason).Inc()
+}
+
+func ObserveSigstoreTrustedRootAge(seconds float64) {
+	SigstoreTrustedRootAgeSeconds.Set(seconds)
+}
+
+func RecordSLSAProvenance(result string) {
+	SLSAProvenanceVerifiedTotal.WithLabelValues(result).Inc()
 }

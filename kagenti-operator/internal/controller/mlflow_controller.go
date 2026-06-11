@@ -28,7 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -65,7 +65,7 @@ const (
 type MLflowReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Recorder events.EventRecorder
 
 	// MLflowCAFile is the path to a PEM-encoded CA bundle for verifying the
 	// MLflow gateway TLS certificate. When set, the CA is appended to the
@@ -87,6 +87,7 @@ type MLflowReconciler struct {
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=create;get;list;watch;update
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=create;get;list;watch;update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *MLflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -128,8 +129,8 @@ func (r *MLflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err != nil {
 		logger.Error(err, "Failed to create/get MLflow experiment", "name", experimentName)
 		if r.Recorder != nil {
-			r.Recorder.Eventf(dep, "Warning", "MLflowExperimentFailed",
-				"Failed to create MLflow experiment %q: %v", experimentName, err)
+			r.Recorder.Eventf(dep, nil, corev1.EventTypeWarning, "MLflowExperimentFailed",
+				"CreateExperiment", "Failed to create MLflow experiment %q: %v", experimentName, err)
 		}
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
@@ -153,8 +154,8 @@ func (r *MLflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	if r.Recorder != nil {
-		r.Recorder.Eventf(dep, "Normal", "MLflowConfigured",
-			"Experiment %q (ID: %s) provisioned, RoleBinding created for SA %s",
+		r.Recorder.Eventf(dep, nil, corev1.EventTypeNormal, "MLflowConfigured",
+			"ConfigureMLflow", "Experiment %q (ID: %s) provisioned, RoleBinding created for SA %s",
 			experimentName, experimentID, saName)
 	}
 

@@ -54,6 +54,7 @@ patches:
   target:
     kind: Deployment
 - path: webhook_namespace_selector_patch.yaml
+- path: webhook_selector_patch.yaml
   target:
     kind: MutatingWebhookConfiguration
 

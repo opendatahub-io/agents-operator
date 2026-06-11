@@ -66,8 +66,11 @@ type stubCardFetcher struct {
 	err  error
 }
 
-func (f *stubCardFetcher) Fetch(_ context.Context, _, _, _, _ string) (*agentv1alpha1.AgentCardData, error) {
-	return f.card, f.err
+func (f *stubCardFetcher) Fetch(_ context.Context, _, _, _, _ string) (*agentcard.FetchResult, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &agentcard.FetchResult{CardData: f.card}, nil
 }
 
 type stubAuthenticatedFetcher struct {

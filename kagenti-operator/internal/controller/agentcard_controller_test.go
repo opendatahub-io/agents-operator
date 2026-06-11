@@ -30,7 +30,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -46,11 +46,11 @@ type mockFetcher struct {
 
 func (m *mockFetcher) Fetch(
 	ctx context.Context, protocol, url, _, _ string,
-) (*agentv1alpha1.AgentCardData, error) {
+) (*agentcard.FetchResult, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
-	return m.cardData, nil
+	return &agentcard.FetchResult{CardData: m.cardData}, nil
 }
 
 // capturingProtocolFetcher records the protocol passed to Fetch (for multi-protocol label tests).
@@ -62,18 +62,18 @@ type capturingProtocolFetcher struct {
 
 func (c *capturingProtocolFetcher) Fetch(
 	ctx context.Context, protocol, _, _, _ string,
-) (*agentv1alpha1.AgentCardData, error) {
+) (*agentcard.FetchResult, error) {
 	c.mu.Lock()
 	c.protocol = protocol
 	c.mu.Unlock()
 	if c.cardData != nil {
-		return c.cardData, nil
+		return &agentcard.FetchResult{CardData: c.cardData}, nil
 	}
-	return &agentv1alpha1.AgentCardData{
+	return &agentcard.FetchResult{CardData: &agentv1alpha1.AgentCardData{
 		Name:    "capture",
 		Version: "1.0.0",
 		URL:     "http://0.0.0.0:8000",
-	}, nil
+	}}, nil
 }
 
 func (c *capturingProtocolFetcher) lastProtocol() string {
@@ -1278,7 +1278,7 @@ var _ = Describe("AgentCard Controller — ConfigMap-backed fetch", func() {
 				Name:      deploymentName + agentcard.SignedCardConfigMapSuffix,
 				Namespace: namespace,
 			},
-			Data: map[string]string{agentcard.SignedCardConfigMapKey: string(raw)},
+			Data: map[string]string{agentcard.SignedCardLegacyConfigMapKey: string(raw)},
 		}
 		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
 
@@ -1807,7 +1807,7 @@ var _ = Describe("AgentCard Controller - getSyncPeriod", func() {
 					URL:     "http://deprecation-deploy.default.svc.cluster.local:8000",
 				},
 			}
-			fakeRecorder := record.NewFakeRecorder(10)
+			fakeRecorder := events.NewFakeRecorder(10)
 			reconciler := &AgentCardReconciler{
 				Client:       k8sClient,
 				Scheme:       k8sClient.Scheme(),

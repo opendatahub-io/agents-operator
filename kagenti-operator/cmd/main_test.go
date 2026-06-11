@@ -49,7 +49,7 @@ func TestAuthBridgeWebhooksEnabled(t *testing.T) {
 
 func TestBuildConfigMapCacheNamespaces(t *testing.T) {
 	t.Run("base config always includes cluster defaults and namespace defaults", func(t *testing.T) {
-		result := buildConfigMapCacheNamespaces(false, "", "")
+		result := buildConfigMapCacheNamespaces(false, "", "", false, "", "")
 
 		if _, ok := result[controller.ClusterDefaultsNamespace]; !ok {
 			t.Fatalf("expected entry for %s", controller.ClusterDefaultsNamespace)
@@ -64,7 +64,7 @@ func TestBuildConfigMapCacheNamespaces(t *testing.T) {
 
 	t.Run("adds SPIRE trust bundle namespace when signature verification enabled", func(t *testing.T) {
 		const spireNS = "zero-trust-workload-identity-manager"
-		result := buildConfigMapCacheNamespaces(true, "spire-bundle", spireNS)
+		result := buildConfigMapCacheNamespaces(true, "spire-bundle", spireNS, false, "", "")
 
 		spireCfg, ok := result[spireNS]
 		if !ok {
@@ -86,7 +86,7 @@ func TestBuildConfigMapCacheNamespaces(t *testing.T) {
 
 	t.Run("does not add SPIRE entry when flag is false", func(t *testing.T) {
 		const spireNS = "zero-trust-workload-identity-manager"
-		result := buildConfigMapCacheNamespaces(false, "spire-bundle", spireNS)
+		result := buildConfigMapCacheNamespaces(false, "spire-bundle", spireNS, false, "", "")
 
 		if _, ok := result[spireNS]; ok {
 			t.Fatal("expected no SPIRE entry when requireA2ASignature is false")
@@ -97,7 +97,7 @@ func TestBuildConfigMapCacheNamespaces(t *testing.T) {
 	})
 
 	t.Run("does not add SPIRE entry when namespace is empty", func(t *testing.T) {
-		result := buildConfigMapCacheNamespaces(true, "spire-bundle", "")
+		result := buildConfigMapCacheNamespaces(true, "spire-bundle", "", false, "", "")
 
 		if len(result) != 2 {
 			t.Fatalf("expected 2 entries, got %d", len(result))
@@ -105,7 +105,7 @@ func TestBuildConfigMapCacheNamespaces(t *testing.T) {
 	})
 
 	t.Run("namespace collision preserves existing label selector", func(t *testing.T) {
-		result := buildConfigMapCacheNamespaces(true, "spire-bundle", controller.ClusterDefaultsNamespace)
+		result := buildConfigMapCacheNamespaces(true, "spire-bundle", controller.ClusterDefaultsNamespace, false, "", "")
 
 		cfg := result[controller.ClusterDefaultsNamespace]
 		if cfg.LabelSelector == nil {

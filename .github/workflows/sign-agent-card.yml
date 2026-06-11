@@ -1,0 +1,97 @@
+name: Sign AgentCard with Sigstore
+
+on:
+  workflow_dispatch:  # Manual trigger for demo
+  push:
+    branches: ['**']  # Any branch (for demo purposes)
+    paths:
+      - 'demo/sigstore/unsigned-agent-card.json'
+
+permissions:
+  id-token: write   # Required for OIDC token (keyless signing)
+  contents: read
+  actions: read
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+      
+      - name: Create canonical AgentCard JSON
+        run: |
+          # Remove signatures field and sort keys for canonical form
+          jq -S 'del(.signatures)' demo/sigstore/unsigned-agent-card.json > canonical-card.json
+          echo "=== Canonical AgentCard JSON ==="
+          cat canonical-card.json
+      
+      - name: Sign with Sigstore (keyless)
+        run: |
+          echo "=== Signing with Sigstore (keyless via GitHub OIDC) ==="
+          cosign sign-blob \
+            --yes \
+            --output-signature signature.sig \
+            --output-certificate certificate.pem \
+            canonical-card.json
+          
+          echo ""
+          echo "=== Fulcio Certificate ==="
+          openssl x509 -in certificate.pem -text -noout | head -30
+      
+      - name: Assemble signed AgentCard
+        run: |
+          echo "=== Assembling Signed AgentCard ==="
+          
+          # Create base64url-encoded protected header
+          PROTECTED=$(echo -n '{"alg":"ES256","typ":"JWT"}' | base64 -w0 | tr '+/' '-_' | tr -d '=')
+          
+          # Read signature and convert to base64url
+          SIGNATURE=$(cat signature.sig | tr '+/' '-_' | tr -d '=' | tr -d '\n')
+          
+          # Convert certificate to base64 DER for x5c
+          X5C=$(openssl x509 -in certificate.pem -outform DER | base64 -w0)
+          
+          # Get current timestamp
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          
+          # For now use a placeholder index (cosign doesn't easily expose this)
+          # The actual index can be found in Rekor after the fact
+          INDEX=0
+          
+          # Assemble the signed card
+          jq --arg protected "$PROTECTED" \
+             --arg signature "$SIGNATURE" \
+             --arg x5c "$X5C" \
+             --argjson rekor_index "$INDEX" \
+             --arg timestamp "$TIMESTAMP" \
+             '. + {signatures: [{protected: $protected, signature: $signature, header: {x5c: [$x5c], rekor_log_index: $rekor_index, timestamp: $timestamp}}]}' \
+             demo/sigstore/unsigned-agent-card.json > signed-agent-card.json
+          
+          echo ""
+          echo "=== Signed AgentCard ==="
+          cat signed-agent-card.json | jq .
+      
+      - name: Upload signed card as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-weather-agent-card
+          path: |
+            signed-agent-card.json
+            certificate.pem
+            signature.sig
+          retention-days: 30
+      
+      - name: Summary
+        run: |
+          echo "## Sigstore Signing Complete! :white_check_mark:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**AgentCard:** WeatherAgent v1.0.0" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. Download the \`signed-weather-agent-card\` artifact" >> $GITHUB_STEP_SUMMARY
+          echo "2. Deploy to your Kubernetes cluster with kagenti-operator" >> $GITHUB_STEP_SUMMARY
+          echo "3. The operator will verify the Sigstore signature" >> $GITHUB_STEP_SUMMARY

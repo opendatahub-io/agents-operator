@@ -89,6 +89,30 @@ spec:
             - "--credential-wait-timeout={{ .Values.authbridgeConfig.credentialWaitTimeout }}"
             {{- end }}
             {{- end }}
+            {{- if .Values.sigstore.cardVerification.enabled }}
+            - "--enable-sigstore-verification=true"
+            {{- if .Values.sigstore.cardVerification.auditMode }}
+            - "--sigstore-audit-mode=true"
+            {{- end }}
+            {{- if .Values.sigstore.cardVerification.certificateIdentity }}
+            - "--sigstore-certificate-identity={{ .Values.sigstore.cardVerification.certificateIdentity }}"
+            {{- end }}
+            {{- if .Values.sigstore.cardVerification.certificateOIDCIssuer }}
+            - "--sigstore-certificate-oidc-issuer={{ .Values.sigstore.cardVerification.certificateOIDCIssuer }}"
+            {{- end }}
+            {{- if .Values.sigstore.cardVerification.staging }}
+            - "--sigstore-staging=true"
+            {{- end }}
+            {{- if .Values.sigstore.cardVerification.trustedRoot.configMapName }}
+            - "--sigstore-trusted-root-configmap={{ .Values.sigstore.cardVerification.trustedRoot.configMapName }}"
+            {{- end }}
+            {{- if .Values.sigstore.cardVerification.trustedRoot.configMapNamespace }}
+            - "--sigstore-trusted-root-configmap-namespace={{ .Values.sigstore.cardVerification.trustedRoot.configMapNamespace }}"
+            {{- end }}
+            {{- if .Values.sigstore.cardVerification.trustedRoot.configMapKey }}
+            - "--sigstore-trusted-root-configmap-key={{ .Values.sigstore.cardVerification.trustedRoot.configMapKey }}"
+            {{- end }}
+            {{- end }}
           command:
             - {{ .Values.controllerManager.container.cmd }}
           image: {{ .Values.controllerManager.container.image.repository }}:{{ .Values.controllerManager.container.image.tag }}

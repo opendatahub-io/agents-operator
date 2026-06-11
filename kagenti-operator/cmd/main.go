@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -202,6 +203,32 @@ func main() {
 	flag.BoolVar(&enableAuthbridgeConfig, "enable-authbridge-config", true,
 		"Reconcile authbridge-config ConfigMap in namespaces labeled kagenti-enabled=true")
 
+	var enableSigstoreVerification bool
+	var sigstoreAuditMode bool
+	var sigstoreCertificateIdentity string
+	var sigstoreCertificateOIDCIssuer string
+	var sigstoreTrustedRootConfigMap string
+	var sigstoreTrustedRootConfigMapNamespace string
+	var sigstoreTrustedRootConfigMapKey string
+	var sigstoreStaging bool
+
+	flag.BoolVar(&enableSigstoreVerification, "enable-sigstore-verification", false,
+		"Enable SignedAgentCard (sigstore-a2a) bundle verification")
+	flag.BoolVar(&sigstoreAuditMode, "sigstore-audit-mode", false,
+		"When true, log Sigstore bundle verification failures but do not block reconciliation")
+	flag.StringVar(&sigstoreCertificateIdentity, "sigstore-certificate-identity", "",
+		"Expected Fulcio certificate identity (SAN), e.g. GitHub workflow identity")
+	flag.StringVar(&sigstoreCertificateOIDCIssuer, "sigstore-certificate-oidc-issuer", "",
+		"Expected OIDC issuer for Fulcio (e.g. https://token.actions.githubusercontent.com)")
+	flag.StringVar(&sigstoreTrustedRootConfigMap, "sigstore-trusted-root-configmap", "",
+		"Optional ConfigMap name containing Sigstore trusted_root.json for private deployments")
+	flag.StringVar(&sigstoreTrustedRootConfigMapNamespace, "sigstore-trusted-root-configmap-namespace", "",
+		"Namespace of the Sigstore trusted root ConfigMap")
+	flag.StringVar(&sigstoreTrustedRootConfigMapKey, "sigstore-trusted-root-configmap-key", "trusted-root.json",
+		"Key within the trusted root ConfigMap")
+	flag.BoolVar(&sigstoreStaging, "sigstore-staging", false,
+		"Use Sigstore staging TUF mirror (for cards signed against staging infrastructure)")
+
 	opts := zap.Options{
 		Development: false,
 	}
@@ -320,6 +347,7 @@ func main() {
 
 	cmCacheNamespaces := buildConfigMapCacheNamespaces(
 		requireA2ASignature, spireTrustBundleConfigMapName, spireTrustBundleConfigMapNS,
+		enableSigstoreVerification, sigstoreTrustedRootConfigMap, sigstoreTrustedRootConfigMapNamespace,
 	)
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
@@ -416,6 +444,7 @@ func main() {
 			"auditMode", signatureAuditMode)
 	}
 
+	// Feature 1: Setup authenticated fetcher for verified fetch (mTLS via SPIFFE)
 	agentFetcher := agentcard.NewConfigMapFetcher(mgr.GetAPIReader())
 
 	var authenticatedFetcher agentcard.AuthenticatedFetcher
@@ -453,21 +482,80 @@ func main() {
 		}
 	}
 
-	agentCardReconciler := &controller.AgentCardReconciler{
-		Client:                mgr.GetClient(),
-		Scheme:                mgr.GetScheme(),
-		Recorder:              mgr.GetEventRecorderFor("agentcard-controller"),
-		AgentFetcher:          agentFetcher,
-		AuthenticatedFetcher:  authenticatedFetcher,
-		EnableVerifiedFetch:   enableVerifiedFetch,
-		SignatureProvider:     sigProvider,
-		RequireSignature:      requireA2ASignature,
-		SignatureAuditMode:    signatureAuditMode,
-		SpireTrustDomain:      spireTrustDomain,
-		SVIDExpiryGracePeriod: svidExpiryGracePeriod,
+	// Feature 2: Setup Sigstore bundle verifier for SignedAgentCard verification
+	var bundleVerifier signature.BundleVerifier
+	if enableSigstoreVerification {
+		if sigstoreCertificateIdentity == "" || sigstoreCertificateOIDCIssuer == "" {
+			setupLog.Error(errors.New("missing required flags"),
+				"--sigstore-certificate-identity and --sigstore-certificate-oidc-issuer "+
+					"are required when --enable-sigstore-verification=true")
+			os.Exit(1)
+		}
+		var trustedRootJSON []byte
+		if sigstoreTrustedRootConfigMap != "" {
+			if sigstoreTrustedRootConfigMapNamespace == "" {
+				setupLog.Error(errors.New("missing namespace"),
+					"--sigstore-trusted-root-configmap-namespace is required "+
+						"when using --sigstore-trusted-root-configmap")
+				os.Exit(1)
+			}
+			bootstrapClient, cliErr := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
+			if cliErr != nil {
+				setupLog.Error(cliErr, "unable to create client for Sigstore trusted root ConfigMap")
+				os.Exit(1)
+			}
+			readCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			var cm corev1.ConfigMap
+			if err := bootstrapClient.Get(readCtx, types.NamespacedName{
+				Namespace: sigstoreTrustedRootConfigMapNamespace,
+				Name:      sigstoreTrustedRootConfigMap,
+			}, &cm); err != nil {
+				setupLog.Error(err, "failed to read Sigstore trusted root ConfigMap")
+				os.Exit(1)
+			}
+			raw := cm.Data[sigstoreTrustedRootConfigMapKey]
+			if raw == "" {
+				setupLog.Error(errors.New("empty ConfigMap data"),
+					"Sigstore trusted root ConfigMap missing key", "key", sigstoreTrustedRootConfigMapKey)
+				os.Exit(1)
+			}
+			trustedRootJSON = []byte(raw)
+		}
+		sigCfg := &signature.SigstoreConfig{
+			TrustedRootJSON:     trustedRootJSON,
+			UseStagingTUF:       sigstoreStaging,
+			OIDCIssuer:          sigstoreCertificateOIDCIssuer,
+			CertificateIdentity: sigstoreCertificateIdentity,
+		}
+		var bvErr error
+		bundleVerifier, bvErr = signature.NewSigstoreProvider(sigCfg)
+		if bvErr != nil {
+			setupLog.Error(bvErr, "unable to create Sigstore bundle verifier")
+			os.Exit(1)
+		}
+		setupLog.Info("Sigstore SignedAgentCard verification enabled",
+			"auditMode", sigstoreAuditMode,
+			"stagingTUF", sigstoreStaging,
+			"customTrustedRoot", len(trustedRootJSON) > 0)
 	}
 
-	if err = agentCardReconciler.SetupWithManager(mgr); err != nil {
+	if err = (&controller.AgentCardReconciler{
+		Client:                     mgr.GetClient(),
+		Scheme:                     mgr.GetScheme(),
+		Recorder:                   mgr.GetEventRecorder("agentcard-controller"),
+		AgentFetcher:               agentFetcher,
+		AuthenticatedFetcher:       authenticatedFetcher,
+		EnableVerifiedFetch:        enableVerifiedFetch,
+		SignatureProvider:          sigProvider,
+		RequireSignature:           requireA2ASignature,
+		SignatureAuditMode:         signatureAuditMode,
+		BundleVerifier:             bundleVerifier,
+		EnableSigstoreVerification: enableSigstoreVerification,
+		SigstoreAuditMode:          sigstoreAuditMode,
+		SpireTrustDomain:           spireTrustDomain,
+		SVIDExpiryGracePeriod:      svidExpiryGracePeriod,
+	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AgentCard")
 		os.Exit(1)
 	}
@@ -510,7 +598,7 @@ func main() {
 		Client:              mgr.GetClient(),
 		APIReader:           mgr.GetAPIReader(),
 		Scheme:              mgr.GetScheme(),
-		Recorder:            mgr.GetEventRecorderFor("agentruntime-controller"),
+		Recorder:            mgr.GetEventRecorder("agentruntime-controller"),
 		EnableCardDiscovery: enableCardDiscovery,
 		SpireTrustDomain:    spireTrustDomain,
 		GetFeatureGates:     featureGateLoader.Get,
@@ -532,7 +620,7 @@ func main() {
 		if err = (&controller.MLflowReconciler{
 			Client:       mgr.GetClient(),
 			Scheme:       mgr.GetScheme(),
-			Recorder:     mgr.GetEventRecorderFor("mlflow-controller"), //nolint:staticcheck
+			Recorder:     mgr.GetEventRecorder("mlflow-controller"),
 			MLflowCAFile: mlflowCAFile,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "MLflow")
@@ -605,13 +693,18 @@ func main() {
 		}
 	}
 
-	if err = webhookv1alpha1.SetupAgentCardWebhookWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create webhook", "webhook", "AgentCard")
-		os.Exit(1)
-	}
-	if err = webhookv1alpha1.SetupAgentRuntimeWebhookWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create webhook", "webhook", "AgentRuntime")
-		os.Exit(1)
+	// Validation webhooks
+	// For local testing without webhook certificates, set ENABLE_WEBHOOKS=false:
+	//   ENABLE_WEBHOOKS=false ./bin/manager --leader-elect=false [other flags...]
+	if authBridgeWebhooksEnabled() {
+		if err = webhookv1alpha1.SetupAgentCardWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "AgentCard")
+			os.Exit(1)
+		}
+		if err = webhookv1alpha1.SetupAgentRuntimeWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "AgentRuntime")
+			os.Exit(1)
+		}
 	}
 
 	// AuthBridge sidecar injection webhook
@@ -747,6 +840,7 @@ func getNamespacesToWatch() map[string]cache.Config {
 //     signature verification is enabled.
 func buildConfigMapCacheNamespaces(
 	requireA2ASignature bool, spireTrustBundleConfigMapName, spireTrustBundleConfigMapNS string,
+	enableSigstoreVerification bool, sigstoreTrustedRootCM, sigstoreTrustedRootCMNS string,
 ) map[string]cache.Config {
 	namespaces := map[string]cache.Config{
 		controller.ClusterDefaultsNamespace: {
@@ -774,6 +868,21 @@ func buildConfigMapCacheNamespaces(
 			namespaces[spireTrustBundleConfigMapNS] = cache.Config{
 				FieldSelector: fields.SelectorFromSet(fields.Set{
 					"metadata.name": spireTrustBundleConfigMapName,
+				}),
+			}
+		}
+	}
+	if enableSigstoreVerification && sigstoreTrustedRootCM != "" && sigstoreTrustedRootCMNS != "" {
+		if _, collision := namespaces[sigstoreTrustedRootCMNS]; collision {
+			setupLog.Error(
+				errors.New("namespace collision: --sigstore-trusted-root-configmap-namespace overlaps an existing cache rule"),
+				"Sigstore trusted root ConfigMap may not be watched efficiently",
+				"namespace", sigstoreTrustedRootCMNS,
+			)
+		} else {
+			namespaces[sigstoreTrustedRootCMNS] = cache.Config{
+				FieldSelector: fields.SelectorFromSet(fields.Set{
+					"metadata.name": sigstoreTrustedRootCM,
 				}),
 			}
 		}

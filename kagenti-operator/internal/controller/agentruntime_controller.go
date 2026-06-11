@@ -38,7 +38,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -94,7 +94,7 @@ var sandboxGVK = schema.GroupVersionKind{
 type AgentRuntimeReconciler struct {
 	client.Client
 	Scheme    *runtime.Scheme
-	Recorder  record.EventRecorder
+	Recorder  events.EventRecorder
 	APIReader client.Reader // uncached reader for cross-namespace ConfigMap reads
 
 	AgentFetcher         agentcard.Fetcher
@@ -122,7 +122,7 @@ func (r *AgentRuntimeReconciler) getFeatureGates() *webhookconfig.FeatureGates {
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=operator.openshift.io,resources=networks,verbs=get
 
 func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -157,7 +157,8 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		logger.Error(err, "Failed to resolve targetRef")
 		r.updateErrorStatus(ctx, req.NamespacedName, ConditionTypeTargetResolved, "TargetNotFound", err.Error())
 		if r.Recorder != nil {
-			r.Recorder.Event(rt, corev1.EventTypeWarning, "TargetNotFound", err.Error())
+			r.Recorder.Eventf(rt, nil, corev1.EventTypeWarning, "TargetNotFound",
+				"ResolveTarget", err.Error())
 		}
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
@@ -178,7 +179,8 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.ensureNamespaceConfigMaps(ctx, rt.Namespace); err != nil {
 		logger.Error(err, "Failed to ensure namespace ConfigMaps")
 		if r.Recorder != nil {
-			r.Recorder.Event(rt, corev1.EventTypeWarning, "ConfigMapEnsureError", err.Error())
+			r.Recorder.Eventf(rt, nil, corev1.EventTypeWarning, "ConfigMapEnsureError",
+				"EnsureConfigMaps", err.Error())
 		}
 	}
 
@@ -189,14 +191,15 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		logger.Error(istioErr, "Failed to ensure Istio mesh labels")
 		r.setCondition(rt, ConditionTypeIstioMeshEnrolled, metav1.ConditionFalse, "PatchFailed", istioErr.Error())
 		if r.Recorder != nil {
-			r.Recorder.Event(rt, corev1.EventTypeWarning, "IstioMeshLabelError", istioErr.Error())
+			r.Recorder.Eventf(rt, nil, corev1.EventTypeWarning, "IstioMeshLabelError",
+				"EnsureIstioMesh", istioErr.Error())
 		}
 	case istioLabeled:
 		r.setCondition(rt, ConditionTypeIstioMeshEnrolled, metav1.ConditionTrue, "NamespaceLabeled",
 			fmt.Sprintf("Namespace %s enrolled in Istio ambient mesh", rt.Namespace))
 		if r.Recorder != nil {
-			r.Recorder.Event(rt, corev1.EventTypeNormal, "IstioMeshEnrolled",
-				fmt.Sprintf("Namespace %s labeled for Istio ambient mesh", rt.Namespace))
+			r.Recorder.Eventf(rt, nil, corev1.EventTypeNormal, "IstioMeshEnrolled",
+				"EnsureIstioMesh", "Namespace %s labeled for Istio ambient mesh", rt.Namespace)
 		}
 	default:
 		r.setCondition(rt, ConditionTypeIstioMeshEnrolled, metav1.ConditionFalse, "OptedOut",
@@ -211,7 +214,8 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.ensureNamespaceSCCBinding(ctx, rt.Namespace); err != nil {
 		logger.Error(err, "Failed to ensure SCC RoleBinding")
 		if r.Recorder != nil {
-			r.Recorder.Event(rt, corev1.EventTypeWarning, "SCCBindingError", err.Error())
+			r.Recorder.Eventf(rt, nil, corev1.EventTypeWarning, "SCCBindingError",
+				"EnsureSCCBinding", err.Error())
 		}
 		r.updateErrorStatus(ctx, req.NamespacedName, ConditionTypeReady, "SCCBindingError", err.Error())
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -231,7 +235,8 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			strings.Join(configResult.Warnings, "; "))
 		if r.Recorder != nil {
 			for _, w := range configResult.Warnings {
-				r.Recorder.Event(rt, corev1.EventTypeWarning, "ConfigWarning", w)
+				r.Recorder.Eventf(rt, nil, corev1.EventTypeWarning, "ConfigWarning",
+					"ResolveConfig", w)
 			}
 		}
 	} else {
@@ -284,8 +289,8 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	if r.Recorder != nil {
-		r.Recorder.Event(rt, corev1.EventTypeNormal, "Configured",
-			fmt.Sprintf("Applied config to %s %s", rt.Spec.TargetRef.Kind, rt.Spec.TargetRef.Name))
+		r.Recorder.Eventf(rt, nil, corev1.EventTypeNormal, "Configured",
+			"ApplyConfig", "Applied config to %s %s", rt.Spec.TargetRef.Kind, rt.Spec.TargetRef.Name)
 	}
 
 	return ctrl.Result{}, nil
@@ -474,8 +479,8 @@ func (r *AgentRuntimeReconciler) completeSandboxRestart(ctx context.Context, rt 
 	}
 
 	if r.Recorder != nil {
-		r.Recorder.Event(rt, corev1.EventTypeNormal, "SandboxRestarted",
-			fmt.Sprintf("Sandbox %s restarted via scale 0→1", ref.Name))
+		r.Recorder.Eventf(rt, nil, corev1.EventTypeNormal, "SandboxRestarted",
+			"RestartSandbox", "Sandbox %s restarted via scale 0→1", ref.Name)
 	}
 
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, true, nil
@@ -534,8 +539,8 @@ func (r *AgentRuntimeReconciler) readLinkedSkills(ctx context.Context, rt *agent
 	if err := json.Unmarshal([]byte(raw), &skills); err != nil {
 		logger.V(1).Info("Failed to parse kagenti.io/skills annotation", "error", err, "raw", raw)
 		if r.Recorder != nil {
-			r.Recorder.Event(rt, corev1.EventTypeWarning, "SkillAnnotationParseError",
-				fmt.Sprintf("Failed to parse kagenti.io/skills annotation: %v", err))
+			r.Recorder.Eventf(rt, nil, corev1.EventTypeWarning, "SkillAnnotationParseError",
+				"ReadLinkedSkills", "Failed to parse kagenti.io/skills annotation: %v", err)
 		}
 		return nil
 	}
@@ -912,8 +917,8 @@ func (r *AgentRuntimeReconciler) fetchCard(
 		logger.Info("TLS port not found, falling back to HTTP fetch",
 			"service", svc.Name, "expectedPortName", AgentTLSPortName)
 		if r.Recorder != nil {
-			r.Recorder.Event(rt, corev1.EventTypeWarning, "FallbackToHTTP",
-				fmt.Sprintf("Service %s has no %s port; fetch is unverified", svc.Name, AgentTLSPortName))
+			r.Recorder.Eventf(rt, nil, corev1.EventTypeWarning, "FallbackToHTTP", "FetchCard",
+				"Service %s has no %s port; fetch is unverified", svc.Name, AgentTLSPortName)
 		}
 	}
 
@@ -922,14 +927,14 @@ func (r *AgentRuntimeReconciler) fetchCard(
 	}
 
 	serviceURL := agentcard.GetServiceURL(svc.Name, rt.Namespace, port)
-	cardData, err := r.AgentFetcher.Fetch(ctx, protocol, serviceURL, ref.Name, rt.Namespace)
+	fetchResult, err := r.AgentFetcher.Fetch(ctx, protocol, serviceURL, ref.Name, rt.Namespace)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("fetch failed for %s: %w", ref.Name, err)
 	}
-	if cardData == nil {
+	if fetchResult.CardData == nil {
 		return nil, nil, "", fmt.Errorf("fetch returned nil card data for %s", ref.Name)
 	}
-	return cardData, nil, agentv1alpha1.TransportSecurityHTTP, nil
+	return fetchResult.CardData, fetchResult, agentv1alpha1.TransportSecurityHTTP, nil
 }
 
 // workloadChangeKey returns a string that changes when the workload's pod

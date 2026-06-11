@@ -45,8 +45,8 @@ func TestDefaultFetcher_SuccessfulA2ACardFetch(t *testing.T) {
 
 	result, err := NewFetcher().Fetch(context.Background(), A2AProtocol, server.URL, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.Name).To(Equal("test-agent"))
-	g.Expect(result.Version).To(Equal("1.0"))
+	g.Expect(result.CardData.Name).To(Equal("test-agent"))
+	g.Expect(result.CardData.Version).To(Equal("1.0"))
 }
 
 func TestFetchA2ACard_LegacyFallback(t *testing.T) {
@@ -61,9 +61,9 @@ func TestFetchA2ACard_LegacyFallback(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	card, err := NewFetcher().Fetch(context.Background(), A2AProtocol, srv.URL, "", "")
+	result, err := NewFetcher().Fetch(context.Background(), A2AProtocol, srv.URL, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(card.Name).To(Equal("test-agent"))
+	g.Expect(result.CardData.Name).To(Equal("test-agent"))
 }
 
 func TestFetchA2ACard_BothNotFound(t *testing.T) {
@@ -140,9 +140,9 @@ func TestFetchA2ACard_WithProviderField(t *testing.T) {
 
 	result, err := NewFetcher().Fetch(context.Background(), A2AProtocol, server.URL, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.Provider).NotTo(BeNil())
-	g.Expect(result.Provider.Organization).To(Equal("ACME Corp"))
-	g.Expect(result.Provider.URL).To(Equal("https://acme.example.com"))
+	g.Expect(result.CardData.Provider).NotTo(BeNil())
+	g.Expect(result.CardData.Provider.Organization).To(Equal("ACME Corp"))
+	g.Expect(result.CardData.Provider.URL).To(Equal("https://acme.example.com"))
 }
 
 func TestFetchA2ACard_WithDocAndIconURLs(t *testing.T) {
@@ -162,8 +162,8 @@ func TestFetchA2ACard_WithDocAndIconURLs(t *testing.T) {
 
 	result, err := NewFetcher().Fetch(context.Background(), A2AProtocol, server.URL, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.DocumentationURL).To(Equal("https://docs.example.com"))
-	g.Expect(result.IconURL).To(Equal("https://example.com/icon.png"))
+	g.Expect(result.CardData.DocumentationURL).To(Equal("https://docs.example.com"))
+	g.Expect(result.CardData.IconURL).To(Equal("https://example.com/icon.png"))
 }
 
 func TestFetchA2ACard_WithExtensions(t *testing.T) {
@@ -192,9 +192,9 @@ func TestFetchA2ACard_WithExtensions(t *testing.T) {
 
 	result, err := NewFetcher().Fetch(context.Background(), A2AProtocol, server.URL, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.Capabilities).NotTo(BeNil())
-	g.Expect(result.Capabilities.Extensions).To(HaveLen(1))
-	ext := result.Capabilities.Extensions[0]
+	g.Expect(result.CardData.Capabilities).NotTo(BeNil())
+	g.Expect(result.CardData.Capabilities.Extensions).To(HaveLen(1))
+	ext := result.CardData.Capabilities.Extensions[0]
 	g.Expect(ext.URI).To(Equal("urn:ext:logging"))
 	g.Expect(ext.Description).To(Equal("Logging extension"))
 	g.Expect(*ext.Required).To(BeTrue())
@@ -250,44 +250,44 @@ func TestFetchA2ACard_FullA2ACompatibility(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Core fields
-	g.Expect(result.Name).To(Equal("full-agent"))
-	g.Expect(result.Description).To(Equal("A fully compatible A2A agent"))
-	g.Expect(result.Version).To(Equal("3.0"))
-	g.Expect(result.URL).To(Equal("http://example.com/agent"))
+	g.Expect(result.CardData.Name).To(Equal("full-agent"))
+	g.Expect(result.CardData.Description).To(Equal("A fully compatible A2A agent"))
+	g.Expect(result.CardData.Version).To(Equal("3.0"))
+	g.Expect(result.CardData.URL).To(Equal("http://example.com/agent"))
 
 	// New fields
-	g.Expect(result.DocumentationURL).To(Equal("https://docs.example.com/full-agent"))
-	g.Expect(result.IconURL).To(Equal("https://example.com/full-agent/icon.png"))
+	g.Expect(result.CardData.DocumentationURL).To(Equal("https://docs.example.com/full-agent"))
+	g.Expect(result.CardData.IconURL).To(Equal("https://example.com/full-agent/icon.png"))
 
 	// Provider
-	g.Expect(result.Provider).NotTo(BeNil())
-	g.Expect(result.Provider.Organization).To(Equal("Full Corp"))
-	g.Expect(result.Provider.URL).To(Equal("https://fullcorp.example.com"))
+	g.Expect(result.CardData.Provider).NotTo(BeNil())
+	g.Expect(result.CardData.Provider.Organization).To(Equal("Full Corp"))
+	g.Expect(result.CardData.Provider.URL).To(Equal("https://fullcorp.example.com"))
 
 	// Capabilities + extensions
-	g.Expect(result.Capabilities).NotTo(BeNil())
-	g.Expect(*result.Capabilities.Streaming).To(BeTrue())
-	g.Expect(*result.Capabilities.PushNotifications).To(BeFalse())
-	g.Expect(result.Capabilities.Extensions).To(HaveLen(2))
+	g.Expect(result.CardData.Capabilities).NotTo(BeNil())
+	g.Expect(*result.CardData.Capabilities.Streaming).To(BeTrue())
+	g.Expect(*result.CardData.Capabilities.PushNotifications).To(BeFalse())
+	g.Expect(result.CardData.Capabilities.Extensions).To(HaveLen(2))
 
-	audit := result.Capabilities.Extensions[0]
+	audit := result.CardData.Capabilities.Extensions[0]
 	g.Expect(audit.URI).To(Equal("urn:ext:audit"))
 	g.Expect(audit.Description).To(Equal("Audit trail"))
 	g.Expect(*audit.Required).To(BeFalse())
 	g.Expect(audit.Params).To(HaveKeyWithValue("retention", apiextensionsv1.JSON{Raw: json.RawMessage(`"30d"`)}))
 
-	metrics := result.Capabilities.Extensions[1]
+	metrics := result.CardData.Capabilities.Extensions[1]
 	g.Expect(metrics.URI).To(Equal("urn:ext:metrics"))
 	g.Expect(metrics.Description).To(Equal("Metrics collection"))
 	g.Expect(metrics.Required).To(BeNil())
 	g.Expect(metrics.Params).To(BeEmpty())
 
 	// Existing fields still work
-	g.Expect(result.DefaultInputModes).To(Equal([]string{"text", "application/json"}))
-	g.Expect(result.DefaultOutputModes).To(Equal([]string{"text"}))
-	g.Expect(result.Skills).To(HaveLen(1))
-	g.Expect(result.Skills[0].Name).To(Equal("summarize"))
-	g.Expect(*result.SupportsAuthenticatedExtendedCard).To(BeTrue())
+	g.Expect(result.CardData.DefaultInputModes).To(Equal([]string{"text", "application/json"}))
+	g.Expect(result.CardData.DefaultOutputModes).To(Equal([]string{"text"}))
+	g.Expect(result.CardData.Skills).To(HaveLen(1))
+	g.Expect(result.CardData.Skills[0].Name).To(Equal("summarize"))
+	g.Expect(*result.CardData.SupportsAuthenticatedExtendedCard).To(BeTrue())
 }
 
 func TestConfigMapFetcher_ConfigMapFound(t *testing.T) {
@@ -298,7 +298,7 @@ func TestConfigMapFetcher_ConfigMapFound(t *testing.T) {
 			Namespace: "test-ns",
 		},
 		Data: map[string]string{
-			SignedCardConfigMapKey: testAgentCardJSON,
+			SignedCardLegacyConfigMapKey: testAgentCardJSON,
 		},
 	}
 
@@ -308,10 +308,10 @@ func TestConfigMapFetcher_ConfigMapFound(t *testing.T) {
 		Build()
 	fetcher := NewConfigMapFetcher(fakeClient)
 
-	card, err := fetcher.Fetch(context.Background(), A2AProtocol, "", "my-agent", "test-ns")
+	res, err := fetcher.Fetch(context.Background(), A2AProtocol, "", "my-agent", "test-ns")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(card.Name).To(Equal("test-agent"))
-	g.Expect(card.Version).To(Equal("1.0"))
+	g.Expect(res.CardData.Name).To(Equal("test-agent"))
+	g.Expect(res.CardData.Version).To(Equal("1.0"))
 }
 
 func TestConfigMapFetcher_ConfigMapNotFound(t *testing.T) {
@@ -331,9 +331,9 @@ func TestConfigMapFetcher_ConfigMapNotFound(t *testing.T) {
 		Build()
 	fetcher := NewConfigMapFetcher(fakeClient)
 
-	card, err := fetcher.Fetch(context.Background(), A2AProtocol, srv.URL, "no-such-agent", "test-ns")
+	res, err := fetcher.Fetch(context.Background(), A2AProtocol, srv.URL, "no-such-agent", "test-ns")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(card.Name).To(Equal("test-agent"))
+	g.Expect(res.CardData.Name).To(Equal("test-agent"))
 }
 
 func TestConfigMapFetcher_MissingKey(t *testing.T) {
@@ -362,9 +362,9 @@ func TestConfigMapFetcher_MissingKey(t *testing.T) {
 		Build()
 	fetcher := NewConfigMapFetcher(fakeClient)
 
-	card, err := fetcher.Fetch(context.Background(), A2AProtocol, srv.URL, "empty-agent", "test-ns")
+	res, err := fetcher.Fetch(context.Background(), A2AProtocol, srv.URL, "empty-agent", "test-ns")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(card.Name).To(Equal("test-agent"))
+	g.Expect(res.CardData.Name).To(Equal("test-agent"))
 }
 
 func TestConfigMapFetcher_InvalidJSON(t *testing.T) {
@@ -375,7 +375,7 @@ func TestConfigMapFetcher_InvalidJSON(t *testing.T) {
 			Namespace: "test-ns",
 		},
 		Data: map[string]string{
-			SignedCardConfigMapKey: "not valid json{{{",
+			SignedCardLegacyConfigMapKey: "not valid json{{{",
 		},
 	}
 
@@ -395,7 +395,7 @@ func TestConfigMapFetcher_InvalidJSON(t *testing.T) {
 		Build()
 	fetcher := NewConfigMapFetcher(fakeClient)
 
-	card, err := fetcher.Fetch(context.Background(), A2AProtocol, srv.URL, "bad-agent", "test-ns")
+	res, err := fetcher.Fetch(context.Background(), A2AProtocol, srv.URL, "bad-agent", "test-ns")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(card.Name).To(Equal("test-agent"))
+	g.Expect(res.CardData.Name).To(Equal("test-agent"))
 }

@@ -38,6 +38,10 @@ spec:
       jsonPath: .status.conditions[?(@.type=='Verified')].status
       name: Verified
       type: string
+    - description: Sigstore Bundle Verified
+      jsonPath: .status.sigstoreBundleVerified
+      name: Sigstore
+      type: boolean
     - description: Identity Bound
       jsonPath: .status.bindingStatus.bound
       name: Bound
@@ -103,6 +107,21 @@ spec:
                       TrustDomain overrides the operator-level --spire-trust-domain for this AgentCard.
                       If empty, the operator flag value is used.
                     pattern: ^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$
+                    type: string
+                type: object
+              sigstoreVerification:
+                description: |-
+                  SigstoreVerification optionally overrides operator-level Sigstore identity
+                  constraints for supply-chain bundle verification on SignedAgentCard documents.
+                properties:
+                  certificateIdentity:
+                    description: CertificateIdentity is the expected OIDC subject
+                      in the Fulcio certificate SAN (exact match unless paired with
+                      regex elsewhere).
+                    type: string
+                  certificateOIDCIssuer:
+                    description: CertificateOIDCIssuer is the expected OIDC issuer
+                      URL (e.g. https://token.actions.githubusercontent.com).
                     type: string
                 type: object
               syncPeriod:
@@ -424,6 +443,10 @@ spec:
               protocol:
                 description: Protocol is the detected agent protocol (e.g., "a2a")
                 type: string
+              rekorLogIndex:
+                description: RekorLogIndex is the transparency log index when available
+                  from the bundle.
+                type: string
               signatureIdentityMatch:
                 description: SignatureIdentityMatch is true when both signature and
                   identity binding pass.
@@ -439,6 +462,22 @@ spec:
               signatureVerificationDetails:
                 description: SignatureVerificationDetails contains details about the
                   last signature verification
+                type: string
+              sigstoreBundleVerified:
+                description: SigstoreBundleVerified is true when SignedAgentCard attestations.signatureBundle
+                  verifies successfully.
+                type: boolean
+              sigstoreIdentity:
+                description: SigstoreIdentity is the verified Fulcio signing identity
+                  when Sigstore verification succeeds.
+                type: string
+              slsaCommitSHA:
+                description: SLSACommitSHA from provenanceBundle when present and
+                  parsed.
+                type: string
+              slsaRepository:
+                description: SLSARepository from provenanceBundle when present and
+                  parsed.
                 type: string
               targetRef:
                 description: |-

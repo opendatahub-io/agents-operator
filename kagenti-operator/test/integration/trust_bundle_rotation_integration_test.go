@@ -103,11 +103,11 @@ func TestTrustBundleRotation(t *testing.T) {
 	}
 
 	reconciler := &controller.AgentCardReconciler{
-		Client:            k8sClient,
-		Scheme:            scheme,
-		AgentFetcher:      &mockFetcher{},
-		SignatureProvider:  provider,
-		RequireSignature:  true,
+		Client:                k8sClient,
+		Scheme:                scheme,
+		AgentFetcher:          &mockFetcher{},
+		SignatureProvider:     provider,
+		RequireSignature:      true,
 		SVIDExpiryGracePeriod: 1 * time.Millisecond,
 	}
 

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
+	"github.com/kagenti/operator/internal/agentcard"
 	"github.com/kagenti/operator/internal/controller"
 	"github.com/kagenti/operator/internal/signature"
 	appsv1 "k8s.io/api/apps/v1"
@@ -94,10 +95,12 @@ func cleanupNamespace(t *testing.T, ctx context.Context) {
 // but do NOT exercise the full fetch → sign → verify → bind end-to-end path.
 type mockFetcher struct{}
 
-func (f *mockFetcher) Fetch(_ context.Context, _, _ string, _ string, _ string) (*agentv1alpha1.AgentCardData, error) {
-	return &agentv1alpha1.AgentCardData{
-		Name: "test-agent",
-		URL:  "http://test:8000",
+func (f *mockFetcher) Fetch(_ context.Context, _, _ string, _ string, _ string) (*agentcard.FetchResult, error) {
+	return &agentcard.FetchResult{
+		CardData: &agentv1alpha1.AgentCardData{
+			Name: "test-agent",
+			URL:  "http://test:8000",
+		},
 	}, nil
 }
 
@@ -116,7 +119,7 @@ func (p *mockSignatureProvider) VerifySignature(_ context.Context, _ *agentv1alp
 	}, nil
 }
 
-func (p *mockSignatureProvider) Name() string      { return "mock" }
+func (p *mockSignatureProvider) Name() string       { return "mock" }
 func (p *mockSignatureProvider) BundleHash() string { return "" }
 
 func TestIdentityBindingIntegration(t *testing.T) {

@@ -36,6 +36,22 @@ type AgentCardSpec struct {
 	// IdentityBinding specifies SPIFFE identity binding configuration
 	// +optional
 	IdentityBinding *IdentityBinding `json:"identityBinding,omitempty"`
+
+	// SigstoreVerification optionally overrides operator-level Sigstore identity
+	// constraints for supply-chain bundle verification on SignedAgentCard documents.
+	// +optional
+	SigstoreVerification *SigstoreVerification `json:"sigstoreVerification,omitempty"`
+}
+
+// SigstoreVerification configures expected Fulcio certificate identity for Sigstore bundle verification.
+type SigstoreVerification struct {
+	// CertificateIdentity is the expected OIDC subject in the Fulcio certificate SAN (exact match unless paired with regex elsewhere).
+	// +optional
+	CertificateIdentity string `json:"certificateIdentity,omitempty"`
+
+	// CertificateOIDCIssuer is the expected OIDC issuer URL (e.g. https://token.actions.githubusercontent.com).
+	// +optional
+	CertificateOIDCIssuer string `json:"certificateOIDCIssuer,omitempty"`
 }
 
 // IdentityBinding configures workload identity binding for an AgentCard.
@@ -131,6 +147,26 @@ type AgentCardStatus struct {
 	// BindingStatus contains the result of identity binding evaluation
 	// +optional
 	BindingStatus *BindingStatus `json:"bindingStatus,omitempty"`
+
+	// SigstoreBundleVerified is true when SignedAgentCard attestations.signatureBundle verifies successfully.
+	// +optional
+	SigstoreBundleVerified *bool `json:"sigstoreBundleVerified,omitempty"`
+
+	// SigstoreIdentity is the verified Fulcio signing identity when Sigstore verification succeeds.
+	// +optional
+	SigstoreIdentity string `json:"sigstoreIdentity,omitempty"`
+
+	// RekorLogIndex is the transparency log index when available from the bundle.
+	// +optional
+	RekorLogIndex string `json:"rekorLogIndex,omitempty"`
+
+	// SLSARepository from provenanceBundle when present and parsed.
+	// +optional
+	SLSARepository string `json:"slsaRepository,omitempty"`
+
+	// SLSACommitSHA from provenanceBundle when present and parsed.
+	// +optional
+	SLSACommitSHA string `json:"slsaCommitSHA,omitempty"`
 }
 
 // BindingStatus represents the result of identity binding evaluation
@@ -348,6 +384,7 @@ type SkillParameter struct {
 // +kubebuilder:printcolumn:name="Target",type="string",JSONPath=".status.targetRef.name",description="Target Workload"
 // +kubebuilder:printcolumn:name="Agent",type="string",JSONPath=".status.card.name",description="Agent Name"
 // +kubebuilder:printcolumn:name="Verified",type="string",JSONPath=".status.conditions[?(@.type=='Verified')].status",description="Identity Verified"
+// +kubebuilder:printcolumn:name="Sigstore",type="boolean",JSONPath=".status.sigstoreBundleVerified",description="Sigstore Bundle Verified"
 // +kubebuilder:printcolumn:name="Bound",type="boolean",JSONPath=".status.bindingStatus.bound",description="Identity Bound"
 // +kubebuilder:printcolumn:name="Synced",type="string",JSONPath=".status.conditions[?(@.type=='Synced')].status",description="Sync Status"
 // +kubebuilder:printcolumn:name="LastSync",type="date",JSONPath=".status.lastSyncTime",description="Last Sync Time"

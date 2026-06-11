@@ -35,7 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -95,6 +95,11 @@ const (
 	ReasonSignatureValid        = "SignatureValid"
 	ReasonSignatureInvalid      = "SignatureInvalid"
 	ReasonSignatureInvalidAudit = "SignatureInvalidAudit"
+
+	ReasonSigstoreVerified      = "SigstoreVerified"
+	ReasonSigstoreInvalid       = "SigstoreVerificationFailed"
+	ReasonSigstoreInvalidAudit  = "SigstoreVerificationFailedAudit"
+	ReasonSigstoreBundleMissing = "SigstoreBundleNotFound"
 )
 
 var (
@@ -117,7 +122,7 @@ type WorkloadInfo struct {
 type AgentCardReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Recorder events.EventRecorder
 
 	AgentFetcher agentcard.Fetcher
 
@@ -131,6 +136,10 @@ type AgentCardReconciler struct {
 	SignatureProvider  signature.Provider
 	RequireSignature   bool
 	SignatureAuditMode bool
+
+	BundleVerifier             signature.BundleVerifier
+	EnableSigstoreVerification bool
+	SigstoreAuditMode          bool
 
 	// SpireTrustDomain can be overridden per-AgentCard via spec.identityBinding.trustDomain.
 	SpireTrustDomain string
@@ -148,6 +157,7 @@ type AgentCardReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch
 // +kubebuilder:rbac:groups=agents.x-k8s.io,resources=sandboxes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	agentCardLogger.V(1).Info("Reconciling AgentCard", "namespacedName", req.NamespacedName)
@@ -175,7 +185,7 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		agentCardLogger.Info("AgentCard is deprecated; card data is now available via AgentRuntime status.card. Migrate to AgentRuntime-based discovery.",
 			"agentCard", agentCard.Name, "namespace", agentCard.Namespace)
 		if r.Recorder != nil {
-			r.Recorder.Event(agentCard, corev1.EventTypeWarning, "Deprecated",
+			r.Recorder.Eventf(agentCard, nil, corev1.EventTypeWarning, "Deprecated", "Reconcile",
 				"AgentCard is deprecated; card data is now available via AgentRuntime status.card. Migrate to AgentRuntime-based discovery.")
 		}
 	}
@@ -206,7 +216,7 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				return ctrl.Result{}, bindErr
 			}
 			if r.Recorder != nil {
-				r.Recorder.Event(agentCard, corev1.EventTypeWarning, ReasonAgentNotFound, message)
+				r.Recorder.Eventf(agentCard, nil, corev1.EventTypeWarning, ReasonAgentNotFound, "FetchAgentCard", message)
 			}
 		}
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
@@ -242,6 +252,7 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	servicePort := r.getServicePort(service)
 	serviceURL := agentcard.GetServiceURL(workload.ServiceName, agentCard.Namespace, servicePort)
 
+	// Use fetchCardData which handles both mTLS authenticated fetch and regular HTTP fetch
 	cardData, fetchResult, err := r.fetchCardData(ctx, agentCard, protocol, serviceURL, workload, service)
 	if err != nil {
 		if condErr := r.updateCondition(ctx, agentCard,
@@ -251,15 +262,59 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
 	}
 
+	var sigstoreResult *signature.BundleVerificationResult
+	if r.EnableSigstoreVerification && r.BundleVerifier != nil {
+		if len(fetchResult.RawSignedAgentCardJSON) > 0 {
+			var sErr error
+			sigstoreResult, sErr = r.BundleVerifier.VerifySignedAgentCard(ctx, fetchResult.RawSignedAgentCardJSON, agentCard.Spec.SigstoreVerification)
+			if sErr != nil {
+				agentCardLogger.Error(sErr, "Sigstore bundle verification error", "workload", workload.Name)
+				// M-3: Set failed result so enforcement mode can reject the card
+				sigstoreResult = &signature.BundleVerificationResult{
+					Verified: false,
+					Details:  fmt.Sprintf("infrastructure error: %s", sErr.Error()),
+				}
+				if r.Recorder != nil {
+					r.Recorder.Eventf(agentCard, nil, corev1.EventTypeWarning, "SigstoreVerificationFailed",
+						"VerifySigstore", "Infrastructure error during Sigstore verification: %s", sErr.Error())
+				}
+			} else if sigstoreResult != nil {
+				// P-3: Emit events for Sigstore verification
+				if sigstoreResult.Verified {
+					if r.Recorder != nil {
+						r.Recorder.Eventf(agentCard, nil, corev1.EventTypeNormal, "SigstoreVerified",
+							"VerifySigstore", "Sigstore bundle verified successfully (identity=%s, rekorLogIndex=%s)",
+							sigstoreResult.Identity, sigstoreResult.RekorLogIndex)
+					}
+				} else if !sigstoreResult.Absent {
+					if r.Recorder != nil {
+						r.Recorder.Eventf(agentCard, nil, corev1.EventTypeWarning, "SigstoreVerificationFailed",
+							"VerifySigstore", sigstoreResult.Details)
+					}
+				}
+			}
+		} else {
+			sigstoreResult = &signature.BundleVerificationResult{
+				Absent:   true,
+				Verified: false,
+				Details:  "only plain agent card available (no SignedAgentCard attestations); supply-chain bundle not present",
+			}
+			if r.Recorder != nil {
+				r.Recorder.Eventf(agentCard, nil, corev1.EventTypeWarning, "SigstoreBundleNotFound",
+					"VerifySigstore", "No Sigstore bundle found - plain agent card without attestations")
+			}
+		}
+	}
+
 	trust := r.evaluateTrust(ctx, agentCard, cardData, fetchResult, workload)
 
 	cardData.URL = serviceURL
 	cardID := r.computeCardID(cardData)
 	if cardID != "" && agentCard.Status.CardId != "" && agentCard.Status.CardId != cardID {
 		if r.Recorder != nil {
-			r.Recorder.Event(agentCard, corev1.EventTypeWarning, "CardContentChanged",
-				fmt.Sprintf("Agent card content changed: previous=%s, current=%s",
-					agentCard.Status.CardId, cardID))
+			r.Recorder.Eventf(agentCard, nil, corev1.EventTypeWarning, "CardContentChanged", "Reconcile",
+				"Agent card content changed: previous=%s, current=%s",
+				agentCard.Status.CardId, cardID)
 		}
 		agentCardLogger.Info("Card content changed",
 			"agentCard", agentCard.Name,
@@ -276,7 +331,7 @@ func (r *AgentCardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := r.updateAgentCardStatus(ctx, agentCard, cardData, protocol, cardID,
 		resolvedTargetRef, trust.verificationResult, trust.binding, trust.identityMatch,
 		trust.isMTLSVerified, trust.verifiedReason, trust.verifiedStatus,
-		trust.verifiedMessage, trust.attestedSpiffeID); err != nil {
+		trust.verifiedMessage, trust.attestedSpiffeID, sigstoreResult); err != nil {
 		agentCardLogger.Error(err, "Failed to update AgentCard status")
 		return ctrl.Result{}, err
 	}
@@ -359,11 +414,11 @@ func (r *AgentCardReconciler) fetchCardData(
 		agentCardLogger.Info("TLS port not found on service, falling back to HTTP fetch",
 			"service", workload.ServiceName, "expectedPortName", AgentTLSPortName)
 		if r.Recorder != nil {
-			r.Recorder.Event(agentCard, corev1.EventTypeWarning, "FallbackToHTTP",
-				fmt.Sprintf("Service %s has no %s port; fetch is unverified",
-					workload.ServiceName, AgentTLSPortName))
+			r.Recorder.Eventf(agentCard, nil, corev1.EventTypeWarning, "FallbackToHTTP", "FetchCard",
+				"Service %s has no %s port; fetch is unverified",
+				workload.ServiceName, AgentTLSPortName)
 		}
-		cardData, err := r.AgentFetcher.Fetch(
+		fetchResult, err := r.AgentFetcher.Fetch(
 			ctx, protocol, serviceURL, workload.ServiceName, agentCard.Namespace)
 		if err != nil {
 			agentCardLogger.Error(err, "Failed to fetch agent card",
@@ -374,10 +429,10 @@ func (r *AgentCardReconciler) fetchCardData(
 			}
 			return nil, nil, err
 		}
-		return cardData, nil, nil
+		return fetchResult.CardData, fetchResult, nil
 	}
 
-	cardData, err := r.AgentFetcher.Fetch(
+	fetchResult, err := r.AgentFetcher.Fetch(
 		ctx, protocol, serviceURL, workload.ServiceName, agentCard.Namespace)
 	if err != nil {
 		agentCardLogger.Error(err, "Failed to fetch agent card",
@@ -391,7 +446,7 @@ func (r *AgentCardReconciler) fetchCardData(
 	if err := r.cleanupVerifiedFetchFields(ctx, agentCard); err != nil {
 		agentCardLogger.Error(err, "Failed to cleanup verified fetch fields", "agentCard", agentCard.Name)
 	}
-	return cardData, nil, nil
+	return fetchResult.CardData, fetchResult, nil
 }
 
 // evaluateTrust performs signature verification, binding computation, and
@@ -412,8 +467,8 @@ func (r *AgentCardReconciler) evaluateTrust( //nolint:gocyclo
 		if eval.verificationResult != nil {
 			if eval.verificationResult.Verified {
 				if r.Recorder != nil {
-					r.Recorder.Event(agentCard, corev1.EventTypeNormal, "SignatureEvaluated",
-						fmt.Sprintf("Signature verified successfully (keyID=%s)", eval.verificationResult.KeyID))
+					r.Recorder.Eventf(agentCard, nil, corev1.EventTypeNormal, "SignatureEvaluated",
+						"VerifySignature", "Signature verified successfully (keyID=%s)", eval.verificationResult.KeyID)
 				}
 			} else {
 				reason := ReasonSignatureInvalid
@@ -425,7 +480,8 @@ func (r *AgentCardReconciler) evaluateTrust( //nolint:gocyclo
 					"reason", reason,
 					"details", eval.verificationResult.Details)
 				if r.Recorder != nil {
-					r.Recorder.Event(agentCard, corev1.EventTypeWarning, "SignatureFailed", eval.verificationResult.Details)
+					r.Recorder.Eventf(agentCard, nil, corev1.EventTypeWarning, "SignatureFailed",
+						"VerifySignature", eval.verificationResult.Details)
 				}
 			}
 		}
@@ -722,16 +778,20 @@ func (r *AgentCardReconciler) getSyncPeriod(agentCard *agentv1alpha1.AgentCard) 
 //     Absent when no trust mechanism is configured.
 //   - SignatureVerified: raw JWS cryptographic outcome (informational only, not used
 //     for enforcement). Reflects whether the x5c signature is mathematically valid.
+//   - SigstoreVerified: supply-chain verification via Sigstore bundle attestations.
 //   - Synced: whether the agent card was successfully fetched.
 //   - Ready: composite signal — True when Synced is True AND (Verified is True or absent).
 //   - Bound: whether identity binding constraints are satisfied.
-func (r *AgentCardReconciler) updateAgentCardStatus( //nolint:gocyclo
+//
+//nolint:gocyclo // TODO: refactor to reduce complexity
+func (r *AgentCardReconciler) updateAgentCardStatus(
 	ctx context.Context, agentCard *agentv1alpha1.AgentCard,
 	cardData *agentv1alpha1.AgentCardData, protocol, cardID string,
 	targetRef *agentv1alpha1.TargetRef, verificationResult *signature.VerificationResult,
 	binding *bindingResult, identityMatch *bool, mTLSVerified bool,
 	verifiedReason string, verifiedStatus metav1.ConditionStatus,
 	verifiedMessage string, attestedSpiffeID string,
+	sigstoreResult *signature.BundleVerificationResult,
 ) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		latest := &agentv1alpha1.AgentCard{}
@@ -782,6 +842,62 @@ func (r *AgentCardReconciler) updateAgentCardStatus( //nolint:gocyclo
 			meta.SetStatusCondition(&latest.Status.Conditions, sigCondition)
 		}
 
+		// Populate Sigstore verification status fields
+		if r.EnableSigstoreVerification && sigstoreResult != nil {
+			if sigstoreResult.Absent {
+				absent := false
+				latest.Status.SigstoreBundleVerified = &absent
+				latest.Status.SigstoreIdentity = ""
+				latest.Status.RekorLogIndex = ""
+				latest.Status.SLSARepository = ""
+				latest.Status.SLSACommitSHA = ""
+				meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+					Type:    "SigstoreVerified",
+					Status:  metav1.ConditionFalse,
+					Reason:  ReasonSigstoreBundleMissing,
+					Message: sigstoreResult.Details,
+				})
+			} else {
+				latest.Status.SigstoreBundleVerified = &sigstoreResult.Verified
+				if sigstoreResult.Verified {
+					latest.Status.SigstoreIdentity = sigstoreResult.Identity
+					latest.Status.RekorLogIndex = sigstoreResult.RekorLogIndex
+					latest.Status.SLSARepository = sigstoreResult.SLSARepository
+					latest.Status.SLSACommitSHA = sigstoreResult.SLSACommitSHA
+				} else {
+					latest.Status.SigstoreIdentity = ""
+					latest.Status.RekorLogIndex = ""
+					latest.Status.SLSARepository = ""
+					latest.Status.SLSACommitSHA = ""
+				}
+				sigStoreCond := metav1.Condition{Type: "SigstoreVerified"}
+				if sigstoreResult.Verified {
+					sigStoreCond.Status = metav1.ConditionTrue
+					sigStoreCond.Reason = ReasonSigstoreVerified
+					sigStoreCond.Message = sigstoreResult.Details
+				} else {
+					sigStoreCond.Status = metav1.ConditionFalse
+					if r.SigstoreAuditMode {
+						sigStoreCond.Reason = ReasonSigstoreInvalidAudit
+						sigStoreCond.Message = sigstoreResult.Details + " (audit mode: allowed)"
+					} else {
+						sigStoreCond.Reason = ReasonSigstoreInvalid
+						sigStoreCond.Message = sigstoreResult.Details
+					}
+				}
+				meta.SetStatusCondition(&latest.Status.Conditions, sigStoreCond)
+			}
+		} else {
+			// Clear Sigstore status fields when verification is disabled
+			latest.Status.SigstoreBundleVerified = nil
+			latest.Status.SigstoreIdentity = ""
+			latest.Status.RekorLogIndex = ""
+			latest.Status.SLSARepository = ""
+			latest.Status.SLSACommitSHA = ""
+			meta.RemoveStatusCondition(&latest.Status.Conditions, "SigstoreVerified")
+		}
+
+		// Set Synced condition to false if JWS verification failed (when not mTLS-verified and not audit mode)
 		if verificationResult != nil && !verificationResult.Verified && !r.SignatureAuditMode && !mTLSVerified {
 			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 				Type:    "Synced",
@@ -789,12 +905,24 @@ func (r *AgentCardReconciler) updateAgentCardStatus( //nolint:gocyclo
 				Reason:  ReasonSignatureInvalid,
 				Message: verificationResult.Details,
 			})
+			// Check if Sigstore verification failed (when not in audit mode)
+		} else if sigstoreResult != nil && !sigstoreResult.Absent && !sigstoreResult.Verified && !r.SigstoreAuditMode {
+			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+				Type:    "Synced",
+				Status:  metav1.ConditionFalse,
+				Reason:  ReasonSigstoreInvalid,
+				Message: sigstoreResult.Details,
+			})
 		} else {
+			// Both verifications passed or are in audit mode - set Synced to True
 			message := fmt.Sprintf("Successfully fetched agent card for %s", cardData.Name)
 			if verificationResult != nil && !verificationResult.Verified && r.SignatureAuditMode {
 				message = fmt.Sprintf("Fetched agent card for %s (signature verification failed but audit mode enabled)", cardData.Name)
 			} else if mTLSVerified && verificationResult != nil && !verificationResult.Verified {
 				message = fmt.Sprintf("Successfully fetched agent card for %s (mTLS verified, no JWS signature)", cardData.Name)
+			}
+			if sigstoreResult != nil && !sigstoreResult.Absent && !sigstoreResult.Verified && r.SigstoreAuditMode {
+				message = fmt.Sprintf("%s (Sigstore bundle failed audit mode)", message)
 			}
 			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 				Type:    "Synced",
@@ -855,9 +983,11 @@ func (r *AgentCardReconciler) updateAgentCardStatus( //nolint:gocyclo
 			if existingBound == nil || existingBound.Status != newConditionStatus {
 				if r.Recorder != nil {
 					if binding.Bound {
-						r.Recorder.Event(agentCard, corev1.EventTypeNormal, "BindingEvaluated", binding.Message)
+						r.Recorder.Eventf(agentCard, nil, corev1.EventTypeNormal, "BindingEvaluated",
+							"EvaluateBinding", binding.Message)
 					} else {
-						r.Recorder.Event(agentCard, corev1.EventTypeWarning, "BindingFailed", binding.Message)
+						r.Recorder.Eventf(agentCard, nil, corev1.EventTypeWarning, "BindingFailed",
+							"EvaluateBinding", binding.Message)
 					}
 				}
 			}
@@ -1434,7 +1564,8 @@ func (r *AgentCardReconciler) maybeRestartForResign(ctx context.Context, agentCa
 	agentCardLogger.Info("Triggering proactive workload restart for re-signing",
 		"workload", workload.Name, "kind", workload.Kind, "reason", reason)
 	if r.Recorder != nil {
-		r.Recorder.Event(agentCard, corev1.EventTypeNormal, "ResignTriggered", reason)
+		r.Recorder.Eventf(agentCard, nil, corev1.EventTypeNormal, "ResignTriggered",
+			"TriggerResign", reason)
 	}
 
 	r.triggerRolloutRestart(ctx, acc, key, currentBundleHash, vr.LeafNotAfter)

@@ -158,6 +158,19 @@ signatureVerification:
   # How far before SVID expiry to trigger proactive workload restart
   svidExpiryGracePeriod: "30m"
 
+# Supply-chain: sigstore-a2a SignedAgentCard bundle verification (Rekor / Fulcio)
+sigstore:
+  cardVerification:
+    enabled: false
+    auditMode: false
+    certificateIdentity: ""
+    certificateOIDCIssuer: ""
+    staging: false
+    trustedRoot:
+      configMapName: ""
+      configMapNamespace: ""
+      configMapKey: "trusted-root.json"
+
 # Feature gates — highest-priority layer in the injection precedence chain.
 # Set globalEnabled to false to disable ALL sidecar injection (kill switch).
 # Set individual gates to false to disable specific sidecars cluster-wide.
