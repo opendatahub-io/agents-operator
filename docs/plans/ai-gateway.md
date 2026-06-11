@@ -363,6 +363,95 @@ AIRoutingPolicy specifies HTTP listeners, the AIAccessPolicy overrides
 them to HTTPS — access policy takes precedence over routing config for
 the listener protocol.
 
+### Status
+
+Both CRDs report their state through standard `metav1.Condition`
+entries plus per-component status maps. The conditions give aggregate
+signals (suitable for `kubectl wait --for=condition=...`); the maps
+give per-provider or per-component detail for debugging.
+
+#### AIRoutingPolicy
+
+```yaml
+status:
+  conditions:
+  - type: Accepted          # spec is syntactically valid
+    status: "True"
+    reason: Valid
+  - type: GatewayBound      # targetRef Gateway exists
+    status: "True"
+    reason: Bound
+  - type: ProvidersConfigured  # all provider resources created
+    status: "False"
+    reason: PartialFailure
+    message: "2/3 providers configured"
+  - type: RoutingActive     # AIGatewayRoute + BTP created and accepted
+    status: "True"
+    reason: Applied
+
+  providers:
+  - name: ollama
+    ready: true
+  - name: openai
+    ready: true
+  - name: bedrock
+    ready: false
+    error: "invalid endpoint URL: missing scheme"
+
+  models:
+  - name: gpt-4o
+    ready: true
+  - name: qwen2.5:3b
+    ready: true
+```
+
+| Condition | True when | False reasons |
+|-----------|-----------|---------------|
+| `Accepted` | Spec passes validation (endpoints parse, names unique) | `InvalidSpec` |
+| `GatewayBound` | Target Gateway exists in namespace | `GatewayNotFound` |
+| `ProvidersConfigured` | All Backend + AIServiceBackend + BSP resources created | `PartialFailure`, `ApplyFailed`, `CredentialSecretNotFound` |
+| `RoutingActive` | AIGatewayRoute + BackendTrafficPolicy created and accepted | `ApplyFailed` |
+
+The `status.providers[]` list mirrors `spec.providers[]` and reports
+per-provider readiness. When `ProvidersConfigured` is False, the
+provider entries show exactly which providers failed and why —
+eliminating guesswork in multi-provider configurations.
+
+The `status.models[]` list tracks per-model route rule creation. In
+the common case all models are ready; a model becomes not-ready if its
+referenced provider is missing from the spec.
+
+#### AIAccessPolicy
+
+```yaml
+status:
+  conditions:
+  - type: Accepted
+    status: "True"
+    reason: Valid
+  - type: GatewayBound
+    status: "True"
+    reason: Bound
+  - type: BundleReady       # trust bundle parsed with ≥1 valid cert
+    status: "True"
+    reason: Loaded
+    message: "2 certificates from SPIFFE JSON bundle"
+  - type: MTLSActive        # CA Secret + server cert + CTP created
+    status: "True"
+    reason: Applied
+```
+
+| Condition | True when | False reasons |
+|-----------|-----------|---------------|
+| `Accepted` | Spec passes validation | `InvalidSpec` |
+| `GatewayBound` | Target Gateway exists in namespace | `GatewayNotFound` |
+| `BundleReady` | Trust bundle ConfigMap read and parsed with ≥1 valid cert | `BundleNotFound`, `BundleEmpty`, `BundleParseError` |
+| `MTLSActive` | CA Secret, server cert, and ClientTrafficPolicy created | `ApplyFailed`, `CertGenerationFailed` |
+
+`BundleReady` is re-evaluated on every requeue (default 5 minutes),
+so it reflects trust bundle rotations. The message includes the
+certificate count for visibility into how many CAs are trusted.
+
 ### Future: guardrails
 
 Content filtering, prompt injection detection, and PII redaction are
@@ -515,27 +604,35 @@ policy simply means that capability isn't configured.
 
 ```
 AIRoutingPolicyReconciler
+  ├── validate spec → set Accepted condition
+  ├── verify target Gateway exists → set GatewayBound condition
   ├── parse provider endpoints (URL → host + port)
   ├── for each provider:
   │     ├── create/update Backend (gateway.envoyproxy.io)
   │     ├── create/update AIServiceBackend (aigateway.envoyproxy.io)
-  │     └── create/update BackendSecurityPolicy (if credentials set)
+  │     ├── create/update BackendSecurityPolicy (if credentials set)
+  │     └── record result in status.providers[]
+  ├── set ProvidersConfigured condition (aggregate)
   ├── create/update AIGatewayRoute
   │     ├── one rule per model (x-ai-eg-model match → backendRefs)
-  │     └── llmRequestCosts (if any model has rateLimit)
+  │     ├── llmRequestCosts (if any model has rateLimit)
+  │     └── record result in status.models[]
   ├── create/update BackendTrafficPolicy
   │     ├── per-model failover/retry config
-  │     └── per-model rate limit rules (x-ai-eg-model header selectors)
-  ├── clean up orphaned resources for removed providers
-  └── update status conditions
+  │     └── per-model rate limit rules
+  ├── set RoutingActive condition
+  └── clean up orphaned resources for removed providers
 
 AIAccessPolicyReconciler
+  ├── validate spec → set Accepted condition
+  ├── verify target Gateway exists → set GatewayBound condition
   ├── read SPIRE trust bundle ConfigMap
   ├── parse SPIFFE JSON → extract x509-svid certs → PEM
+  ├── set BundleReady condition (with cert count)
   ├── create/update CA Secret
   ├── create/update self-signed server cert (if no serverCertRef)
   ├── create/update ClientTrafficPolicy
-  └── update status conditions
+  └── set MTLSActive condition
 ```
 
 All generated resources carry an owner reference to their policy CR.
