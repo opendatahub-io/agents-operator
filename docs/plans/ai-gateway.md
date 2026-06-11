@@ -309,9 +309,14 @@ so no coordination is needed.
 Requires Envoy Gateway's global rate limit service (Redis-backed) for
 cross-instance quota enforcement.
 
-Per-user or per-tenant rate limiting (multi-tenant cost allocation) is
-a separate concern. If needed, a future policy CRD could attach to the
-Gateway to layer per-client quotas on top of per-model limits.
+The initial design treats the namespace as a single tenant — rate
+limit counters are scoped per model, not per client. Per-user or
+per-tenant rate limiting is a separate concern. Multi-tenancy could
+be addressed by extracting rate limiting into a separate policy CRD
+with precedence rules akin to [BackendTrafficPolicy][] — where
+more specific policies override broader defaults.
+
+[BackendTrafficPolicy]: https://gateway.envoyproxy.io/docs/concepts/gateway_api_extensions/backend-traffic-policy/
 
 ### AIAccessPolicy
 
@@ -504,6 +509,43 @@ attachment pattern as AIAccessPolicy. That would be a separate design
 proposal.
 
 Not in scope for the initial implementation.
+
+### Future: protocol extensibility
+
+The provider `schema` field declares the protocol a backend speaks.
+The initial implementation supports inference schemas (OpenAI,
+AWSBedrock, etc.), but this maps directly to the [Backend protocol
+model][Proposal 10] emerging in WG AI Gateway — where protocol is a
+property of the destination, not the route.
+
+The `models` list is inference-specific: it defines virtual model
+names, maps them to provider backends, and configures per-model
+failover and rate limits. Non-inference protocols like MCP don't have
+a model selection concept. Extending AIRoutingPolicy to support MCP
+providers would add protocol-appropriate routing entries alongside
+`models`, driven by the provider's schema:
+
+```yaml
+providers:
+- name: ollama
+  endpoint: http://ollama.svc:11434
+  schema: OpenAI           # inference — uses models[]
+- name: tool-server
+  endpoint: http://tools.svc:8080
+  schema: MCP              # MCP — no model mapping needed
+
+models:                    # inference-specific
+- name: qwen2.5:3b
+  backends:
+  - provider: ollama
+    model: qwen2.5:3b
+```
+
+The renderer would generate `AIGatewayRoute` for inference providers
+and `MCPRoute` for MCP providers. Credential injection, mTLS, and
+rate limiting apply uniformly regardless of protocol. The exact shape
+of non-inference routing entries is left to a future proposal once
+the WG AI Gateway Backend specification matures.
 
 ## Example: complete deployment
 
