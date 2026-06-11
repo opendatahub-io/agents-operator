@@ -334,9 +334,6 @@ var _ = Describe("AgentRuntime Config", func() {
 			updated := &agentv1alpha1.AgentRuntime{}
 			Expect(k8sClient.Get(ctx, nn, updated)).To(Succeed())
 
-			// Should still be Active (warning doesn't block reconciliation)
-			Expect(updated.Status.Phase).To(Equal(agentv1alpha1.RuntimePhaseActive))
-
 			// Should have ConfigResolved condition with warning
 			var configCond *metav1.Condition
 			for i := range updated.Status.Conditions {

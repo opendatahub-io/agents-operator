@@ -67,6 +67,12 @@ type MLflowReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 
+	// MLflowCAFile is the path to a PEM-encoded CA bundle for verifying the
+	// MLflow gateway TLS certificate. When set, the CA is appended to the
+	// system cert pool. Required on clusters where the MLflow Route uses a
+	// non-publicly-trusted certificate (e.g., HyperShift ingress CA).
+	MLflowCAFile string
+
 	// NewMLflowClient creates an MLflow client for the given base URL.
 	// If nil, a default client is used.
 	NewMLflowClient func(baseURL string) *mlflow.Client
@@ -159,7 +165,7 @@ func (r *MLflowReconciler) mlflowClient(baseURL string) *mlflow.Client {
 	if r.NewMLflowClient != nil {
 		return r.NewMLflowClient(baseURL)
 	}
-	return &mlflow.Client{BaseURL: baseURL}
+	return &mlflow.Client{BaseURL: baseURL, CAFile: r.MLflowCAFile}
 }
 
 // trackingURI returns the MLflow tracking URI, using the override if set.

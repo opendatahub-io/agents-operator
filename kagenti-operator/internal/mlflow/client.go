@@ -22,6 +22,8 @@ package mlflow
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,6 +65,12 @@ type Client struct {
 
 	// TokenPath is the path to the SA token file. Defaults to DefaultTokenPath.
 	TokenPath string
+
+	// CAFile is an optional path to a PEM-encoded CA certificate bundle to
+	// append to the system cert pool for TLS verification. Used on clusters
+	// where the MLflow gateway uses a non-publicly-trusted certificate
+	// (e.g., HyperShift ingress CA).
+	CAFile string
 
 	// HTTPClient is the HTTP client to use. If nil, a default client is created
 	// on first use with Timeout applied. Must be set before the first request.
@@ -150,15 +158,50 @@ func (c *Client) retryBaseDelay() time.Duration {
 	return DefaultRetryBaseDelay
 }
 
-func (c *Client) httpClient() *http.Client {
+func (c *Client) httpClient() (*http.Client, error) {
+	var initErr error
 	c.httpOnce.Do(func() {
 		if c.HTTPClient == nil {
+			transport, err := c.buildTransport()
+			if err != nil {
+				initErr = err
+				return
+			}
 			c.HTTPClient = &http.Client{
-				Timeout: c.timeout(),
+				Timeout:   c.timeout(),
+				Transport: transport,
 			}
 		}
 	})
-	return c.HTTPClient
+	if initErr != nil {
+		return nil, initErr
+	}
+	if c.HTTPClient == nil {
+		return nil, fmt.Errorf("http client initialization failed")
+	}
+	return c.HTTPClient, nil
+}
+
+func (c *Client) buildTransport() (http.RoundTripper, error) {
+	if c.CAFile == "" {
+		return nil, nil
+	}
+	caPEM, err := os.ReadFile(c.CAFile)
+	if err != nil {
+		return nil, fmt.Errorf("reading CA file %q: %w", c.CAFile, err)
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("CA file %q contains no valid PEM certificates", c.CAFile)
+	}
+	return &http.Transport{
+		TLSClientConfig: &tls.Config{
+			RootCAs: pool,
+		},
+	}, nil
 }
 
 func (c *Client) tokenPath() string {
@@ -369,7 +412,12 @@ func (c *Client) doRequest(ctx context.Context, method, path, workspace string, 
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := c.httpClient().Do(req)
+	httpClient, err := c.httpClient()
+	if err != nil {
+		return nil, fmt.Errorf("initializing HTTP client: %w", err)
+	}
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("executing request: %w", err)
 	}

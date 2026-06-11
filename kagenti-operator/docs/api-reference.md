@@ -462,7 +462,7 @@ The AgentRuntime controller applies the following labels and annotations to the 
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `phase` | string | High-level state of the AgentRuntime (`Pending`, `Active`, or `Error`) |
+| `observedGeneration` | int64 | Most recent generation observed by the controller |
 | `configuredPods` | int32 | Count of pods with expected labels/configuration |
 | `conditions` | [][Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.28/#condition-v1-meta) | Current state of the AgentRuntime |
 
@@ -480,7 +480,6 @@ The AgentRuntime controller applies the following labels and annotations to the 
 | `IstioMeshEnrolled` | True | `NamespaceLabeled` | Namespace labeled with `istio-discovery=enabled` and `istio.io/dataplane-mode=ambient` for Istio ambient mesh enrollment |
 | `IstioMeshEnrolled` | False | `OptedOut` | Namespace has `kagenti.io/istio-mesh=disabled` annotation; Istio mesh labels not applied |
 | `IstioMeshEnrolled` | False | `PatchFailed` | Failed to patch namespace labels (e.g., RBAC misconfiguration). Non-fatal; reconcile continues. |
-| `SkillsDiscovered` | True | `SkillsFound` | Linked skills discovered from `kagenti.io/skills` annotation on the target workload |
 | `SkillsMounted` | True | `SkillsApplied` | OCI skill ImageVolumes applied to the target workload |
 | `SkillsMounted` | False | `FeatureGateDisabled` | Skills defined but `skillImageVolumes` feature gate is disabled |
 | `SkillsMounted` | False | `UnsupportedWorkloadKind` | Skills defined but the target workload kind (e.g., Sandbox) does not support skill ImageVolumes |
@@ -586,15 +585,12 @@ kubectl get art
 kubectl get agentruntimes
 
 # Example output:
-# NAME                      TYPE    TARGET          PHASE    AGE
-# weather-agent-runtime     agent   weather-agent   Active   5m
-# calculator-tool-runtime   tool    calculator-tool Active   3m
+# NAME                      TYPE    TARGET          READY   AGE
+# weather-agent-runtime     agent   weather-agent   True    5m
+# calculator-tool-runtime   tool    calculator-tool True    3m
 
 # Get detailed information
 kubectl describe agentruntime weather-agent-runtime
-
-# View runtime phase
-kubectl get art weather-agent-runtime -o jsonpath='{.status.phase}'
 
 # View configured pods count
 kubectl get art weather-agent-runtime -o jsonpath='{.status.configuredPods}'

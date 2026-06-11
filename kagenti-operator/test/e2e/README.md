@@ -81,10 +81,10 @@ kind delete cluster
 | Audit mode | With signature | Unsigned card syncs (Synced=True) but reports SignatureVerified=False with reason SignatureInvalidAudit |
 | Signed agent | With signature | SPIRE-signed card gets SignatureVerified=True, correct SPIFFE ID, Synced=True, and Bound=True |
 | Apply labels and config-hash | Agent lifecycle | AgentRuntime controller adds `kagenti.io/type=agent`, `managed-by`, config-hash, and triggers AgentCard auto-creation |
-| Phase=Active and Ready=True | Agent lifecycle | AgentRuntime CR reaches Active phase with Ready=True condition |
+| Ready=True | Agent lifecycle | AgentRuntime CR reaches Ready=True condition |
 | Idempotent re-reconcile | Agent lifecycle | Deployment generation stays stable over 30s (no spurious updates) |
 | Clean up on deletion | Agent lifecycle | Deletion preserves `kagenti.io/type`, removes `managed-by`, config-hash stays the same (no CR fields in hash) |
-| Missing target error | Error cases | AgentRuntime targeting non-existent Deployment sets Phase=Error |
+| Missing target error | Error cases | AgentRuntime targeting non-existent Deployment sets TargetResolved=False |
 | Tool type label | Tool type | AgentRuntime with type=tool applies `kagenti.io/type=tool` label and no AgentCard is created |
 | StatefulSet target | StatefulSet target | AgentRuntime applies labels, config-hash, and reaches Active for a StatefulSet workload |
 | Identity/trace overrides | Identity and trace overrides | AgentRuntime with identity+trace spec produces the same config-hash as a minimal CR (CR fields excluded from hash) |
@@ -200,8 +200,8 @@ AgentRuntime controller flow:
 │  spec.type: agent         │────▶│  Resolve target          │◀───┘    │  runtime-ns-defaults ConfigMap  │
 │  spec.targetRef:          │     │  Resolve config (2-layer)│◀────────│  (namespace defaults, layer 2)  │
 │    name: runtime-agent-   │     │  Apply labels + hash     │         │                                  │
-│          target           │     │  Set Phase=Active        │         │  runtime-agent-target Deployment │
-└───────────────────────────┘     └──────────┬───────────────┘         │  runtime-tool-target Deployment  │
+│          target           │     └──────────┬───────────────┘         │  runtime-agent-target Deployment │
+└───────────────────────────┘                │                         │  runtime-tool-target Deployment  │
                                              │                         │  runtime-sts-target StatefulSet  │
                                              │                         │  runtime-minimal-target Deploy.  │
                                              │                         │  runtime-overrides-target Deploy.│
@@ -313,11 +313,11 @@ verifies the cross-controller interaction: once `kagenti.io/type=agent` is appli
 the existing `protocol.kagenti.io/a2a` label, AgentCardSync auto-creates an AgentCard
 (`runtime-agent-target-deployment-card`) with the correct `managed-by` label and targetRef.
 
-#### Phase=Active and Ready=True
+#### Ready=True
 
 Uses the AgentRuntime CR from the previous test (ordered context). Once the controller has
-resolved the target and applied configuration, it sets `status.phase=Active` and the `Ready`
-condition to `True`. Test verifies both fields via jsonpath.
+resolved the target and applied configuration, it sets the `Ready` condition to `True`.
+Test verifies via jsonpath.
 
 #### Idempotent re-reconcile
 
@@ -341,7 +341,7 @@ Deletes the AgentRuntime CR and verifies the finalizer (`kagenti.io/cleanup`) ru
 
 Creates an AgentRuntime CR targeting `nonexistent-deployment`. The controller's target
 resolution fails because no Deployment with that name exists. The controller sets
-`status.phase=Error`. Test verifies the Error phase via jsonpath, then cleans up the CR.
+`TargetResolved=False`. Test verifies via jsonpath, then cleans up the CR.
 
 #### Tool type label
 

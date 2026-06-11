@@ -69,11 +69,9 @@ const (
 	AnnotationRestartPending = "kagenti.io/restart-pending"
 
 	// Condition types for AgentRuntime status.
-	ConditionTypeReady            = "Ready"
-	ConditionTypeTargetResolved   = "TargetResolved"
-	ConditionTypeConfigResolved   = "ConfigResolved"
-	ConditionTypeCardFetched      = "CardFetched"
-	ConditionTypeSkillsDiscovered = "SkillsDiscovered"
+	ConditionTypeReady          = "Ready"
+	ConditionTypeTargetResolved = "TargetResolved"
+	ConditionTypeConfigResolved = "ConfigResolved"
 
 	// AnnotationLastCardFetchHash stores the change-detection key used to skip
 	// redundant card fetches when the workload's pod template has not changed.
@@ -136,6 +134,8 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.Get(ctx, req.NamespacedName, rt); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+
+	rt.Status.ObservedGeneration = rt.Generation
 
 	// 2. Handle deletion
 	if !rt.DeletionTimestamp.IsZero() {
@@ -213,11 +213,7 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if r.Recorder != nil {
 			r.Recorder.Event(rt, corev1.EventTypeWarning, "SCCBindingError", err.Error())
 		}
-		r.setPhase(rt, agentv1alpha1.RuntimePhaseError)
-		r.setCondition(rt, ConditionTypeReady, metav1.ConditionFalse, "SCCBindingError", err.Error())
-		if statusErr := r.Status().Update(ctx, rt); statusErr != nil {
-			logger.Error(statusErr, "Failed to update status")
-		}
+		r.updateErrorStatus(ctx, req.NamespacedName, ConditionTypeReady, "SCCBindingError", err.Error())
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
@@ -268,20 +264,12 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// 8. Update status (retry on conflict to preserve all conditions computed above)
 	rt.Status.ConfiguredPods = configuredPods
-	r.setPhase(rt, agentv1alpha1.RuntimePhaseActive)
 	r.setCondition(rt, ConditionTypeReady, metav1.ConditionTrue, "Configured",
 		fmt.Sprintf("Workload %s configured with config-hash %s", rt.Spec.TargetRef.Name, configResult.Hash[:12]))
 	if fg.SkillDiscovery {
 		rt.Status.LinkedSkills = linkedSkills
-		if len(linkedSkills) > 0 {
-			r.setCondition(rt, ConditionTypeSkillsDiscovered, metav1.ConditionTrue, "SkillsFound",
-				fmt.Sprintf("%d linked skill(s) discovered from workload annotation", len(linkedSkills)))
-		} else {
-			meta.RemoveStatusCondition(&rt.Status.Conditions, ConditionTypeSkillsDiscovered)
-		}
 	} else {
 		rt.Status.LinkedSkills = nil
-		meta.RemoveStatusCondition(&rt.Status.Conditions, ConditionTypeSkillsDiscovered)
 	}
 	desired := rt.Status.DeepCopy()
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -726,7 +714,6 @@ func (r *AgentRuntimeReconciler) handleDeletion(ctx context.Context, rt *agentv1
 			delete(workloadLabels, LabelManagedBy)
 			acc.obj.SetLabels(workloadLabels)
 
-
 			// Remove kagenti.io/type from PodTemplateSpec pod labels so future pods
 			// are not presented to the webhook with the type label.
 			podLabels := acc.getPodLabels(acc.obj)
@@ -770,10 +757,6 @@ func (r *AgentRuntimeReconciler) handleDeletion(ctx context.Context, rt *agentv1
 	return ctrl.Result{}, nil
 }
 
-func (r *AgentRuntimeReconciler) setPhase(rt *agentv1alpha1.AgentRuntime, phase agentv1alpha1.RuntimePhase) {
-	rt.Status.Phase = phase
-}
-
 func (r *AgentRuntimeReconciler) setCondition(rt *agentv1alpha1.AgentRuntime, condType string, status metav1.ConditionStatus, reason, message string) {
 	meta.SetStatusCondition(&rt.Status.Conditions, metav1.Condition{
 		Type:               condType,
@@ -784,8 +767,8 @@ func (r *AgentRuntimeReconciler) setCondition(rt *agentv1alpha1.AgentRuntime, co
 	})
 }
 
-// updateErrorStatus sets the AgentRuntime phase to Error and updates a condition
-// with retry-on-conflict semantics, re-fetching the object on each attempt.
+// updateErrorStatus updates a condition to False with retry-on-conflict
+// semantics, re-fetching the object on each attempt.
 func (r *AgentRuntimeReconciler) updateErrorStatus(ctx context.Context, key types.NamespacedName, condType, reason, message string) {
 	logger := log.FromContext(ctx)
 	if statusErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -793,7 +776,6 @@ func (r *AgentRuntimeReconciler) updateErrorStatus(ctx context.Context, key type
 		if err := r.Get(ctx, key, latest); err != nil {
 			return err
 		}
-		r.setPhase(latest, agentv1alpha1.RuntimePhaseError)
 		r.setCondition(latest, condType, metav1.ConditionFalse, reason, message)
 		return r.Status().Update(ctx, latest)
 	}); statusErr != nil {
@@ -810,8 +792,6 @@ func (r *AgentRuntimeReconciler) fetchAndUpdateCard(ctx context.Context, rt *age
 	if !r.EnableCardDiscovery {
 		if rt.Status.Card != nil {
 			rt.Status.Card = nil
-			r.setCondition(rt, ConditionTypeCardFetched, metav1.ConditionFalse, "DiscoveryDisabled",
-				"Card discovery is disabled; stale card data cleared")
 		}
 		return
 	}
@@ -823,21 +803,17 @@ func (r *AgentRuntimeReconciler) fetchAndUpdateCard(ctx context.Context, rt *age
 		lastHash = annotations[AnnotationLastCardFetchHash]
 	}
 	if changeKey != "" && changeKey == lastHash && rt.Status.Card != nil {
-		r.setCondition(rt, ConditionTypeCardFetched, metav1.ConditionTrue, "FetchSkipped",
-			"Pod template unchanged; existing card data still valid")
 		return
 	}
 
 	if ready, msg := r.checkWorkloadReady(ctx, rt.Namespace, rt.Spec.TargetRef); !ready {
 		logger.V(1).Info("Workload not ready for card discovery", "reason", msg)
-		r.setCondition(rt, ConditionTypeCardFetched, metav1.ConditionFalse, "WorkloadNotReady", msg)
 		return
 	}
 
 	svc, port, err := r.resolveServiceForWorkload(ctx, rt.Namespace, rt.Spec.TargetRef)
 	if err != nil {
 		logger.V(1).Info("Service resolution failed for card discovery", "error", err)
-		r.setCondition(rt, ConditionTypeCardFetched, metav1.ConditionFalse, "ServiceNotFound", err.Error())
 		return
 	}
 
@@ -845,7 +821,6 @@ func (r *AgentRuntimeReconciler) fetchAndUpdateCard(ctx context.Context, rt *age
 	cardData, fetchResult, transportSecurity, err := r.fetchCard(ctx, rt, svc, port, protocol)
 	if err != nil {
 		logger.Error(err, "Card fetch failed", "workload", rt.Spec.TargetRef.Name)
-		r.setCondition(rt, ConditionTypeCardFetched, metav1.ConditionFalse, "FetchFailed", err.Error())
 		return
 	}
 
@@ -882,13 +857,6 @@ func (r *AgentRuntimeReconciler) fetchAndUpdateCard(ctx context.Context, rt *age
 	}
 
 	rt.Status.Card = cardStatus
-
-	conditionReason := "Fetched"
-	if transportSecurity == agentv1alpha1.TransportSecurityHTTP {
-		conditionReason = "FetchedInsecure"
-	}
-	r.setCondition(rt, ConditionTypeCardFetched, metav1.ConditionTrue, conditionReason,
-		fmt.Sprintf("Successfully fetched agent card for %s", cardData.Name))
 
 	r.persistCardFetchAnnotation(ctx, rt, changeKey)
 }

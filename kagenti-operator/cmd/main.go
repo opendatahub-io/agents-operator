@@ -109,6 +109,7 @@ func main() {
 	var enableOtelBootstrap bool
 	var mlflowWorkspace string
 	var mlflowExperimentName string
+	var mlflowCAFile string
 
 	var enableCardDiscovery bool
 
@@ -166,6 +167,8 @@ func main() {
 		"Kubernetes namespace used as the x-mlflow-workspace header value (RHOAI only)")
 	flag.StringVar(&mlflowExperimentName, "mlflow-experiment-name", "kagenti-traces",
 		"MLflow experiment name; created automatically if it doesn't exist")
+	flag.StringVar(&mlflowCAFile, "mlflow-ca-file", "",
+		"Path to PEM-encoded CA bundle for MLflow TLS verification (appended to system pool)")
 
 	flag.BoolVar(&enableCardDiscovery, "enable-card-discovery", false,
 		"Enable automatic agent card discovery from AgentRuntime workloads into status.card")
@@ -527,9 +530,10 @@ func main() {
 
 	if enableMLflow {
 		if err = (&controller.MLflowReconciler{
-			Client:   mgr.GetClient(),
-			Scheme:   mgr.GetScheme(),
-			Recorder: mgr.GetEventRecorderFor("mlflow-controller"),
+			Client:       mgr.GetClient(),
+			Scheme:       mgr.GetScheme(),
+			Recorder:     mgr.GetEventRecorderFor("mlflow-controller"), //nolint:staticcheck
+			MLflowCAFile: mlflowCAFile,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "MLflow")
 			os.Exit(1)

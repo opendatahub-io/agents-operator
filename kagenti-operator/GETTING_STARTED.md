@@ -141,8 +141,8 @@ The controller will:
 kubectl get agentruntime -n team1
 
 # Example output:
-# NAME                      TYPE    TARGET          PHASE    AGE
-# weather-agent-runtime     agent   weather-agent   Active   2m
+# NAME                      TYPE    TARGET          READY   AGE
+# weather-agent-runtime     agent   weather-agent   True    2m
 
 # View detailed conditions
 kubectl describe agentruntime weather-agent-runtime -n team1

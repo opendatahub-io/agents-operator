@@ -1201,15 +1201,7 @@ rules:
 			}).Should(Succeed())
 		})
 
-		It("should set Phase=Active and Ready=True", func() {
-			By("verifying phase is Active")
-			Eventually(func(g Gomega) {
-				phase, err := utils.KubectlGetJsonpath("agentruntime", "test-agent-runtime",
-					agentRuntimeTestNamespace, "{.status.phase}")
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(phase).To(Equal("Active"))
-			}).Should(Succeed())
-
+		It("should set Ready=True", func() {
 			By("verifying Ready condition is True")
 			Eventually(func(g Gomega) {
 				readyStatus, err := utils.KubectlGetJsonpath("agentruntime", "test-agent-runtime",
@@ -1293,17 +1285,17 @@ rules:
 	})
 
 	Context("Error cases", func() {
-		It("should set Phase=Error for missing target", func() {
+		It("should set TargetResolved=False for missing target", func() {
 			By("creating AgentRuntime targeting non-existent deployment")
 			_, err := utils.KubectlApplyStdin(runtimeMissingTargetCRFixture(), agentRuntimeTestNamespace)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("verifying phase is Error")
+			By("verifying TargetResolved condition is False")
 			Eventually(func(g Gomega) {
-				phase, err := utils.KubectlGetJsonpath("agentruntime", "test-missing-target",
-					agentRuntimeTestNamespace, "{.status.phase}")
+				status, err := utils.KubectlGetJsonpath("agentruntime", "test-missing-target",
+					agentRuntimeTestNamespace, "{.status.conditions[?(@.type=='TargetResolved')].status}")
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(phase).To(Equal("Error"))
+				g.Expect(status).To(Equal("False"))
 			}).Should(Succeed())
 
 			By("verifying TargetResolved condition mentions the target")
@@ -1391,12 +1383,12 @@ rules:
 				g.Expect(managedBy).To(Equal("kagenti-operator"))
 			}).Should(Succeed())
 
-			By("verifying Phase=Active")
+			By("verifying Ready=True")
 			Eventually(func(g Gomega) {
-				phase, err := utils.KubectlGetJsonpath("agentruntime", "test-sts-runtime",
-					agentRuntimeTestNamespace, "{.status.phase}")
+				readyStatus, err := utils.KubectlGetJsonpath("agentruntime", "test-sts-runtime",
+					agentRuntimeTestNamespace, "{.status.conditions[?(@.type=='Ready')].status}")
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(phase).To(Equal("Active"))
+				g.Expect(readyStatus).To(Equal("True"))
 			}).Should(Succeed())
 
 			By("verifying config-hash on pod template")
@@ -1438,12 +1430,12 @@ rules:
 
 			var minimalHash, overridesHash string
 
-			By("waiting for minimal CR to reach Active")
+			By("waiting for minimal CR to become Ready")
 			Eventually(func(g Gomega) {
-				phase, err := utils.KubectlGetJsonpath("agentruntime", "test-minimal-runtime",
-					agentRuntimeTestNamespace, "{.status.phase}")
+				readyStatus, err := utils.KubectlGetJsonpath("agentruntime", "test-minimal-runtime",
+					agentRuntimeTestNamespace, "{.status.conditions[?(@.type=='Ready')].status}")
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(phase).To(Equal("Active"))
+				g.Expect(readyStatus).To(Equal("True"))
 			}).Should(Succeed())
 
 			By("recording minimal config-hash")
@@ -1456,12 +1448,12 @@ rules:
 				minimalHash = hash
 			}).Should(Succeed())
 
-			By("waiting for overrides CR to reach Active")
+			By("waiting for overrides CR to become Ready")
 			Eventually(func(g Gomega) {
-				phase, err := utils.KubectlGetJsonpath("agentruntime", "test-overrides-runtime",
-					agentRuntimeTestNamespace, "{.status.phase}")
+				readyStatus, err := utils.KubectlGetJsonpath("agentruntime", "test-overrides-runtime",
+					agentRuntimeTestNamespace, "{.status.conditions[?(@.type=='Ready')].status}")
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(phase).To(Equal("Active"))
+				g.Expect(readyStatus).To(Equal("True"))
 			}).Should(Succeed())
 
 			By("recording overrides config-hash")
@@ -1666,12 +1658,12 @@ rules:
 	SetDefaultEventuallyPollingInterval(time.Second)
 
 	It("should apply labels to workload when AgentRuntime is created", func() {
-		By("waiting for AgentRuntime phase=Active")
+		By("waiting for AgentRuntime Ready=True")
 		Eventually(func(g Gomega) {
-			phase, err := utils.KubectlGetJsonpath("agentruntime", "combined-agent",
-				combinedTestNamespace, "{.status.phase}")
+			readyStatus, err := utils.KubectlGetJsonpath("agentruntime", "combined-agent",
+				combinedTestNamespace, "{.status.conditions[?(@.type=='Ready')].status}")
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(phase).To(Equal("Active"))
+			g.Expect(readyStatus).To(Equal("True"))
 		}).Should(Succeed())
 
 		By("verifying Ready condition is True")
@@ -2082,12 +2074,12 @@ rules:
 				return err
 			}, 1*time.Minute, 5*time.Second).Should(Succeed())
 
-			By("waiting for AgentRuntime phase=Active")
+			By("waiting for AgentRuntime Ready=True")
 			Eventually(func(g Gomega) {
-				phase, err := utils.KubectlGetJsonpath("agentruntime", "skill-discovery-agent",
-					skillDiscoveryTestNamespace, "{.status.phase}")
+				readyStatus, err := utils.KubectlGetJsonpath("agentruntime", "skill-discovery-agent",
+					skillDiscoveryTestNamespace, "{.status.conditions[?(@.type=='Ready')].status}")
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(phase).To(Equal("Active"))
+				g.Expect(readyStatus).To(Equal("True"))
 			}).Should(Succeed())
 
 			By("verifying status.linkedSkills is empty")
@@ -2097,15 +2089,6 @@ rules:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(skills).To(BeEmpty())
 			}).Should(Succeed())
-
-			By("verifying SkillsDiscovered condition is absent")
-			Consistently(func(g Gomega) {
-				status, err := utils.KubectlGetJsonpath("agentruntime", "skill-discovery-agent",
-					skillDiscoveryTestNamespace,
-					"{.status.conditions[?(@.type=='SkillsDiscovered')].status}")
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(status).To(BeEmpty(), "SkillsDiscovered condition should not be set when feature gate is disabled")
-			}, 10*time.Second, 2*time.Second).Should(Succeed())
 
 			By("verifying operator did NOT mutate the Deployment (no skill volumes)")
 			Eventually(func(g Gomega) {
@@ -2180,42 +2163,18 @@ rules:
 				return err
 			}, 1*time.Minute, 5*time.Second).Should(Succeed())
 
-			By("waiting for AgentRuntime phase=Active")
+			By("waiting for AgentRuntime Ready=True with linkedSkills populated")
 			Eventually(func(g Gomega) {
-				phase, err := utils.KubectlGetJsonpath("agentruntime", "skill-discovery-agent",
-					skillDiscoveryTestNamespace, "{.status.phase}")
+				readyStatus, err := utils.KubectlGetJsonpath("agentruntime", "skill-discovery-agent",
+					skillDiscoveryTestNamespace, "{.status.conditions[?(@.type=='Ready')].status}")
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(phase).To(Equal("Active"))
-			}).Should(Succeed())
+				g.Expect(readyStatus).To(Equal("True"))
 
-			By("verifying status.linkedSkills contains discovered skills")
-			Eventually(func(g Gomega) {
 				raw, err := utils.KubectlGetJsonpath("agentruntime", "skill-discovery-agent",
 					skillDiscoveryTestNamespace, "{.status.linkedSkills}")
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(raw).To(ContainSubstring("summarizer"))
 				g.Expect(raw).To(ContainSubstring("openshift-review"))
-			}).Should(Succeed())
-
-			By("verifying SkillsDiscovered condition is True with reason SkillsFound")
-			Eventually(func(g Gomega) {
-				status, err := utils.KubectlGetJsonpath("agentruntime", "skill-discovery-agent",
-					skillDiscoveryTestNamespace,
-					"{.status.conditions[?(@.type=='SkillsDiscovered')].status}")
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(status).To(Equal("True"))
-
-				reason, err := utils.KubectlGetJsonpath("agentruntime", "skill-discovery-agent",
-					skillDiscoveryTestNamespace,
-					"{.status.conditions[?(@.type=='SkillsDiscovered')].reason}")
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(reason).To(Equal("SkillsFound"))
-
-				message, err := utils.KubectlGetJsonpath("agentruntime", "skill-discovery-agent",
-					skillDiscoveryTestNamespace,
-					"{.status.conditions[?(@.type=='SkillsDiscovered')].message}")
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(message).To(ContainSubstring("2 linked skill(s)"))
 			}).Should(Succeed())
 
 			By("verifying Deployment was NOT mutated (no skill volumes added)")
@@ -2247,14 +2206,6 @@ rules:
 				g.Expect(raw).To(ContainSubstring("openshift-review"))
 			}).Should(Succeed())
 
-			By("verifying SkillsDiscovered message reflects new count")
-			Eventually(func(g Gomega) {
-				message, err := utils.KubectlGetJsonpath("agentruntime", "skill-discovery-agent",
-					skillDiscoveryTestNamespace,
-					"{.status.conditions[?(@.type=='SkillsDiscovered')].message}")
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(message).To(ContainSubstring("3 linked skill(s)"))
-			}).Should(Succeed())
 		})
 
 		It("should clear linkedSkills when annotation is removed", func() {
@@ -2274,14 +2225,6 @@ rules:
 				g.Expect(skills).To(BeEmpty())
 			}).Should(Succeed())
 
-			By("verifying SkillsDiscovered condition is removed")
-			Eventually(func(g Gomega) {
-				status, err := utils.KubectlGetJsonpath("agentruntime", "skill-discovery-agent",
-					skillDiscoveryTestNamespace,
-					"{.status.conditions[?(@.type=='SkillsDiscovered')].status}")
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(status).To(BeEmpty())
-			}).Should(Succeed())
 		})
 
 		It("should update linkedSkills and rollout pods when an OCI skill volume is removed", func() {
@@ -2296,12 +2239,12 @@ rules:
 				return err
 			}, 1*time.Minute, 5*time.Second).Should(Succeed())
 
-			By("waiting for AgentRuntime phase=Active")
+			By("waiting for AgentRuntime Ready=True")
 			Eventually(func(g Gomega) {
-				phase, err := utils.KubectlGetJsonpath("agentruntime", "oci-skill-agent",
-					skillDiscoveryTestNamespace, "{.status.phase}")
+				readyStatus, err := utils.KubectlGetJsonpath("agentruntime", "oci-skill-agent",
+					skillDiscoveryTestNamespace, "{.status.conditions[?(@.type=='Ready')].status}")
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(phase).To(Equal("Active"))
+				g.Expect(readyStatus).To(Equal("True"))
 			}).Should(Succeed())
 
 			By("verifying both skills are discovered")
@@ -2340,15 +2283,6 @@ rules:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(raw).To(ContainSubstring("summarizer"))
 				g.Expect(raw).NotTo(ContainSubstring("openshift-review"))
-			}).Should(Succeed())
-
-			By("verifying SkillsDiscovered message reflects 1 skill")
-			Eventually(func(g Gomega) {
-				message, err := utils.KubectlGetJsonpath("agentruntime", "oci-skill-agent",
-					skillDiscoveryTestNamespace,
-					"{.status.conditions[?(@.type=='SkillsDiscovered')].message}")
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(message).To(ContainSubstring("1 linked skill(s)"))
 			}).Should(Succeed())
 
 			By("verifying Deployment only has the summarizer volume")
