@@ -68,9 +68,9 @@ networking in Gateway API. Two proposals are directly relevant:
 - [Proposal 7: Payload Processing] — introduces
   `PayloadProcessingPipeline` for ordered, sequential body/header
   processors (prompt validation, PII redaction, semantic routing) as
-  HTTPRoute filters. This is the emerging standard for guardrails and
-  is the intended generation target for per-provider processing
-  pipelines (see [Future: guardrails](#future-guardrails)).
+  HTTPRoute filters. This is the emerging standard for guardrails.
+  How we integrate it with our abstraction is discussed in
+  [Future: PayloadProcessingPipeline](#future-payloadprocessingpipeline).
 
 Our design generates the Envoy AI Gateway CRDs that exist today, but is
 structured so that when the WG proposals mature into accepted APIs, we
@@ -737,10 +737,9 @@ presents its SPIFFE certificate (CSI driver, spiffe-helper sidecar,
 AuthBridge integration, or native go-spiffe) is the client-side
 concern and is out of scope for this proposal.
 
-AuthBridge (agent-to-agent OAuth/OIDC) and the MCP Gateway (MCP
-protocol routing) are orthogonal to AI Gateway (model routing and
-inference access control). They target different traffic flows and
-do not conflict.
+AuthBridge (agent-to-agent OAuth/OIDC) is orthogonal to AI Gateway
+(model routing and inference access control). They target different
+traffic flows and do not conflict.
 
 Client-side configuration for connecting workloads to AI Gateways
 with SPIFFE identity may be addressed in a separate proposal.
@@ -849,11 +848,25 @@ config:
       hooks:
         xdsTranslator:
           post: [Translation, Cluster, Route]
+          translation:
+            cluster:
+              includeAll: true
+            listener:
+              includeAll: true
+            route:
+              includeAll: true
+            secret:
+              includeAll: true
       service:
         fqdn:
           hostname: ai-gateway-controller.<ns>.svc.cluster.local
           port: 1063
 ```
+
+The `translation` block is required. Without it, Envoy Gateway
+defaults to excluding listeners and routes from the
+`PostTranslateModify` hook, and the AI Gateway extension server
+cannot inject the ext_proc filter into the listener filter chain.
 
 ## Implementation plan
 
@@ -894,13 +907,12 @@ enable provider reuse across gateways and finer-grained RBAC. The
 internal `RoutingIntent` model should be structured so that this
 extraction is a mechanical refactor.
 
-### Future: guardrails
+### Future: payload processing
 
-Per-provider guardrails via the `processing` field (see
-[Future: guardrails](#future-guardrails) above). Depends on the
-WG AI Gateway [Proposal 7: Payload Processing] maturing. Gateway-wide
-guardrails would be a separate policy CRD and a separate design
-proposal.
+Per-provider and per-model guardrails via
+[PayloadProcessingPipeline](#future-payloadprocessingpipeline).
+Depends on the WG AI Gateway [Proposal 7: Payload Processing]
+maturing.
 
 ## Compatibility notes
 
