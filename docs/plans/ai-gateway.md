@@ -145,11 +145,26 @@ The core policy — without it, the Gateway has no AI routing.
 
 Providers and models are separate concepts:
 
-- **Providers** define shared connection configuration: endpoint, API
-  schema, and credentials. A provider is referenced by name from model
-  backend entries. Each provider generates one Backend, one
-  AIServiceBackend, and (if credentials are set) one
+- **Providers** define shared connection configuration: endpoint,
+  protocol, API schema, and credentials. A provider is referenced by
+  name from model backend entries. Each provider generates one
+  Backend, one AIServiceBackend, and (if credentials are set) one
   BackendSecurityPolicy.
+
+  Providers distinguish two layers:
+
+  | Field | Layer | Examples |
+  |-------|-------|----------|
+  | `protocol` | Transport | `HTTP`, `HTTP2`, `gRPC` |
+  | `schema` | Application format | `OpenAI`, `AWSBedrock`, `MCP`, `A2A` |
+
+  The WG AI Gateway's [Proposal 10: Egress Gateways] combines both
+  into a single `BackendProtocol` enum. We separate them
+  intentionally — MCP and A2A are application-layer schemas
+  (JSON-RPC over HTTP/SSE, HTTP respectively), not transport
+  protocols. A provider's protocol determines the generated
+  `Backend` transport configuration; its schema determines the
+  `AIServiceBackend` API translation.
 
 - **Models** define the client-facing routing unit. Each model has a
   `name` (the virtual name clients request), a list of `backends`
@@ -428,6 +443,9 @@ status:
   - type: RoutingActive     # AIGatewayRoute + BTP created and accepted
     status: "True"
     reason: Applied
+  - type: Programmed        # aggregate: all sub-conditions True
+    status: "False"
+    reason: ProvidersNotReady
 
   providers:
   - name: ollama
@@ -451,6 +469,14 @@ status:
 | `GatewayBound` | Target Gateway exists in namespace | `GatewayNotFound` |
 | `ProvidersConfigured` | All Backend + AIServiceBackend + BSP resources created | `PartialFailure`, `ApplyFailed`, `CredentialSecretNotFound` |
 | `RoutingActive` | AIGatewayRoute + BackendTrafficPolicy created and accepted | `ApplyFailed` |
+| `Programmed` | All of the above are True | Mirrors the failing sub-condition's reason |
+
+`Programmed` is an aggregate signal per [GEP-713][]. It goes True
+when `Accepted`, `GatewayBound`, `ProvidersConfigured`, and
+`RoutingActive` are all True, giving a single condition suitable for
+`kubectl wait --for=condition=Programmed`.
+
+[GEP-713]: https://gateway-api.sigs.k8s.io/geps/gep-713/
 
 The `status.providers[]` list mirrors `spec.providers[]` and reports
 per-provider readiness. When `ProvidersConfigured` is False, the
@@ -479,6 +505,9 @@ status:
   - type: MTLSActive        # CA Secret + server cert + CTP created
     status: "True"
     reason: Applied
+  - type: Programmed        # aggregate: all sub-conditions True
+    status: "True"
+    reason: Programmed
 ```
 
 | Condition | True when | False reasons |
@@ -487,6 +516,7 @@ status:
 | `GatewayBound` | Target Gateway exists in namespace | `GatewayNotFound` |
 | `BundleReady` | Trust bundle ConfigMap read and parsed with ≥1 valid cert | `BundleNotFound`, `BundleEmpty`, `BundleParseError` |
 | `MTLSActive` | CA Secret, server cert, and ClientTrafficPolicy created | `ApplyFailed`, `CertGenerationFailed` |
+| `Programmed` | All of the above are True | Mirrors the failing sub-condition's reason |
 
 `BundleReady` is re-evaluated on every requeue (default 5 minutes),
 so it reflects trust bundle rotations. The message includes the
