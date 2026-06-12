@@ -167,21 +167,6 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 		return false, nil
 	}
 
-	// Read AgentRuntime CR overrides. If no CR exists the webhook still
-	// injects sidecars using defaults-only config (platform + namespace
-	// defaults, no per-workload overrides). ResolveConfig handles nil
-	// overrides transparently.
-	arOverrides, err := ReadAgentRuntimeOverrides(ctx, m.Client, namespace, crName, workloadKind)
-	if err != nil {
-		mutatorLog.Error(err, "failed to read AgentRuntime",
-			"namespace", namespace, "crName", crName)
-		return false, err
-	}
-	if arOverrides == nil {
-		mutatorLog.Info("No AgentRuntime CR found, injecting with defaults-only config",
-			"namespace", namespace, "crName", crName)
-	}
-
 	// Derive SPIRE mode from the injection decision: if spiffe-helper is being
 	// injected then SPIRE volumes and a dedicated ServiceAccount are needed.
 	spireEnabled := decision.SpiffeHelper.Inject
@@ -234,31 +219,19 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 	}
 
 	// ========================================
-	// Resolve mTLS posture (CR > namespace > "disabled")
+	// Resolve mTLS posture (namespace > "disabled")
 	// ========================================
 	//
 	// Done BEFORE the volume-building / per-workload resolution so that
 	// "mtlsMode != disabled implies SPIRE" can flip spireEnabled and
 	// fall through to the existing SPIRE-aware code paths (volumes,
-	// ServiceAccount, container env). Mode-compat validation
-	// (mtlsMode incompatible with envoy-sidecar) runs in the
-	// AgentRuntime validating webhook upstream of pod admission.
-	// Resolution chain: CR > namespace > "disabled". An explicit
-	// CR value (including "disabled") pins; the namespace fallback
-	// only fires when the CR doesn't set the field at all.
-	// arOverrides.MTLSMode is the sentinel — extractOverrides only
-	// populates it when Spec.MTLSMode is non-empty.
+	// ServiceAccount, container env).
+	// Resolution chain: namespace ConfigMap > "disabled".
 	mtlsMode := ""
 	mtlsSource := ""
-	if arOverrides != nil && arOverrides.MTLSMode != nil {
-		mtlsMode = *arOverrides.MTLSMode
-		mtlsSource = "agentruntime-cr"
-	}
-	if mtlsMode == "" {
-		if m := ExtractMTLSMode(nsConfig.AuthBridgeRuntimeYAML); m != "" {
-			mtlsMode = m
-			mtlsSource = "namespace-configmap"
-		}
+	if m := ExtractMTLSMode(nsConfig.AuthBridgeRuntimeYAML); m != "" {
+		mtlsMode = m
+		mtlsSource = "namespace-configmap"
 	}
 	if mtlsMode == "" {
 		mtlsMode = MTLSModePermissive
@@ -306,7 +279,7 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 	}
 
 	// ========================================
-	// Resolve egressEnforcement (CR > namespace > enforce-redirect)
+	// Resolve egressEnforcement (namespace > enforce-redirect)
 	// ========================================
 	//
 	// Controls proxy-init injection in proxy-sidecar / lite modes.
@@ -315,15 +288,9 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 	// envoy-sidecar mode ignores this (proxy-init is structural there).
 	egressEnforcement := ""
 	egressEnforcementSource := ""
-	if arOverrides != nil && arOverrides.EgressEnforcement != nil {
-		egressEnforcement = *arOverrides.EgressEnforcement
-		egressEnforcementSource = "agentruntime-cr"
-	}
-	if egressEnforcement == "" {
-		if ee := ExtractEgressEnforcement(nsConfig.AuthBridgeRuntimeYAML); ee != "" {
-			egressEnforcement = ee
-			egressEnforcementSource = "namespace-configmap"
-		}
+	if ee := ExtractEgressEnforcement(nsConfig.AuthBridgeRuntimeYAML); ee != "" {
+		egressEnforcement = ee
+		egressEnforcementSource = "namespace-configmap"
 	}
 	if egressEnforcement == "" {
 		egressEnforcement = EgressEnforcementEnforceRedirect
@@ -356,13 +323,6 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 		"namespace", namespace, "crName", crName,
 		"mode", egressEnforcement, "source", egressEnforcementSource)
 
-	// ========================================
-	// Resolve AllowedAudiences (from AgentRuntime CR)
-	// ========================================
-	var allowedAudiences []string
-	if arOverrides != nil {
-		allowedAudiences = slices.Clone(arOverrides.AllowedAudiences)
-	}
 
 	// ========================================
 	// Resolve TLS bridge posture (CR > namespace > "disabled")
@@ -379,10 +339,7 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 	// pins; the namespace ConfigMap is the fallback; the default is "disabled".
 	tlsBridgeMode := agentv1alpha1.TLSBridgeModeDisabled
 	tlsBridgeSource := "default"
-	if arOverrides != nil && arOverrides.TLSBridgeMode != nil {
-		tlsBridgeMode = *arOverrides.TLSBridgeMode
-		tlsBridgeSource = "agentruntime-cr"
-	} else if m := ExtractTLSBridgeMode(nsConfig.AuthBridgeRuntimeYAML); m != "" {
+	if m := ExtractTLSBridgeMode(nsConfig.AuthBridgeRuntimeYAML); m != "" {
 		tlsBridgeMode = m
 		tlsBridgeSource = "namespace-configmap"
 	}
@@ -402,14 +359,9 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 
 	if currentGates.PerWorkloadConfigResolution {
 		// Resolved path: build literal env vars from namespace config
-		// arOverrides was already read above as a gate check.
-		resolved := ResolveConfig(currentConfig, nsConfig, arOverrides)
+		resolved := ResolveConfig(currentConfig, nsConfig)
 		builder = NewResolvedContainerBuilder(resolved)
 		requiredVolumes = BuildResolvedVolumes(spireEnabled, "")
-
-		mutatorLog.Info("Using resolved config path",
-			"namespace", namespace, "crName", crName,
-			"hasAgentRuntimeOverrides", arOverrides != nil)
 	} else {
 		// Legacy path: ValueFrom refs, kubelet resolves at runtime
 		builder = NewContainerBuilder(currentConfig)
@@ -432,27 +384,20 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 	//   waypoint                — standalone deployment, not injected as sidecar
 	//
 	// Resolution chain (first non-empty wins):
-	//   1. AgentRuntime CR `Spec.AuthBridgeMode`             (per-workload override)
-	//   2. namespace authbridge-runtime-config `mode:` field (namespace default)
-	//   3. kagenti.io/authbridge-mode annotation             (deprecated)
-	//   4. ModeProxySidecar                                  (cluster-wide fallback)
+	//   1. namespace authbridge-runtime-config `mode:` field (namespace default)
+	//   2. kagenti.io/authbridge-mode annotation             (deprecated)
+	//   3. ModeProxySidecar                                  (cluster-wide fallback)
 	authBridgeMode := ""
 	modeSource := ""
-	if arOverrides != nil && arOverrides.AuthBridgeMode != nil {
-		authBridgeMode = *arOverrides.AuthBridgeMode
-		modeSource = "agentruntime-cr"
-	}
-	if authBridgeMode == "" {
-		if m := ExtractMode(nsConfig.AuthBridgeRuntimeYAML); m != "" {
-			authBridgeMode = m
-			modeSource = "namespace-configmap"
-		}
+	if m := ExtractMode(nsConfig.AuthBridgeRuntimeYAML); m != "" {
+		authBridgeMode = m
+		modeSource = "namespace-configmap"
 	}
 	if authBridgeMode == "" {
 		if m := annotations[AnnotationAuthBridgeMode]; m != "" {
 			authBridgeMode = m
 			modeSource = "annotation-deprecated"
-			mutatorLog.Info("DEPRECATED: kagenti.io/authbridge-mode annotation used; set AgentRuntime.Spec.AuthBridgeMode instead",
+			mutatorLog.Info("DEPRECATED: kagenti.io/authbridge-mode annotation used; set mode in namespace authbridge-runtime-config ConfigMap instead",
 				"namespace", namespace, "crName", crName, "mode", authBridgeMode)
 		}
 	}
@@ -598,7 +543,7 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 				"reverse_proxy_backend": fmt.Sprintf("http://127.0.0.1:%d", newAgentPort),
 				"forward_proxy_addr":    fmt.Sprintf(":%d", forwardProxyPort),
 			},
-			mtlsMode, allowedAudiences, tlsBridgeMode, spireEnabled)
+			mtlsMode, tlsBridgeMode, spireEnabled)
 		if err != nil {
 			return false, fmt.Errorf("proxy-sidecar per-agent ConfigMap: %w", err)
 		}
@@ -734,13 +679,14 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 	// inbound listener (gated on MTLSEnabled) and UpstreamTlsContext on
 	// original_destination_tls (strict only).
 	perAgentCMName, err := m.ensurePerAgentConfigMap(ctx, namespace, crName,
-		ModeEnvoySidecar, nsConfig.AuthBridgeRuntimeYAML, nsConfig, nil, mtlsMode, allowedAudiences, "", spireEnabled) // bridge never runs under envoy-sidecar
+		ModeEnvoySidecar, nsConfig.AuthBridgeRuntimeYAML, nsConfig, nil, mtlsMode, "", spireEnabled) // bridge never runs under envoy-sidecar
 	if err != nil {
 		return false, fmt.Errorf("envoy-sidecar per-agent ConfigMap: %w", err)
 	}
 	requiredVolumes = overrideAuthBridgeConfigMapInVolumes(requiredVolumes, perAgentCMName)
 
-	resolvedForEnvoy := ResolveConfig(currentConfig, nsConfig, arOverrides)
+	resolvedForEnvoy := ResolveConfig(currentConfig, nsConfig)
+	resolvedForEnvoy.MTLSMode = mtlsMode
 	envoyCMName, err := m.ensurePerAgentEnvoyConfigMap(ctx, namespace, crName, resolvedForEnvoy)
 	if err != nil {
 		return false, fmt.Errorf("envoy-sidecar per-agent envoy ConfigMap: %w", err)
@@ -938,38 +884,6 @@ func synthesizePipeline(nsConfig *NamespaceConfig) map[string]interface{} {
 	}
 }
 
-// injectAllowedAudiences walks into cfg["pipeline"]["inbound"]["plugins"] and sets
-// allowed_audiences on the jwt-validation plugin's config block. If the pipeline
-// structure does not contain a jwt-validation plugin, a warning is logged and the
-// setting is silently dropped.
-func injectAllowedAudiences(cfg map[string]interface{}, audiences []string) {
-	pipeline, _ := cfg["pipeline"].(map[string]interface{})
-	if pipeline == nil {
-		mutatorLog.Info("WARN: allowedAudiences set on AgentRuntime CR but no pipeline section in config; setting has no effect")
-		return
-	}
-	inbound, _ := pipeline["inbound"].(map[string]interface{})
-	if inbound == nil {
-		mutatorLog.Info("WARN: allowedAudiences set on AgentRuntime CR but no inbound pipeline; setting has no effect")
-		return
-	}
-	plugins, _ := inbound["plugins"].([]interface{})
-	for _, p := range plugins {
-		pm, _ := p.(map[string]interface{})
-		if pm == nil || pm["name"] != "jwt-validation" {
-			continue
-		}
-		pluginCfg, _ := pm["config"].(map[string]interface{})
-		if pluginCfg == nil {
-			pluginCfg = map[string]interface{}{}
-			pm["config"] = pluginCfg
-		}
-		pluginCfg["allowed_audiences"] = audiences
-		return
-	}
-	mutatorLog.Info("WARN: allowedAudiences set on AgentRuntime CR but jwt-validation plugin not in inbound pipeline; setting has no effect")
-}
-
 // ensurePerAgentConfigMap creates or updates a per-agent ConfigMap that merges the
 // namespace-level authbridge-runtime-config with per-agent overrides (mode, listener
 // addresses, mtls). The authbridge sidecar mounts this instead of the shared ConfigMap.
@@ -990,7 +904,6 @@ func (m *PodMutator) ensurePerAgentConfigMap(
 	nsConfig *NamespaceConfig,
 	listenerOverrides map[string]string,
 	mtlsMode string,
-	allowedAudiences []string,
 	tlsBridgeMode string,
 	spireEnabled bool,
 ) (string, error) {
@@ -1025,13 +938,6 @@ func (m *PodMutator) ensurePerAgentConfigMap(
 	// the per-plugin config schema.
 	if cfg["pipeline"] == nil && nsConfig != nil {
 		cfg["pipeline"] = synthesizePipeline(nsConfig)
-	}
-
-	// Inject per-agent AllowedAudiences into the jwt-validation plugin config.
-	// This overrides any namespace-level audience setting with the per-agent value
-	// from the AgentRuntime CR's .spec.identity.allowedAudiences.
-	if len(allowedAudiences) > 0 {
-		injectAllowedAudiences(cfg, allowedAudiences)
 	}
 
 	// Override mode
