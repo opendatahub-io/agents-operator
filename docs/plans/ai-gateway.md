@@ -327,6 +327,41 @@ API key authentication.
 This is a gateway-level concern — it applies uniformly to all traffic
 entering the gateway, independent of which provider handles the request.
 
+#### Why: tokenless inference access
+
+Today, giving an agent access to an LLM provider means provisioning
+an API key, storing it in a Secret, mounting it into the workload,
+and building rotation and revocation processes around it. API keys
+are bearer tokens — if leaked, anyone can use them. In multi-team
+environments, shared keys make attribution and cost accounting
+difficult.
+
+With AIAccessPolicy, inference access is tied to workload identity.
+A platform admin deploys an AI Gateway with mTLS. Agent workloads
+in the namespace have SPIFFE identities provisioned by SPIRE. When
+an agent calls the gateway, its X.509 SVID is validated against the
+trust bundle — no API keys to provision, rotate, or leak. Workloads
+without a SPIFFE identity in the trust domain are rejected at the
+TLS handshake. The agent code is unchanged; it calls an
+OpenAI-compatible endpoint. The credential management is pushed from
+application teams to infrastructure.
+
+Provider-level API keys (for external providers like OpenAI) still
+exist, but they live in one place — the AIRoutingPolicy's credential
+configuration — managed by the platform team. Individual agents
+never see them.
+
+This mechanism also opens the door to per-workload policy. After
+mTLS validation, the proxy sets the `x-forwarded-client-cert`
+header with the client's SPIFFE ID (e.g.
+`spiffe://localtest.me/ns/team1/sa/weather-agent`). This header
+cannot be spoofed — the proxy strips any client-supplied XFCC and
+replaces it with data extracted from the validated certificate. Our
+initial data plane (Envoy) supports this natively; the mechanism
+may be replicated in future supported proxies. A future policy CRD
+could match on XFCC to apply per-workload rate limits, model access
+lists, or processing pipelines.
+
 ```yaml
 apiVersion: aigateway.kagenti.dev/v1alpha1
 kind: AIAccessPolicy
