@@ -547,6 +547,86 @@ rate limiting apply uniformly regardless of protocol. The exact shape
 of non-inference routing entries is left to a future proposal once
 the WG AI Gateway Backend specification matures.
 
+### Future: PayloadProcessingPipeline
+
+The WG AI Gateway's [Proposal 7: Payload Processing] defines
+[`PayloadProcessingPipeline`][PPP] — a resource for
+well-ordered payload processing policies such as semantic caching,
+model selection, guardrails, PII redaction, and prompt injection
+detection. These policies could apply at a per-provider or
+per-model level.
+
+In the upstream proposal, processing pipelines attach to `Backend`
+resources and `Route` resources. In this proposal, we've abstracted
+networking-specific concepts behind terms of art associated with
+Generative AI. `Backend` maps onto "provider" — where a provider is
+a backend that communicates via an AI protocol (e.g. Responses API,
+MCP, A2A). `Route` is implicit in the model-to-provider mapping.
+The user never sees the generated HTTPRoute or Backend resources
+directly.
+
+This presents a tension. Consider a user who wants PII redaction on
+requests to OpenAI but not to Ollama (different trust boundaries).
+They need a PayloadProcessingPipeline that targets only the OpenAI
+provider's traffic. Three approaches:
+
+**Target by name string.** The user references a provider or model
+by name within the AIRoutingPolicy:
+
+```yaml
+kind: PayloadProcessingPipeline
+spec:
+  targetRef:
+    kind: AIRoutingPolicy
+    name: my-routing
+    provider: openai          # string reference into the spec
+```
+
+The controller looks up the AIRoutingPolicy, finds the provider
+named `openai`, determines which HTTPRoute rules correspond to
+models using that provider, and attaches the processing pipeline to
+those rules. This works, but the controller does significant
+indirection, and the targeting vocabulary grows with every new
+concept (provider, model, etc.).
+
+**Expose providers and models as resources.** Instead of one
+AIRoutingPolicy containing everything, the user creates individual
+resources that map to the networking primitives:
+
+```yaml
+kind: AIProvider               # generates Backend + AIServiceBackend
+spec:
+  name: openai
+  endpoint: https://api.openai.com/v1
+  schema: OpenAI
+---
+kind: AIModel                  # generates a rule in AIGatewayRoute
+spec:
+  name: gpt-4o
+  providerRef: openai
+  model: gpt-4o
+```
+
+PayloadProcessingPipeline can now target `AIProvider` or `AIModel`
+directly using standard `targetRef` — no string indirection. This is
+more composable but the user manages many resources instead of one
+for a simple setup.
+
+**Hybrid: compact CR with optional break-out.** AIRoutingPolicy
+stays as-is for simple deployments. When a user needs per-provider
+processing, they extract that provider into a standalone `AIProvider`
+CR and reference it by name from the AIRoutingPolicy. The standalone
+resource is targetable by PayloadProcessingPipeline. This is similar
+to how Kubernetes handles inline vs referenced specs — like a pod
+template inline in a Deployment vs a standalone Pod.
+
+The right answer likely depends on real usage patterns. This
+proposal establishes the routing and access control foundation;
+payload processing attachment semantics will be addressed in a
+follow-up once the WG specification matures.
+
+[PPP]: https://github.com/kubernetes-sigs/wg-ai-gateway/blob/main/proposals/7-payload-processing.md
+
 ## Example: complete deployment
 
 A platform admin sets up a Gateway with mTLS. A team lead configures
