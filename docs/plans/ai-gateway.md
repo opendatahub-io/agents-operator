@@ -459,54 +459,15 @@ certificate count for visibility into how many CAs are trusted.
 
 ### Future: guardrails
 
-Content filtering, prompt injection detection, and PII redaction are
-per-provider concerns — trust boundaries differ between a local Ollama
-instance and an external API endpoint. The natural home for guardrails
-is inline on the provider definition, as an ordered processing pipeline:
-
-```yaml
-providers:
-- name: openai
-  endpoint: https://api.openai.com/v1
-  schema: OpenAI
-  credentials: ...
-  processing:                          # future — not in initial scope
-  - name: pii-redaction
-    phase: request
-    extProc:
-      serviceRef:
-        name: pii-service
-        port: 50051
-  - name: toxicity-check
-    phase: response
-    extProc:
-      serviceRef:
-        name: toxicity-service
-        port: 50051
-
-- name: ollama
-  endpoint: http://ollama.svc:11434
-  schema: OpenAI
-  # no processing — trusted local endpoint
-```
-
-The `processing` list is ordered, giving pipeline semantics. The
-controller would generate per-route ext-proc filter chains so that
-different providers get different processing.
-
-The WG AI Gateway's [Proposal 7: Payload Processing] defines a
-`PayloadProcessingPipeline` CRD for ordered body/header processors as
-HTTPRoute filters. When that proposal matures into an accepted API, the
-`processing` field should generate `PayloadProcessingPipeline` resources
-rather than raw ext-proc configuration. This follows the same principle
-as routing: the user-facing spec stays stable while the generated
-resources change as standards evolve.
-
-Gateway-wide guardrails (compliance requirements that apply regardless
-of provider) are a separate concern. If needed, a future
-`AIGuardrailsPolicy` could attach to the Gateway using the same policy
-attachment pattern as AIAccessPolicy. That would be a separate design
-proposal.
+Content filtering, prompt injection detection, PII redaction, and
+semantic caching are payload processing concerns that could apply at
+a per-provider or per-model level — trust boundaries differ between
+a local Ollama instance and an external API endpoint. The WG AI
+Gateway's [Proposal 7: Payload Processing] defines
+`PayloadProcessingPipeline` as the standard for this capability.
+How we attach processing pipelines to our abstraction is discussed
+in [Future: PayloadProcessingPipeline](#future-payloadprocessingpipeline)
+below.
 
 Not in scope for the initial implementation.
 
