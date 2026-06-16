@@ -336,6 +336,45 @@ func TestBuildProxyInitContainer_EnforceRedirect(t *testing.T) {
 	if _, ok := got["OUTBOUND_PORTS_EXCLUDE"]; ok {
 		t.Error("enforce-redirect must not set OUTBOUND_PORTS_EXCLUDE")
 	}
+	if _, ok := got["IPTABLES_CMD"]; ok {
+		t.Error("enforce-redirect must not set IPTABLES_CMD by default (proxy-init auto-detects from /proc/modules)")
+	}
+}
+
+// IPTABLES_CMD is injected only when Proxy.IptablesCmd is configured, in both
+// modes, so the init script's /proc/modules auto-detection stays the default
+// and the backend override is strictly opt-in.
+func TestBuildProxyInitContainer_IptablesCmd(t *testing.T) {
+	modes := []ProxyInitMode{ProxyInitModeRedirect, ProxyInitModeEnforceRedirect}
+
+	// Default (empty): env var absent in both modes.
+	def := NewContainerBuilder(config.CompiledDefaults())
+	for _, mode := range modes {
+		for _, e := range def.BuildProxyInitContainer(mode, "", "").Env {
+			if e.Name == "IPTABLES_CMD" {
+				t.Errorf("mode %q: IPTABLES_CMD must be absent when unset, got %q", mode, e.Value)
+			}
+		}
+	}
+
+	// Configured: env var present with the configured value in both modes.
+	cfg := config.CompiledDefaults()
+	cfg.Proxy.IptablesCmd = "iptables"
+	b := NewContainerBuilder(cfg)
+	for _, mode := range modes {
+		found := false
+		for _, e := range b.BuildProxyInitContainer(mode, "", "").Env {
+			if e.Name == "IPTABLES_CMD" {
+				found = true
+				if e.Value != "iptables" {
+					t.Errorf("mode %q: IPTABLES_CMD = %q, want %q", mode, e.Value, "iptables")
+				}
+			}
+		}
+		if !found {
+			t.Errorf("mode %q: IPTABLES_CMD env not set when configured", mode)
+		}
+	}
 }
 
 // An unknown mode must fail closed: BuildProxyInitContainer returns a

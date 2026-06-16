@@ -534,6 +534,14 @@ func (b *ContainerBuilder) BuildProxyInitContainer(mode ProxyInitMode, outboundP
 		return corev1.Container{}
 	}
 
+	// Optional explicit iptables backend override (applies to both modes). Empty
+	// by default: the init script auto-detects from /proc/modules (iptable_nat
+	// loaded => legacy, else nft). Set b.cfg.Proxy.IptablesCmd (e.g. "iptables"
+	// on nft-only platforms) to force a backend.
+	if b.cfg.Proxy.IptablesCmd != "" {
+		env = append(env, corev1.EnvVar{Name: "IPTABLES_CMD", Value: b.cfg.Proxy.IptablesCmd})
+	}
+
 	return corev1.Container{
 		Name:            ProxyInitContainerName,
 		Image:           b.cfg.Images.ProxyInit,

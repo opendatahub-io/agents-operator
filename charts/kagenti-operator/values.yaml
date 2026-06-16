@@ -228,6 +228,11 @@ defaults:
     # Cluster DNS is kept direct by proxy-init itself (it reads the pod's
     # /etc/resolv.conf nameservers), so there is no in-cluster CIDR knob to set —
     # works on Kind / OpenShift / EKS / NodeLocal-DNSCache with no per-cluster config.
+    # iptables backend override, injected as IPTABLES_CMD. Empty (default) lets
+    # proxy-init auto-detect from /proc/modules (iptable_nat loaded => legacy, as
+    # on Kind/kubeadm; absent => nft, as on OpenShift/ROSA). Set to "iptables"
+    # (nft) or "iptables-legacy" to force a backend where detection is undesired.
+    iptablesCmd: ""
 
   # Resource defaults (conservative for dev)
   # Note: requests must be <= limits

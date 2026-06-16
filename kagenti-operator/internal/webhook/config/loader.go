@@ -199,6 +199,8 @@ func logConfig(cfg *PlatformConfig, source string) {
 		"uid", cfg.Proxy.UID,
 		"inboundProxyPort", cfg.Proxy.InboundProxyPort,
 		"adminPort", cfg.Proxy.AdminPort,
+		"transparentPort", cfg.Proxy.TransparentPort,
+		"iptablesCmd", cfg.Proxy.IptablesCmd,
 	)
 	log.Info("[config] resources.envoyProxy",
 		"requests", cfg.Resources.EnvoyProxy.Requests,

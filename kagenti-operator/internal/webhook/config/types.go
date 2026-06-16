@@ -51,6 +51,14 @@ type ProxyConfig struct {
 	// external TCP egress to. It MUST match the authbridge proxy-sidecar
 	// listener.transparent_proxy_addr (default :8082).
 	TransparentPort int32 `json:"transparentPort" yaml:"transparentPort"`
+
+	// IptablesCmd optionally pins the iptables backend the proxy-init script
+	// uses, injected as the IPTABLES_CMD env var (omitted when empty). Empty
+	// (default) lets the script auto-detect from /proc/modules (iptable_nat
+	// loaded => legacy, as on Kind/kubeadm; absent => nft, as on OpenShift/
+	// ROSA). Set to "iptables" (nft) or "iptables-legacy" to force a backend
+	// where auto-detection is wrong or undesired.
+	IptablesCmd string `json:"iptablesCmd" yaml:"iptablesCmd"`
 }
 
 type ResourcesConfig struct {
@@ -130,6 +138,15 @@ func (c *PlatformConfig) Validate() error {
 	// container runs as it; it must be a real non-root user.
 	if c.Proxy.UID < 1 {
 		return fmt.Errorf("proxy.uid must be >= 1 (got %d): the proxy must not run as root and the egress-enforcement exemption keys on this UID", c.Proxy.UID)
+	}
+	// IptablesCmd, when set, pins the proxy-init iptables backend (IPTABLES_CMD).
+	// Restrict overrides to the binaries shipped in the proxy-init image so a
+	// chart typo fails fast at operator startup rather than as a per-injected-pod
+	// init crash. Empty is the default — proxy-init auto-detects from /proc/modules.
+	switch c.Proxy.IptablesCmd {
+	case "", "iptables", "iptables-nft", "iptables-legacy":
+	default:
+		return fmt.Errorf("proxy.iptablesCmd %q is not a recognized backend (want one of: \"\" (auto-detect), iptables, iptables-nft, iptables-legacy)", c.Proxy.IptablesCmd)
 	}
 	if c.Images.EnvoyProxy == "" {
 		return fmt.Errorf("images.envoyProxy is required")

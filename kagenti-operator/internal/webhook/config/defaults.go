@@ -35,6 +35,9 @@ func CompiledDefaults() *PlatformConfig {
 			// Transparent listener port — must match the authbridge proxy-sidecar
 			// preset (listener.transparent_proxy_addr default :8082).
 			TransparentPort: 8082,
+			// Empty by default: proxy-init auto-detects the iptables backend from
+			// /proc/modules. Set (e.g. "iptables") to force a backend per-platform.
+			IptablesCmd: "",
 		},
 		Resources: ResourcesConfig{
 			EnvoyProxy: corev1.ResourceRequirements{
