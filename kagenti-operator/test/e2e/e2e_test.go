@@ -1182,9 +1182,11 @@ rules:
 			Expect(err).NotTo(HaveOccurred())
 			Expect(utils.WaitForDeploymentReady("runtime-agent-target", agentRuntimeTestNamespace, 2*time.Minute)).To(Succeed())
 
-			By("creating AgentRuntime CR")
-			_, err = utils.KubectlApplyStdin(runtimeAgentCRFixture(), agentRuntimeTestNamespace)
-			Expect(err).NotTo(HaveOccurred())
+			By("creating AgentRuntime CR (with retry for webhook readiness)")
+			Eventually(func() error {
+				_, err := utils.KubectlApplyStdin(runtimeAgentCRFixture(), agentRuntimeTestNamespace)
+				return err
+			}, 1*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying kagenti.io/type=agent on workload metadata")
 			Eventually(func(g Gomega) {
