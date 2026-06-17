@@ -203,6 +203,18 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyWebhookEndpointReady).Should(Succeed())
 
 			By("creating the curl-metrics pod to access the metrics endpoint")
+			metricsURL := fmt.Sprintf(
+				"https://%s.%s.svc.cluster.local:8443/metrics",
+				metricsServiceName, namespace,
+			)
+			curlCmd := fmt.Sprintf(
+				"for i in 1 2 3 4 5; do "+
+					"curl -v -k --connect-timeout 15 --max-time 30 "+
+					"-H 'Authorization: Bearer %s' %s "+
+					"&& exit 0; echo \"Attempt $i failed, retrying in 5s...\"; "+
+					"sleep 5; done; exit 1",
+				token, metricsURL,
+			)
 			Eventually(func() error {
 				cmd = exec.Command("kubectl", "run", "curl-metrics", "--restart=Never",
 					"--namespace", namespace,
@@ -214,7 +226,7 @@ var _ = Describe("Manager", Ordered, func() {
 								"name": "curl",
 								"image": "curlimages/curl:latest",
 								"command": ["/bin/sh", "-c"],
-								"args": ["for i in 1 2 3 4 5; do curl -v -k --connect-timeout 15 --max-time 30 -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics && exit 0; echo \"Attempt $i failed, retrying in 5s...\"; sleep 5; done; exit 1"],
+								"args": [%q],
 								"securityContext": {
 									"allowPrivilegeEscalation": false,
 									"capabilities": {
@@ -229,7 +241,7 @@ var _ = Describe("Manager", Ordered, func() {
 							}],
 							"serviceAccountName": "%s"
 						}
-					}`, token, metricsServiceName, namespace, serviceAccountName))
+					}`, curlCmd, serviceAccountName))
 				_, runErr := utils.Run(cmd)
 				if runErr != nil && strings.Contains(runErr.Error(), "already exists") {
 					return nil
