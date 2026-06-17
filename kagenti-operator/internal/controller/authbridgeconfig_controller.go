@@ -111,7 +111,14 @@ func (r *AuthbridgeConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if cm.Data == nil {
 		cm.Data = make(map[string]string)
 	}
+	// Fill in defaults only for keys that are missing or empty; preserve any
+	// explicitly-set per-namespace value (e.g. KEYCLOAK_REALM). This ConfigMap
+	// is a namespace-defaults source (kagenti.io/defaults=true), so defaults
+	// must not clobber a value provided by an operator/admin/CI. See issue #433.
 	for k, v := range desired {
+		if existing, ok := cm.Data[k]; ok && existing != "" {
+			continue
+		}
 		cm.Data[k] = v
 	}
 	if updateErr := r.Update(ctx, cm); updateErr != nil {
