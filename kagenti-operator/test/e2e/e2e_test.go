@@ -214,7 +214,7 @@ var _ = Describe("Manager", Ordered, func() {
 								"name": "curl",
 								"image": "curlimages/curl:latest",
 								"command": ["/bin/sh", "-c"],
-								"args": ["curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics"],
+								"args": ["for i in 1 2 3 4 5; do curl -v -k --connect-timeout 15 --max-time 30 -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics && exit 0; echo \"Attempt $i failed, retrying in 5s...\"; sleep 5; done; exit 1"],
 								"securityContext": {
 									"allowPrivilegeEscalation": false,
 									"capabilities": {
