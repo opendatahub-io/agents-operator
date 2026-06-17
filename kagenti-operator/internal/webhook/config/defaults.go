@@ -7,6 +7,9 @@ import (
 
 // DefaultSpiffeHelperConfig is the default helper.conf content for spiffe-helper.
 // Keep in sync with charts/kagenti-operator/values.yaml defaults.spiffe.helperConfig.
+// The jwt_audience below targets a local dev Keycloak. Production and OpenShift
+// deployments MUST override this via Helm values (defaults.spiffe.helperConfig)
+// to set the in-cluster Keycloak audience.
 const DefaultSpiffeHelperConfig = `agent_address = "/spiffe-workload-api/spire-agent.sock"
 cmd = ""
 cmd_args = ""

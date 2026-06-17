@@ -1155,15 +1155,21 @@ func (r *AgentRuntimeReconciler) ensureSpiffeHelperConfigMap(ctx context.Context
 		return fmt.Errorf("failed to check spiffe-helper-config in %s: %w", namespace, err)
 	}
 
-	if existing.Data["helper.conf"] == cfg.Spiffe.HelperConfig {
+	needsUpdate := existing.Data["helper.conf"] != cfg.Spiffe.HelperConfig
+
+	if existing.Labels == nil {
+		existing.Labels = make(map[string]string)
+	}
+	if existing.Labels[LabelManagedBy] != LabelManagedByValue {
+		existing.Labels[LabelManagedBy] = LabelManagedByValue
+		needsUpdate = true
+	}
+
+	if !needsUpdate {
 		return nil
 	}
 
 	existing.Data = desired.Data
-	if existing.Labels == nil {
-		existing.Labels = make(map[string]string)
-	}
-	existing.Labels[LabelManagedBy] = LabelManagedByValue
 	if err := r.Update(ctx, existing); err != nil {
 		return fmt.Errorf("failed to update spiffe-helper-config in %s: %w", namespace, err)
 	}

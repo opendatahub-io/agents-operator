@@ -897,6 +897,32 @@ var _ = Describe("AgentRuntime Controller", func() {
 			Expect(result.Data["helper.conf"]).To(Equal("same_content"))
 		})
 
+		It("should adopt label on leftover CM with matching content", func() {
+			existing := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "spiffe-helper-config",
+					Namespace: shTestNS,
+					Labels:    map[string]string{"app.kubernetes.io/managed-by": "kustomize"},
+				},
+				Data: map[string]string{"helper.conf": "same_content"},
+			}
+			Expect(k8sClient.Create(ctx, existing)).To(Succeed())
+
+			r := newReconciler()
+			r.GetPlatformConfig = func() *webhookconfig.PlatformConfig {
+				cfg := webhookconfig.CompiledDefaults()
+				cfg.Spiffe.HelperConfig = "same_content"
+				return cfg
+			}
+
+			Expect(r.ensureSpiffeHelperConfigMap(ctx, shTestNS)).To(Succeed())
+
+			result := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "spiffe-helper-config", Namespace: shTestNS}, result)).To(Succeed())
+			Expect(result.Data["helper.conf"]).To(Equal("same_content"))
+			Expect(result.Labels[LabelManagedBy]).To(Equal(LabelManagedByValue))
+		})
+
 		It("should use CompiledDefaults when GetPlatformConfig is nil", func() {
 			r := newReconciler()
 			Expect(r.ensureSpiffeHelperConfigMap(ctx, shTestNS)).To(Succeed())
