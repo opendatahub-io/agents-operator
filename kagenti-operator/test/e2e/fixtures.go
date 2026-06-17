@@ -876,6 +876,8 @@ metadata:
 data:
   config.yaml: |
     mode: envoy-sidecar
+    mtls:
+      mode: disabled
     pipeline:
       inbound:
         plugins:
@@ -903,7 +905,6 @@ metadata:
   namespace: ` + authBridgeTestNamespace + `
 spec:
   type: agent
-  mtlsMode: disabled
   targetRef:
     apiVersion: apps/v1
     kind: Deployment
@@ -1037,7 +1038,6 @@ metadata:
   namespace: ` + authBridgeTestNamespace + `
 spec:
   type: agent
-  mtlsMode: disabled
   targetRef:
     apiVersion: apps/v1
     kind: Deployment
@@ -1218,6 +1218,8 @@ metadata:
 data:
   config.yaml: |
     mode: envoy-sidecar
+    mtls:
+      mode: disabled
     pipeline:
       inbound:
         plugins:
