@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"slices"
 
+	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
 	"github.com/kagenti/operator/internal/webhook/config"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -551,7 +552,7 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 				"reverse_proxy_backend": fmt.Sprintf("http://127.0.0.1:%d", newAgentPort),
 				"forward_proxy_addr":    fmt.Sprintf(":%d", forwardProxyPort),
 			},
-			mtlsMode, allowedAudiences)
+			mtlsMode, allowedAudiences, "") // tlsBridgeMode wired (gated) in the mutate path below
 		if err != nil {
 			return false, fmt.Errorf("proxy-sidecar per-agent ConfigMap: %w", err)
 		}
@@ -662,7 +663,7 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 	// inbound listener (gated on MTLSEnabled) and UpstreamTlsContext on
 	// original_destination_tls (strict only).
 	perAgentCMName, err := m.ensurePerAgentConfigMap(ctx, namespace, crName,
-		ModeEnvoySidecar, nsConfig.AuthBridgeRuntimeYAML, nsConfig, nil, mtlsMode, allowedAudiences)
+		ModeEnvoySidecar, nsConfig.AuthBridgeRuntimeYAML, nsConfig, nil, mtlsMode, allowedAudiences, "") // bridge never runs under envoy-sidecar
 	if err != nil {
 		return false, fmt.Errorf("envoy-sidecar per-agent ConfigMap: %w", err)
 	}
@@ -926,6 +927,7 @@ func (m *PodMutator) ensurePerAgentConfigMap(
 	listenerOverrides map[string]string,
 	mtlsMode string,
 	allowedAudiences []string,
+	tlsBridgeMode string,
 ) (string, error) {
 	cmName := perAgentConfigMapName(crName)
 
@@ -995,6 +997,19 @@ func (m *PodMutator) ensurePerAgentConfigMap(
 		// without restarting the namespace ConfigMap would leak the
 		// previous setting through to the per-agent CM.
 		delete(cfg, "mtls")
+	}
+
+	// TLS bridge block. Rendered only when the caller decided bridging is on
+	// (gate + mode==enabled + proxy-sidecar/lite — see the mutate path). ca_dir
+	// is the mounted cert-manager Secret dir (tls.crt/tls.key/ca.crt). Scrubbed
+	// otherwise so toggling off doesn't leak a stale block from the base YAML.
+	if tlsBridgeMode == agentv1alpha1.TLSBridgeModeEnabled {
+		cfg["tls_bridge"] = map[string]interface{}{
+			"mode":   agentv1alpha1.TLSBridgeModeEnabled,
+			"ca_dir": TLSBridgeCAMountPath,
+		}
+	} else {
+		delete(cfg, "tls_bridge")
 	}
 
 	// Marshal back to YAML

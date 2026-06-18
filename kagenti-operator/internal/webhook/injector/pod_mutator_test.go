@@ -1317,7 +1317,7 @@ func TestEnsurePerAgentConfigMap_EmptyBaseYAML_FallbackFromNsConfig(t *testing.T
 	}
 
 	cmName, err := m.ensurePerAgentConfigMap(ctx, "team1", "weather-service",
-		ModeProxySidecar, "", nsConfig, nil, "", nil)
+		ModeProxySidecar, "", nsConfig, nil, "", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1434,7 +1434,7 @@ pipeline:
 `
 
 	cmName, err := m.ensurePerAgentConfigMap(ctx, "team1", "my-agent",
-		ModeEnvoySidecar, baseYAML, &NamespaceConfig{}, nil, "", nil)
+		ModeEnvoySidecar, baseYAML, &NamespaceConfig{}, nil, "", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1493,7 +1493,7 @@ pipeline:
 	}
 
 	cmName, err := m.ensurePerAgentConfigMap(ctx, "team1", "my-agent",
-		ModeProxySidecar, baseYAML, &NamespaceConfig{}, overrides, "", nil)
+		ModeProxySidecar, baseYAML, &NamespaceConfig{}, overrides, "", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1529,7 +1529,7 @@ func TestEnsurePerAgentConfigMap_ExistingCM_OwnedByWebhook_Updated(t *testing.T)
 	ctx := context.Background()
 
 	_, err := m.ensurePerAgentConfigMap(ctx, "team1", "my-agent",
-		ModeEnvoySidecar, "", &NamespaceConfig{ClientAuthType: "client-secret"}, nil, "", nil)
+		ModeEnvoySidecar, "", &NamespaceConfig{ClientAuthType: "client-secret"}, nil, "", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1557,7 +1557,7 @@ func TestEnsurePerAgentConfigMap_ExistingCM_OverwrittenBySSA(t *testing.T) {
 	ctx := context.Background()
 
 	cmName, err := m.ensurePerAgentConfigMap(ctx, "team1", "my-agent",
-		ModeEnvoySidecar, "", &NamespaceConfig{ClientAuthType: "client-secret"}, nil, "", nil)
+		ModeEnvoySidecar, "", &NamespaceConfig{ClientAuthType: "client-secret"}, nil, "", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1585,7 +1585,7 @@ func TestEnsurePerAgentConfigMap_OwnerReference_SetFromDeployment(t *testing.T) 
 	ctx := context.Background()
 
 	cmName, err := m.ensurePerAgentConfigMap(ctx, "team1", "weather-service",
-		ModeEnvoySidecar, "", &NamespaceConfig{ClientAuthType: "client-secret"}, nil, "", nil)
+		ModeEnvoySidecar, "", &NamespaceConfig{ClientAuthType: "client-secret"}, nil, "", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1612,7 +1612,7 @@ func TestEnsurePerAgentConfigMap_OwnerReference_SetFromStatefulSet(t *testing.T)
 	ctx := context.Background()
 
 	cmName, err := m.ensurePerAgentConfigMap(ctx, "team1", "my-stateful-agent",
-		ModeEnvoySidecar, "", &NamespaceConfig{ClientAuthType: "client-secret"}, nil, "", nil)
+		ModeEnvoySidecar, "", &NamespaceConfig{ClientAuthType: "client-secret"}, nil, "", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1633,7 +1633,7 @@ func TestEnsurePerAgentConfigMap_OwnerReference_NoWorkload_Skipped(t *testing.T)
 	ctx := context.Background()
 
 	cmName, err := m.ensurePerAgentConfigMap(ctx, "team1", "bare-pod-agent",
-		ModeEnvoySidecar, "", &NamespaceConfig{ClientAuthType: "client-secret"}, nil, "", nil)
+		ModeEnvoySidecar, "", &NamespaceConfig{ClientAuthType: "client-secret"}, nil, "", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1656,7 +1656,7 @@ func TestEnsurePerAgentConfigMap_FederatedJWT_MapsToSpiffe(t *testing.T) {
 	}
 
 	cmName, err := m.ensurePerAgentConfigMap(ctx, "team1", "spiffe-agent",
-		ModeEnvoySidecar, "", nsConfig, nil, "", nil)
+		ModeEnvoySidecar, "", nsConfig, nil, "", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1698,7 +1698,7 @@ func TestEnsurePerAgentConfigMap_MTLSStrict_RendersBlock(t *testing.T) {
 	ctx := context.Background()
 
 	cmName, err := m.ensurePerAgentConfigMap(ctx, "team1", "mtls-agent",
-		ModeProxySidecar, "", &NamespaceConfig{ClientAuthType: "client-secret"}, nil, MTLSModeStrict, nil)
+		ModeProxySidecar, "", &NamespaceConfig{ClientAuthType: "client-secret"}, nil, MTLSModeStrict, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1729,7 +1729,7 @@ func TestEnsurePerAgentConfigMap_MTLSPermissive_RendersBlock(t *testing.T) {
 	ctx := context.Background()
 
 	cmName, err := m.ensurePerAgentConfigMap(ctx, "team1", "mtls-agent",
-		ModeProxySidecar, "", &NamespaceConfig{ClientAuthType: "client-secret"}, nil, MTLSModePermissive, nil)
+		ModeProxySidecar, "", &NamespaceConfig{ClientAuthType: "client-secret"}, nil, MTLSModePermissive, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1764,7 +1764,7 @@ func TestEnsurePerAgentConfigMap_MTLSDisabled_OmitsBlock(t *testing.T) {
 			ctx := context.Background()
 
 			cmName, err := m.ensurePerAgentConfigMap(ctx, "team1", "no-mtls-"+tt.name,
-				ModeProxySidecar, "", &NamespaceConfig{ClientAuthType: "client-secret"}, nil, tt.mtlsMode, nil)
+				ModeProxySidecar, "", &NamespaceConfig{ClientAuthType: "client-secret"}, nil, tt.mtlsMode, nil, "")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1792,7 +1792,7 @@ func TestEnsurePerAgentConfigMap_MTLSScrubsStaleBlock(t *testing.T) {
 	baseYAML := "mode: proxy-sidecar\nmtls:\n  mode: strict\n"
 
 	cmName, err := m.ensurePerAgentConfigMap(ctx, "team1", "scrub-agent",
-		ModeProxySidecar, baseYAML, &NamespaceConfig{ClientAuthType: "client-secret"}, nil, MTLSModeDisabled, nil)
+		ModeProxySidecar, baseYAML, &NamespaceConfig{ClientAuthType: "client-secret"}, nil, MTLSModeDisabled, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1818,7 +1818,7 @@ func TestEnsurePerAgentConfigMap_AllowedAudiences_InjectedIntoJWTValidation(t *t
 
 	audiences := []string{"playground", "kagenti-agents"}
 	cmName, err := m.ensurePerAgentConfigMap(ctx, "team1", "my-agent",
-		ModeProxySidecar, "", nsConfig, nil, "", audiences)
+		ModeProxySidecar, "", nsConfig, nil, "", audiences, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1852,7 +1852,7 @@ func TestEnsurePerAgentConfigMap_AllowedAudiences_NilDoesNotInject(t *testing.T)
 	}
 
 	cmName, err := m.ensurePerAgentConfigMap(ctx, "team1", "my-agent",
-		ModeProxySidecar, "", nsConfig, nil, "", nil)
+		ModeProxySidecar, "", nsConfig, nil, "", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1894,7 +1894,7 @@ pipeline:
 	// AgentRuntime CR sets different audiences — AR must win
 	audiences := []string{"agent-aud"}
 	cmName, err := m.ensurePerAgentConfigMap(ctx, "team1", "my-agent",
-		ModeProxySidecar, baseYAML, &NamespaceConfig{}, nil, "", audiences)
+		ModeProxySidecar, baseYAML, &NamespaceConfig{}, nil, "", audiences, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2198,5 +2198,39 @@ func TestInjectAuthBridge_EgressEnforcement_PlatformPolicyOnlyNone(t *testing.T)
 	}
 	if containerExists(podSpec.InitContainers, ProxyInitContainerName) {
 		t.Error("platform only allows none; proxy-init should NOT be injected even with default enforce-redirect")
+	}
+}
+
+func TestEnsurePerAgentConfigMap_TLSBridgeBlock(t *testing.T) {
+	m := newTestMutator()
+	ctx := context.Background()
+
+	// enabled => tls_bridge: {mode: enabled, ca_dir: <mount>}
+	cmName, err := m.ensurePerAgentConfigMap(ctx, "team1", "bridge-agent",
+		ModeProxySidecar, "", &NamespaceConfig{}, nil, "", nil, "enabled")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cfg := parseConfigYAML(t, fetchConfigMap(t, m, "team1", cmName))
+	tb, ok := cfg["tls_bridge"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tls_bridge block missing or wrong type: %v", cfg["tls_bridge"])
+	}
+	if tb["mode"] != "enabled" {
+		t.Errorf("tls_bridge.mode = %v, want enabled", tb["mode"])
+	}
+	if tb["ca_dir"] != TLSBridgeCAMountPath {
+		t.Errorf("tls_bridge.ca_dir = %v, want %s", tb["ca_dir"], TLSBridgeCAMountPath)
+	}
+
+	// disabled ("") => no tls_bridge block
+	cmName2, err := m.ensurePerAgentConfigMap(ctx, "team1", "no-bridge",
+		ModeProxySidecar, "", &NamespaceConfig{}, nil, "", nil, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cfg2 := parseConfigYAML(t, fetchConfigMap(t, m, "team1", cmName2))
+	if _, present := cfg2["tls_bridge"]; present {
+		t.Error("tls_bridge block should be absent when disabled")
 	}
 }
