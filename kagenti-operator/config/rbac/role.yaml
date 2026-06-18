@@ -33,6 +33,7 @@ rules:
   resources:
   - namespaces
   verbs:
+  - create
   - get
   - list
   - patch
@@ -54,7 +55,9 @@ rules:
   verbs:
   - create
   - get
+  - list
   - update
+  - watch
 - apiGroups:
   - ""
   resources:
@@ -100,22 +103,6 @@ rules:
   - get
   - patch
   - update
-- apiGroups:
-  - agent.kagenti.dev
-  resources:
-  - authorizationpolicies
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - agent.kagenti.dev
-  resources:
-  - authorizationpolicies/status
-  verbs:
-  - get
-  - update
-  - patch
 - apiGroups:
   - agents.x-k8s.io
   resources:
@@ -183,6 +170,17 @@ rules:
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - kuadrant.io
+  resources:
+  - kuadrants
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - mlflow.kubeflow.org

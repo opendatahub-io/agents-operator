@@ -31,6 +31,9 @@ spec:
             {{- range .Values.controllerManager.container.args }}
             - {{ . }}
             {{- end }}
+            {{- if .Values.kuadrant.enable }}
+            - "--enable-kuadrant=true"
+            {{- end }}
             {{- if .Values.mlflow.enable }}
             - "--enable-mlflow=true"
             {{- end }}

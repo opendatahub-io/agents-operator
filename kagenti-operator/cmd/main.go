@@ -53,6 +53,7 @@ import (
 	"github.com/kagenti/operator/internal/controller"
 	"github.com/kagenti/operator/internal/discovery"
 	"github.com/kagenti/operator/internal/keycloak"
+	"github.com/kagenti/operator/internal/kuadrant"
 	"github.com/kagenti/operator/internal/mlflow"
 	"github.com/kagenti/operator/internal/signature"
 	"github.com/kagenti/operator/internal/tekton"
@@ -72,6 +73,7 @@ func init() {
 	utilruntime.Must(agentv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(mlflow.AddToScheme(scheme))
 	utilruntime.Must(tekton.AddToScheme(scheme))
+	utilruntime.Must(kuadrant.AddToScheme(scheme))
 	utilruntime.Must(cmv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
@@ -111,6 +113,7 @@ func main() {
 	var mlflowWorkspace string
 	var mlflowExperimentName string
 	var mlflowCAFile string
+	var enableKuadrant bool
 
 	var enableCardDiscovery bool
 
@@ -170,6 +173,8 @@ func main() {
 		"MLflow experiment name; created automatically if it doesn't exist")
 	flag.StringVar(&mlflowCAFile, "mlflow-ca-file", "",
 		"Path to PEM-encoded CA bundle for MLflow TLS verification (appended to system pool)")
+	flag.BoolVar(&enableKuadrant, "enable-kuadrant", false,
+		"Enable Kuadrant operand controller (reconciles Kuadrant CR in kuadrant-system)")
 
 	flag.BoolVar(&enableCardDiscovery, "enable-card-discovery", true,
 		"Enable automatic agent card discovery from AgentRuntime workloads into status.card (set to false to disable)")
@@ -703,6 +708,20 @@ func main() {
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "TektonConfig")
 			os.Exit(1)
+		}
+	}
+
+	if enableKuadrant {
+		if controller.KuadrantCRDExists(mgr.GetConfig()) {
+			if err = (&controller.KuadrantReconciler{
+				Client: mgr.GetClient(),
+			}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "Kuadrant")
+				os.Exit(1)
+			}
+			setupLog.Info("Kuadrant operand controller enabled")
+		} else {
+			setupLog.Info("Kuadrant enabled but CRD not found; controller not started")
 		}
 	}
 

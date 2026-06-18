@@ -110,6 +110,13 @@ authbridgeConfig:
   # How long AuthBridge waits for Keycloak credentials (increase for slow Keycloak startup)
   # credentialWaitTimeout: "120s"
 
+# [KUADRANT]: Kuadrant operand controller — reconciles Kuadrant CR in kuadrant-system.
+# When enabled, the operator creates and drift-reconciles the Kuadrant CR that
+# setup-kagenti.sh currently applies manually. Requires the Kuadrant CRD to be
+# installed (controller is a no-op otherwise).
+kuadrant:
+  enable: false
+
 # [MLFLOW]: MLflow experiment tracking integration
 mlflow:
   enable: false

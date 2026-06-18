@@ -20,11 +20,20 @@ rules:
   - ""
   resources:
   - endpoints
-  - namespaces
   - services
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - create
+  - get
+  - list
+  - patch
   - watch
 - apiGroups:
   - ""
@@ -62,7 +71,9 @@ rules:
   verbs:
   - create
   - get
+  - list
   - update
+  - watch
 - apiGroups:
   - cert-manager.io
   resources:
@@ -143,6 +154,17 @@ rules:
   - statefulsets/finalizers
   verbs:
   - update
+- apiGroups:
+  - kuadrant.io
+  resources:
+  - kuadrants
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - discovery.k8s.io
   resources:
