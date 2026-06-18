@@ -11,6 +11,7 @@ rules:
   - configmaps
   verbs:
   - create
+  - delete
   - get
   - list
   - patch
@@ -20,7 +21,6 @@ rules:
   - ""
   resources:
   - endpoints
-  - services
   verbs:
   - get
   - list
@@ -29,14 +29,17 @@ rules:
   - ""
   resources:
   - namespaces
+  - services
   verbs:
   - create
   - get
   - list
   - patch
+  - update
   - watch
 - apiGroups:
   - ""
+  - events.k8s.io
   resources:
   - events
   verbs:
@@ -139,9 +142,20 @@ rules:
 - apiGroups:
   - apps
   resources:
+  - daemonsets
   - deployments
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
   - statefulsets
   verbs:
+  - create
   - get
   - list
   - patch
@@ -228,12 +242,25 @@ rules:
   - get
   - list
 - apiGroups:
+  - k8s.keycloak.org
+  resources:
+  - keycloakrealmimports
+  - keycloaks
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+- apiGroups:
   - route.openshift.io
   resources:
   - routes
   verbs:
+  - create
   - get
   - list
+  - update
 - apiGroups:
   - operator.tekton.dev
   resources:
@@ -265,6 +292,7 @@ rules:
   - rolebindings
   verbs:
   - create
+  - delete
   - get
   - list
   - update

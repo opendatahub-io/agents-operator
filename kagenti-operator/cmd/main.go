@@ -793,6 +793,19 @@ func main() {
 		setupLog.Info("OTel collector bootstrap enabled")
 	}
 
+	keycloakBootstrap := &bootstrap.KeycloakBootstrapRunnable{
+		Client:            mgr.GetClient(),
+		APIReader:         mgr.GetAPIReader(),
+		Namespace:         keycloakAdminSecretNamespace,
+		Realm:             keycloakRealm,
+		KeycloakPublicURL: keycloakPublicURL,
+		Log:               ctrl.Log.WithName("bootstrap"),
+	}
+	if err := mgr.Add(keycloakBootstrap); err != nil {
+		setupLog.Error(err, "unable to add Keycloak bootstrap runnable")
+		os.Exit(1)
+	}
+
 	if enableAuthbridgeConfig {
 		if err = (&controller.AuthbridgeConfigReconciler{
 			Client: mgr.GetClient(),
