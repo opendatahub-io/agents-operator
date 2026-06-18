@@ -27,6 +27,9 @@ type FeatureGates struct {
 	// status.linkedSkills. When disabled, skill discovery is skipped and
 	// the SkillsDiscovered condition is not set.
 	SkillDiscovery bool `json:"skillDiscovery" yaml:"skillDiscovery"`
+	// TLSBridge enables AuthBridge's outbound TLS bridge (decrypt agent egress).
+	// Off by default; see the TLS-bridge Phase 2 plan.
+	TLSBridge bool `json:"tlsBridge" yaml:"tlsBridge"`
 }
 
 // DefaultFeatureGates returns feature gates with sidecar injection enabled for

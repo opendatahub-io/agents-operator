@@ -180,6 +180,7 @@ func logFeatureGates(fg *FeatureGates, source string) {
 		"injectTools", fg.InjectTools,
 		"perWorkloadConfigResolution", fg.PerWorkloadConfigResolution,
 		"skillDiscovery", fg.SkillDiscovery,
+		"tlsBridge", fg.TLSBridge,
 	)
 	log.Info("=============================================")
 }
