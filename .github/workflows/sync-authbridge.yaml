@@ -75,17 +75,40 @@ jobs:
           SOURCE_BRANCH: ${{ inputs.source_branch }}
         run: |
           git checkout -B "${SYNC_BRANCH}"
-          git commit -m "sync: update authbridge from kagenti-extensions (${UPSTREAM_SHA})
 
-          Synced authbridge/ from kagenti/kagenti-extensions.
+          # Build commit message body
+          commit_body="Synced authbridge/ from kagenti/kagenti-extensions."
+          if [[ -n "${UPSTREAM_DELETIONS:-}" ]]; then
+            commit_body="${commit_body}
+
+          Upstream deletions (files removed upstream):
+          ${UPSTREAM_DELETIONS}"
+          fi
+          commit_body="${commit_body}
 
           Source: https://github.com/kagenti/kagenti-extensions/tree/${SOURCE_BRANCH}/authbridge
           Upstream-Branch: ${SOURCE_BRANCH}
           Upstream-Commit: ${UPSTREAM_SHA_FULL}"
 
+          git commit -m "sync: update authbridge from kagenti-extensions (${UPSTREAM_SHA})
+
+          ${commit_body}"
+
           git push origin "${SYNC_BRANCH}" --force
 
           TITLE="sync: Update authbridge from kagenti-extensions ($(date +%Y-%m-%d))"
+          # Build upstream deletions section for PR body
+          deletions_section=""
+          if [[ -n "${UPSTREAM_DELETIONS:-}" ]]; then
+            deletions_section="
+          ### Upstream Deletions
+          Files removed upstream and allowed through the deletion guard:
+          \`\`\`
+          ${UPSTREAM_DELETIONS}
+          \`\`\`
+          "
+          fi
+
           BODY=$(cat <<EOF
           ## AuthBridge Sync
 
@@ -95,7 +118,7 @@ jobs:
           \`\`\`
           $(git diff --stat HEAD~1..HEAD)
           \`\`\`
-
+          ${deletions_section}
           [Browse upstream authbridge/](https://github.com/kagenti/kagenti-extensions/tree/${UPSTREAM_SHA_FULL}/authbridge)
           EOF
           )

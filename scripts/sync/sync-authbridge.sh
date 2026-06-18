@@ -105,20 +105,51 @@ fi
 # --------------------------------------------------------------------------- #
 # Step 2: Guard against unexpected deletions
 # --------------------------------------------------------------------------- #
-# Dry-run rsync to find all files --delete would remove. Any file not listed in
-# ODH_EXCLUDES is an error — the operator must explicitly decide what to do.
+# Dry-run rsync to find all files --delete would remove. Files that came from
+# upstream (introduced by a sync or import commit) are safe to delete — upstream
+# removed them intentionally. Only files added by non-sync commits
+# (midstream-only) or listed in ODH_EXCLUDES need protection.
+#
+# A file is considered upstream-origin if the commit that first added it to the
+# local repo matches one of these patterns:
+#   - sync: *           (regular sync commits)
+#   - feat: *add*authbridge*from*kagenti*  (initial imports)
+#   - Squashed '*'*     (git subtree squash imports)
+is_upstream_origin_commit() {
+  local msg="$1"
+  case "${msg}" in
+    sync:*) return 0 ;;
+    feat:*[Aa]dd*authbridge*from*kagenti*) return 0 ;;
+    "Squashed '"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 if [[ -d "${TARGET_DIR}" ]]; then
   echo ""
   echo "==> Checking for unexpected deletions..."
 
   exclude_pattern="$(printf '%s\n' "${ODH_EXCLUDES[@]}")"
   unexpected_deletions=()
+  allowed_deletions=()
 
   while IFS= read -r line; do
     [[ "${line}" == \*deleting* ]] || continue
-    file="${line#\*deleting }"; file="${file%/}"
+    file="${line#\*deleting }"; file="${file#"${file%%[! ]*}"}"; file="${file%/}"
     [[ -d "${TARGET_DIR}/${file}" ]] && continue
     echo "${exclude_pattern}" | grep -qxF "${file}" && continue
+
+    # Check if the file was originally introduced by an upstream sync/import
+    # commit. Walk all commits that added this file (across renames, rebases)
+    # and check the earliest one.
+    first_commit_msg=$(git log --all --diff-filter=A --format='%s' \
+      -- "${TARGET_DIR}/${file}" 2>/dev/null | tail -1)
+    if [[ -n "${first_commit_msg}" ]] && is_upstream_origin_commit "${first_commit_msg}"; then
+      echo "    Allowing upstream deletion: ${file}"
+      allowed_deletions+=("${file}")
+      continue
+    fi
+
     unexpected_deletions+=("${file}")
   done < <(rsync -a --delete --dry-run --itemize-changes \
     "${CLONE_DIR}/${TARGET_DIR}/" "${TARGET_DIR}/" 2>/dev/null || true)
@@ -134,6 +165,21 @@ if [[ -d "${TARGET_DIR}" ]]; then
     exit 1
   fi
   echo "    No unexpected deletions."
+
+  # Export allowed deletions for commit/PR metadata
+  if [[ ${#allowed_deletions[@]} -gt 0 ]]; then
+    allowed_deletions_text=$(printf '  - %s\n' "${allowed_deletions[@]}")
+    echo ""
+    echo "    Upstream deletions (${#allowed_deletions[@]} file(s)):"
+    printf '      %s\n' "${allowed_deletions[@]}"
+    if [[ -n "${GITHUB_ENV:-}" ]]; then
+      {
+        echo "UPSTREAM_DELETIONS<<EOF_DELETIONS"
+        echo "${allowed_deletions_text}"
+        echo "EOF_DELETIONS"
+      } >> "${GITHUB_ENV}"
+    fi
+  fi
 fi
 
 # --------------------------------------------------------------------------- #
