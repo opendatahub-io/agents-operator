@@ -1940,7 +1940,7 @@ func TestInjectAuthBridge_EgressEnforcement_DefaultInjectsProxyInit(t *testing.T
 	}
 	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
 
-	_, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", labels, nil)
+	_, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", "Deployment", labels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1962,7 +1962,7 @@ func TestInjectAuthBridge_EgressEnforcement_NoneSkipsProxyInit(t *testing.T) {
 	}
 	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
 
-	_, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", labels, nil)
+	_, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", "Deployment", labels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1988,7 +1988,7 @@ func TestInjectAuthBridge_EgressEnforcement_EnforceRedirectInjectsProxyInit(t *t
 	}
 	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
 
-	_, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", labels, nil)
+	_, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", "Deployment", labels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2020,7 +2020,7 @@ func TestInjectAuthBridge_EgressEnforcement_NamespaceConfigMapNone(t *testing.T)
 	}
 	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
 
-	_, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", labels, nil)
+	_, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", "Deployment", labels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2051,7 +2051,7 @@ func TestInjectAuthBridge_EgressEnforcement_CROverridesNamespace(t *testing.T) {
 	}
 	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
 
-	_, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", labels, nil)
+	_, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", "Deployment", labels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2082,7 +2082,7 @@ func TestInjectAuthBridge_EgressEnforcement_UnknownValueFailsClosed(t *testing.T
 	}
 	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
 
-	_, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", labels, nil)
+	_, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", "Deployment", labels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2106,7 +2106,7 @@ func TestInjectAuthBridge_EgressEnforcement_EnvoySidecarIgnoresNone(t *testing.T
 	}
 	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
 
-	_, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", labels, nil)
+	_, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", "Deployment", labels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2148,7 +2148,7 @@ func TestInjectAuthBridge_EgressEnforcement_PlatformPolicyBlocksNone(t *testing.
 	}
 	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
 
-	_, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", labels, nil)
+	_, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", "Deployment", labels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2170,7 +2170,7 @@ func TestInjectAuthBridge_EgressEnforcement_PlatformPolicyAllowsNone(t *testing.
 	}
 	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
 
-	_, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", labels, nil)
+	_, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", "Deployment", labels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2192,7 +2192,7 @@ func TestInjectAuthBridge_EgressEnforcement_PlatformPolicyOnlyNone(t *testing.T)
 	}
 	labels := map[string]string{KagentiTypeLabel: KagentiTypeAgent}
 
-	_, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", labels, nil)
+	_, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", "Deployment", labels, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
