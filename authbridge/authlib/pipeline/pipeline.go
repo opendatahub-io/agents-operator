@@ -133,6 +133,13 @@ func (p *Pipeline) Run(ctx context.Context, pctx *Context) Action {
 // RunResponse executes the response phase in reverse order.
 // The last plugin in the chain sees the response first.
 //
+// Plugins implementing StreamingResponder are skipped here — the
+// framework picks one path per the StreamingResponder contract:
+// streaming-aware plugins receive a final OnResponseFrame(last=true)
+// from the listener (single dispatch on the buffered application/json
+// path; per-frame + last=true on the SSE path) instead of OnResponse,
+// so the same body is never delivered through both hooks.
+//
 // See Run for the pctx attribution stamping, the off-policy skip, and
 // the observe-policy shadow conversion. Same pattern, phase set to
 // InvocationPhaseResponse.
@@ -140,6 +147,9 @@ func (p *Pipeline) RunResponse(ctx context.Context, pctx *Context) Action {
 	for i := len(p.plugins) - 1; i >= 0; i-- {
 		policy := p.policyAt(i)
 		if policy == ErrorPolicyOff {
+			continue
+		}
+		if _, ok := p.plugins[i].(StreamingResponder); ok {
 			continue
 		}
 		if ctx.Err() != nil {
@@ -161,6 +171,70 @@ func (p *Pipeline) RunResponse(ctx context.Context, pctx *Context) Action {
 		}
 	}
 	return Action{Type: Continue}
+}
+
+// RunResponseFrame dispatches a single response frame to every plugin
+// implementing StreamingResponder, in reverse declaration order
+// (symmetric with RunResponse). Plugins that don't implement the
+// interface are skipped — they're handled by the buffered RunResponse
+// path the listener still calls when the response is non-streaming.
+//
+// The off-policy skip and observe-policy shadow conversion are
+// applied identically to RunResponse — see Run for the contract.
+//
+// Frames are dispatched in wire-arrival order: callers invoke this
+// once per frame as they arrive off the upstream, then once with
+// last=true (typically with an empty frame) at end-of-stream so
+// aggregating plugins can finalize. Application/json responses are
+// delivered as a single last=true frame so streaming-aware plugins
+// have one code path.
+//
+// A plugin that returns Reject mid-stream causes the listener to
+// short-circuit. Today no in-tree plugin returns Reject here (the
+// listeners forward+flush before invoking the hook for observability
+// only); the contract leaves room for per-message enforcement later.
+func (p *Pipeline) RunResponseFrame(ctx context.Context, pctx *Context, frame []byte, last bool) Action {
+	for i := len(p.plugins) - 1; i >= 0; i-- {
+		policy := p.policyAt(i)
+		if policy == ErrorPolicyOff {
+			continue
+		}
+		if ctx.Err() != nil {
+			slog.Info("pipeline: response frame cancelled", "plugin", p.plugins[i].Name())
+			return Deny("pipeline.cancelled", "request cancelled")
+		}
+		sr, ok := p.plugins[i].(StreamingResponder)
+		if !ok {
+			continue
+		}
+		pctx.setCurrent(p.plugins[i].Name(), InvocationPhaseResponse, policy)
+		action := sr.OnResponseFrame(ctx, pctx, frame, last)
+		pctx.clearCurrent()
+		if action.Type == Reject {
+			stampPluginName(&action, p.plugins[i].Name())
+			if policy == ErrorPolicyObserve {
+				markShadowAndLog(pctx, p.plugins[i].Name(), InvocationPhaseResponse, action, "response-frame")
+				continue
+			}
+			pctx.setRejectingPlugin(p.plugins[i].Name())
+			logReject(p.plugins[i].Name(), action, "pipeline: plugin rejected response frame")
+			return action
+		}
+	}
+	return Action{Type: Continue}
+}
+
+// HasStreamingResponders reports whether any plugin in the pipeline
+// implements StreamingResponder. Listeners use this to decide whether
+// the streaming code path is worth taking — without any opt-in plugin
+// the buffered path delivers the same result for less complexity.
+func (p *Pipeline) HasStreamingResponders() bool {
+	for _, plugin := range p.plugins {
+		if _, ok := plugin.(StreamingResponder); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // policyAt returns the resolved policy for plugins[i]. The policies

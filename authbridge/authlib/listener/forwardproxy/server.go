@@ -12,10 +12,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/httpx"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/internal/sseframe"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/skiphost"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/spiffe"
@@ -23,6 +27,17 @@ import (
 )
 
 const maxBodySize = 1 << 20 // 1MB — matches Envoy's default per_stream_buffer_limit_bytes
+
+// streamReadIdleTimeout caps how long the proxy waits for the next
+// byte off a streaming response body. The time.Duration is applied
+// per ReadFrame iteration (see streamingResponseBody). A wedged
+// upstream that goes silent for longer than this aborts the stream,
+// rather than hanging the agent indefinitely. Long enough to permit
+// slow tool work between SSE heartbeats; short enough to surface a
+// dead connection within a few minutes. Tools that need longer idle
+// gaps should emit SSE heartbeats — it's what comment lines in SSE
+// are for.
+const streamReadIdleTimeout = 5 * time.Minute
 
 // Server is an HTTP forward proxy that performs token exchange on outbound requests.
 //
@@ -34,6 +49,15 @@ type Server struct {
 	Sessions         *session.Store       // nil when session tracking is disabled
 	Shared           pipeline.SharedStore // process-scoped store; set by main, may be nil
 	Client           *http.Client
+
+	// SkipHosts, when non-nil and matching the request Host, causes
+	// the listener to forward the request as a transparent proxy:
+	// no pipeline run, no session recording. Applies to both HTTP
+	// (handleRequest) and CONNECT-tunnel (handleConnect) paths so
+	// matched destinations behave identically regardless of scheme.
+	// See authlib/config/config.go ListenerConfig.SkipHosts for
+	// motivation.
+	SkipHosts *skiphost.Matcher
 }
 
 // MTLSOptions configures outbound mTLS for the forward proxy. When
@@ -70,6 +94,15 @@ func NewServer(outbound *pipeline.Holder, sessions *session.Store, mtls *MTLSOpt
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
+		// No ResponseHeaderTimeout: Streamable HTTP / MCP servers may
+		// hold response headers open until a slow tool completes, even
+		// when the eventual response is application/json (the server
+		// picks JSON vs SSE per call). A fixed time-to-headers ceiling
+		// reproduces the original 502 — the pre-headers wait is part
+		// of the same long tool execution we're trying to permit. The
+		// inbound request context + the per-Read idle timer on
+		// streaming bodies are the bounds; an unrecoverably wedged
+		// upstream is closed when the client cancels the request.
 	}
 
 	if mtls != nil {
@@ -87,7 +120,11 @@ func NewServer(outbound *pipeline.Holder, sessions *session.Store, mtls *MTLSOpt
 		OutboundPipeline: outbound,
 		Sessions:         sessions,
 		Client: &http.Client{
-			Timeout:   30 * time.Second,
+			// No Client.Timeout — Go applies that to the entire
+			// request lifecycle including body read, which kills
+			// streaming responses. Time-to-headers is enforced via
+			// transport.ResponseHeaderTimeout above; per-read idle
+			// behavior on streaming bodies is in streamingResponseBody.
 			Transport: transport,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 				return http.ErrUseLastResponse
@@ -168,15 +205,37 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		StartedAt: time.Now(),
 	}
 
+	// SkipHosts short-circuit: forward as a transparent proxy. No
+	// pipeline run, no body buffering, no session recording, no
+	// response-phase work. RunFinish is also skipped (no defer
+	// registered) because the pipeline never ran and has nothing to
+	// finalize. See ListenerConfig.SkipHosts for motivation.
+	//
+	// Audit log: Match keys on r.Host (the agent-supplied Host header
+	// at the listener boundary), and the request is then dialed against
+	// r.URL via s.Client.Do(r). A forged Host that diverges from the
+	// dial target would skip-match yet send to a different upstream —
+	// the same trust shape as ext_proc's :authority. Logging the host
+	// + matched pattern at INFO leaves a per-skip audit trail so
+	// successful self-exemption isn't invisible.
+	pat, skipped := s.SkipHosts.MatchPattern(pctx.Host)
+	if skipped {
+		slog.Info("forward-proxy: skip_hosts match — bypassing pipeline + session recording",
+			"host", pctx.Host, "pattern", pat, "method", r.Method, "path", r.URL.Path)
+	}
+
 	// Finisher dispatch runs after every exit path. RunFinish is a
 	// no-op when pctx.dispatched is empty (pre-pipeline rejects), so
 	// this defer is safe on every path including the body-too-large
-	// early return.
-	defer func() {
-		s.OutboundPipeline.RunFinish(r.Context(), pctx, pipeline.OutcomeFromContext(pctx))
-	}()
+	// early return. Suppressed when skipped because no plugin saw
+	// this request and there is nothing to finalize.
+	if !skipped {
+		defer func() {
+			s.OutboundPipeline.RunFinish(r.Context(), pctx, pipeline.OutcomeFromContext(pctx))
+		}()
+	}
 
-	if s.OutboundPipeline.NeedsBody() && r.Body != nil {
+	if !skipped && s.OutboundPipeline.NeedsBody() && r.Body != nil {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -189,22 +248,29 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("forward-proxy: buffered request body", "host", r.Host, "bodyLen", len(body))
 	}
 
-	if s.Sessions != nil {
+	if !skipped && s.Sessions != nil {
 		if aid := s.Sessions.ActiveSession(); aid != "" {
 			pctx.Session = s.Sessions.View(aid)
 		}
 	}
 
 	originalAuth := pctx.Headers.Get("Authorization")
-	action := s.OutboundPipeline.Run(r.Context(), pctx)
+	if !skipped {
+		action := s.OutboundPipeline.Run(r.Context(), pctx)
 
-	if action.Type == pipeline.Reject {
-		s.recordOutboundReject(pctx, action)
-		httpx.WriteRejection(w, action)
-		return
+		if action.Type == pipeline.Reject {
+			s.recordOutboundReject(pctx, action)
+			// Render as a JSON-RPC error frame when the rejected
+			// request was MCP JSON-RPC, so the agent's MCP client
+			// surfaces this as one failed tool call rather than a
+			// transport break. Falls through to plain HTTP-level
+			// rejection for non-MCP traffic.
+			httpx.WriteRejectionForRequest(w, action, pctx)
+			return
+		}
 	}
 
-	if s.Sessions != nil {
+	if !skipped && s.Sessions != nil {
 		sid := s.Sessions.ActiveSession()
 		if sid == "" {
 			sid = session.DefaultSessionID
@@ -276,67 +342,295 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	pctx.StatusCode = resp.StatusCode
 	pctx.ResponseHeaders = resp.Header.Clone()
 
-	if s.OutboundPipeline.NeedsBody() && resp.Body != nil {
-		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
-		if err != nil {
-			slog.Warn("forward-proxy: response body read error", "host", r.Host, "error", err)
-			http.Error(w, `{"error":"response body read error"}`, http.StatusBadGateway)
+	// SkipHosts: bypass response-phase pipeline + recording entirely.
+	// Stream the upstream body straight through to the caller. Falls
+	// out below to the unconditional header copy + io.Copy.
+	if !skipped {
+		// Branch on Content-Type per response. The Streamable HTTP transport
+		// lets the server pick application/json vs text/event-stream per
+		// response (the client Accepts both), so the same tool may return
+		// JSON on one call and SSE on the next. Decide here rather than
+		// negotiating, and don't take the streaming path when a plugin
+		// declares WritesBody (mutating a body we've already started
+		// forwarding is incompatible with streaming) — fall back to
+		// buffered with a warning log instead.
+		if isEventStream(resp.Header.Get("Content-Type")) &&
+			s.OutboundPipeline.HasStreamingResponders() &&
+			resp.Body != nil {
+			if s.OutboundPipeline.WritesBody() {
+				slog.Warn("forward-proxy: text/event-stream response with WritesBody plugin — falling back to buffered path", "host", r.Host)
+			} else {
+				s.handleStreamingResponse(w, r, resp, pctx)
+				return
+			}
+		}
+
+		if s.OutboundPipeline.NeedsBody() && resp.Body != nil {
+			respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
+			if err != nil {
+				slog.Warn("forward-proxy: response body read error", "host", r.Host, "error", err)
+				http.Error(w, `{"error":"response body read error"}`, http.StatusBadGateway)
+				return
+			}
+			if len(respBody) > maxBodySize {
+				slog.Warn("forward-proxy: response body too large", "host", r.Host, "len", len(respBody))
+				http.Error(w, `{"error":"response body too large"}`, http.StatusBadGateway)
+				return
+			}
+			pctx.ResponseBody = respBody
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		}
+
+		respAction := s.OutboundPipeline.RunResponse(r.Context(), pctx)
+		if respAction.Type == pipeline.Reject {
+			httpx.WriteRejection(w, respAction)
 			return
 		}
-		if len(respBody) > maxBodySize {
-			slog.Warn("forward-proxy: response body too large", "host", r.Host, "len", len(respBody))
-			http.Error(w, `{"error":"response body too large"}`, http.StatusBadGateway)
-			return
+
+		// Streaming-aware plugins use a single code path for both shapes:
+		// for the buffered application/json case we deliver the whole body
+		// as one last=true frame so plugins finalize their running state.
+		// Plugins that didn't migrate — i.e. don't implement
+		// StreamingResponder — are unaffected (RunResponseFrame skips them).
+		if s.OutboundPipeline.HasStreamingResponders() && resp.Body != nil {
+			respFrameAction := s.OutboundPipeline.RunResponseFrame(r.Context(), pctx, pctx.ResponseBody, true)
+			if respFrameAction.Type == pipeline.Reject {
+				httpx.WriteRejection(w, respFrameAction)
+				return
+			}
 		}
-		pctx.ResponseBody = respBody
-		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+
+		// A plugin that called pctx.SetResponseBody flipped the mutation flag.
+		// Use the replaced bytes and rewrite Content-Length so the downstream
+		// client gets a consistent response. Content-Encoding is cleared
+		// because the framework can't know if the plugin also decompressed;
+		// safer to ship plain bytes than a broken archive.
+		if pctx.ResponseBodyMutated() {
+			resp.Body = io.NopCloser(bytes.NewReader(pctx.ResponseBody))
+			resp.ContentLength = int64(len(pctx.ResponseBody))
+			resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(pctx.ResponseBody)))
+			resp.Header.Del("Content-Encoding")
+		}
+
+		s.recordOutboundResponseEvent(pctx, resp.StatusCode)
 	}
+
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		slog.Debug("response copy error", "host", r.Host, "error", err)
+	}
+}
+
+// recordOutboundResponseEvent emits the SessionResponse event for a
+// completed outbound response. Extracted from handleRequest so the
+// streaming path can call it once at end-of-stream and the buffered
+// path can call it once after RunResponse — both go through the same
+// gate and snapshotting logic.
+func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode int) {
+	if s.Sessions == nil {
+		return
+	}
+	sid := s.Sessions.ActiveSession()
+	if sid == "" {
+		sid = session.DefaultSessionID
+	}
+	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
+	ev := pipeline.SessionEvent{
+		At:          time.Now(),
+		Direction:   pipeline.Outbound,
+		Phase:       pipeline.SessionResponse,
+		MCP:         pipeline.SnapshotMCP(pctx.Extensions.MCP),
+		Inference:   pipeline.SnapshotInference(pctx.Extensions.Inference),
+		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
+		Plugins:     plugins,
+		Identity:    pipeline.SnapshotIdentity(pctx),
+		Host:        pctx.Host,
+		StatusCode:  statusCode,
+		Error:       pipeline.DeriveError(pctx),
+		Duration:    pipeline.DurationSince(pctx.StartedAt),
+	}
+	// Same widened gate as the request side — see the request-phase
+	// comment for why each clause matters.
+	if ev.MCP != nil || ev.Inference != nil || ev.Invocations != nil || plugins != nil {
+		s.Sessions.Append(sid, ev)
+	}
+}
+
+// isEventStream reports whether a Content-Type header value names the
+// SSE media type. Content-Type may carry parameters (charset=, boundary=,
+// etc.) so we match on the bare type/subtype prefix and tolerate any
+// suffix. Case-insensitive per RFC 9110 §8.3.1.
+func isEventStream(contentType string) bool {
+	if contentType == "" {
+		return false
+	}
+	// Strip parameters: "text/event-stream; charset=utf-8" → "text/event-stream".
+	if idx := strings.IndexByte(contentType, ';'); idx >= 0 {
+		contentType = contentType[:idx]
+	}
+	return strings.EqualFold(strings.TrimSpace(contentType), "text/event-stream")
+}
+
+// handleStreamingResponse forwards a text/event-stream response to the
+// downstream client frame-by-frame. Each parsed SSE event is delivered
+// to the pipeline's StreamingResponder plugins (recording-only today)
+// and then written + flushed to the client immediately. End-of-stream
+// is signaled to plugins with one final last=true call so aggregating
+// plugins (inference-parser, a2a-parser) can finalize their running
+// state. RunResponse is intentionally NOT invoked on this path —
+// streaming-aware plugins move their finalization logic into
+// OnResponseFrame(last=true), and legacy non-migrated plugins are
+// not called on streaming responses (cleaner contract; no fragmented
+// double-dispatch).
+func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.Response, pctx *pipeline.Context) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		// No flusher means the downstream connection can't deliver
+		// bytes incrementally — fall back to buffered. http.Flusher
+		// is supported by net/http's default ResponseWriter, so this
+		// is a defensive guard for exotic wrappers (httptest with a
+		// custom recorder, embedded servers).
+		slog.Warn("forward-proxy: ResponseWriter does not support flushing — falling back to buffered for streaming response", "host", r.Host)
+		s.streamFallbackBuffered(w, r, resp, pctx)
+		return
+	}
+
+	// Defer the final last=true dispatch + session-event recording so
+	// every exit path (normal EOF, upstream read error, downstream
+	// client-write error) finalizes aggregating plugins and records
+	// the response event. Without this, a client disconnect mid-stream
+	// leaves inference/a2a stuck in an unfinalized state and emits no
+	// SessionResponse row to abctl.
+	defer func() {
+		finalAction := s.OutboundPipeline.RunResponseFrame(r.Context(), pctx, nil, true)
+		if finalAction.Type == pipeline.Reject {
+			// Headers already sent; we can't promote to 502, but
+			// surface the policy violation so operators see it.
+			slog.Warn("forward-proxy: streaming response rejected on finalization (headers already sent)",
+				"host", r.Host, "violation", finalAction.Violation)
+		}
+		s.recordOutboundResponseEvent(pctx, resp.StatusCode)
+	}()
+
+	// Forward headers and the streaming status code BEFORE the first
+	// frame is written. Strip Content-Length since we'll be writing
+	// chunked, and clear hop-by-hop headers as net/http would.
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	w.Header().Del("Content-Length")
+	w.WriteHeader(resp.StatusCode)
+	flusher.Flush()
+
+	reader := sseframe.NewReader(idleReader(resp.Body, streamReadIdleTimeout), maxBodySize)
+	bytesWritten := 0
+	for {
+		frame, err := reader.ReadFrame()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			// Read error or oversized single frame. The client has
+			// already received some frames; the cleanest signal is to
+			// close the connection and log. We can't promote this to
+			// 502 — headers are sent.
+			slog.Warn("forward-proxy: streaming response read error", "host", r.Host, "error", err, "bytesWritten", bytesWritten)
+			break
+		}
+
+		// Record-only dispatch: invoke plugins then write+flush.
+		// A future enforcement-aware version can inspect-before-forward;
+		// see StreamingResponder doc.
+		respAction := s.OutboundPipeline.RunResponseFrame(r.Context(), pctx, frame, false)
+		if respAction.Type == pipeline.Reject {
+			// Headers + earlier frames already on the wire — log and
+			// stop forwarding. The downstream client sees a truncated
+			// stream, which is the best we can do without inspect-
+			// before-forward semantics.
+			slog.Warn("forward-proxy: streaming response rejected mid-stream by plugin",
+				"host", r.Host, "violation", respAction.Violation)
+			break
+		}
+
+		// Write the frame back as one or more SSE data lines. The
+		// sseframe reader folds multi-line `data:` events with `\n`
+		// separators per the spec; re-split here so each original line
+		// gets its own `data: ` prefix and the downstream parser sees
+		// the same event boundaries the upstream produced. For the
+		// single-line JSON-RPC payloads this targets, this loop is
+		// equivalent to writing `data: <frame>\n\n` once.
+		if !writeSSEFrame(w, frame) {
+			slog.Debug("forward-proxy: streaming write error", "host", r.Host)
+			break
+		}
+		flusher.Flush()
+		bytesWritten += len(frame)
+	}
+}
+
+// streamFallbackBuffered handles the rare case of a streaming
+// Content-Type response on a ResponseWriter that doesn't support
+// http.Flusher — buffer the whole SSE body, then re-parse it through
+// sseframe so streaming-aware plugins receive one OnResponseFrame call
+// per SSE event followed by last=true. Without per-frame dispatch the
+// inference parser (and any future fold-and-finalize plugin) would try
+// to JSON-decode the whole SSE blob as one chunk, fail, and clobber a
+// correctly-parsed completion. Production ResponseWriters implement
+// http.Flusher so this path is mostly hit in tests.
+func (s *Server) streamFallbackBuffered(w http.ResponseWriter, r *http.Request, resp *http.Response, pctx *pipeline.Context) {
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
+	if err != nil {
+		slog.Warn("forward-proxy: response body read error", "host", r.Host, "error", err)
+		http.Error(w, `{"error":"response body read error"}`, http.StatusBadGateway)
+		return
+	}
+	if len(respBody) > maxBodySize {
+		slog.Warn("forward-proxy: response body too large", "host", r.Host, "len", len(respBody))
+		http.Error(w, `{"error":"response body too large"}`, http.StatusBadGateway)
+		return
+	}
+	pctx.ResponseBody = respBody
+	resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
 	respAction := s.OutboundPipeline.RunResponse(r.Context(), pctx)
 	if respAction.Type == pipeline.Reject {
 		httpx.WriteRejection(w, respAction)
 		return
 	}
-
-	// A plugin that called pctx.SetResponseBody flipped the mutation flag.
-	// Use the replaced bytes and rewrite Content-Length so the downstream
-	// client gets a consistent response. Content-Encoding is cleared
-	// because the framework can't know if the plugin also decompressed;
-	// safer to ship plain bytes than a broken archive.
-	if pctx.ResponseBodyMutated() {
-		resp.Body = io.NopCloser(bytes.NewReader(pctx.ResponseBody))
-		resp.ContentLength = int64(len(pctx.ResponseBody))
-		resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(pctx.ResponseBody)))
-		resp.Header.Del("Content-Encoding")
-	}
-
-	if s.Sessions != nil {
-		sid := s.Sessions.ActiveSession()
-		if sid == "" {
-			sid = session.DefaultSessionID
+	if s.OutboundPipeline.HasStreamingResponders() {
+		// Re-parse the buffered SSE body frame-by-frame so plugins see the
+		// same per-event shape as the real streaming path. A Reject is
+		// honored here — headers are not yet on the wire.
+		reader := sseframe.NewReader(bytes.NewReader(respBody), maxBodySize)
+		for {
+			frame, ferr := reader.ReadFrame()
+			if ferr == io.EOF {
+				break
+			}
+			if ferr != nil {
+				slog.Warn("forward-proxy: streaming response read error in fallback", "host", r.Host, "error", ferr)
+				break
+			}
+			frameAction := s.OutboundPipeline.RunResponseFrame(r.Context(), pctx, frame, false)
+			if frameAction.Type == pipeline.Reject {
+				httpx.WriteRejection(w, frameAction)
+				return
+			}
 		}
-		plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
-		ev := pipeline.SessionEvent{
-			At:          time.Now(),
-			Direction:   pipeline.Outbound,
-			Phase:       pipeline.SessionResponse,
-			MCP:         pipeline.SnapshotMCP(pctx.Extensions.MCP),
-			Inference:   pipeline.SnapshotInference(pctx.Extensions.Inference),
-			Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
-			Plugins:     plugins,
-			Identity:    pipeline.SnapshotIdentity(pctx),
-			Host:        pctx.Host,
-			StatusCode:  resp.StatusCode,
-			Error:       pipeline.DeriveError(pctx),
-			Duration:    pipeline.DurationSince(pctx.StartedAt),
-		}
-		// Same widened gate as the request side — see the request-phase
-		// comment for why each clause matters.
-		if ev.MCP != nil || ev.Inference != nil || ev.Invocations != nil || plugins != nil {
-			s.Sessions.Append(sid, ev)
+		finalAction := s.OutboundPipeline.RunResponseFrame(r.Context(), pctx, nil, true)
+		if finalAction.Type == pipeline.Reject {
+			httpx.WriteRejection(w, finalAction)
+			return
 		}
 	}
-
+	s.recordOutboundResponseEvent(pctx, resp.StatusCode)
 	for key, values := range resp.Header {
 		for _, value := range values {
 			w.Header().Add(key, value)
@@ -420,24 +714,53 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		Headers:   r.Header.Clone(),
 		StartedAt: time.Now(),
 	}
-	defer func() {
-		s.OutboundPipeline.RunFinish(r.Context(), pctx, pipeline.OutcomeFromContext(pctx))
-	}()
 
-	if s.Sessions != nil {
-		if aid := s.Sessions.ActiveSession(); aid != "" {
-			pctx.Session = s.Sessions.View(aid)
-		}
+	// SkipHosts short-circuit: open the tunnel without running the
+	// pipeline or recording a session event. The pipeline never ran,
+	// so there's nothing to RunFinish — defer is suppressed. Mirrors
+	// handleRequest's skip path so HTTP and CONNECT-tunnel destinations
+	// that match a skip pattern behave identically. Note the gate
+	// plugin loss this implies: if your skip-host list includes a
+	// destination you'd want IBAC or token-exchange to deny on, that
+	// denial does not happen — the SkipHosts list is a "trusted
+	// infrastructure" surface, not a generic per-route policy knob.
+	//
+	// CONNECT is safer-by-construction than the HTTP path: r.Host on
+	// CONNECT is the dial target, so a forged Host header cannot
+	// skip-match while dialing elsewhere — the proxy dials the same
+	// "host:port" it matched. We still emit an audit log so a
+	// successful skip leaves a trace.
+	pat, skipped := s.SkipHosts.MatchPattern(pctx.Host)
+	if skipped {
+		slog.Info("forward-proxy: skip_hosts match (CONNECT) — opening tunnel without pipeline + recording",
+			"host", pctx.Host, "pattern", pat)
 	}
 
-	// Run the outbound pipeline. Plugins that policy on host/identity
-	// (ibac, content gates) still get to allow/deny; plugins that need
-	// HTTP body (parsers) see no body, which they handle gracefully.
-	action := s.OutboundPipeline.Run(r.Context(), pctx)
-	if action.Type == pipeline.Reject {
-		s.recordOutboundReject(pctx, action)
-		httpx.WriteRejection(w, action)
-		return
+	if !skipped {
+		defer func() {
+			s.OutboundPipeline.RunFinish(r.Context(), pctx, pipeline.OutcomeFromContext(pctx))
+		}()
+
+		if s.Sessions != nil {
+			if aid := s.Sessions.ActiveSession(); aid != "" {
+				pctx.Session = s.Sessions.View(aid)
+			}
+		}
+
+		// Run the outbound pipeline. Plugins that policy on host/identity
+		// (ibac, content gates) still get to allow/deny; plugins that need
+		// HTTP body (parsers) see no body, which they handle gracefully.
+		action := s.OutboundPipeline.Run(r.Context(), pctx)
+		if action.Type == pipeline.Reject {
+			s.recordOutboundReject(pctx, action)
+			// Render as a JSON-RPC error frame when the rejected
+			// request was MCP JSON-RPC, so the agent's MCP client
+			// surfaces this as one failed tool call rather than a
+			// transport break. Falls through to plain HTTP-level
+			// rejection for non-MCP traffic.
+			httpx.WriteRejectionForRequest(w, action, pctx)
+			return
+		}
 	}
 
 	// Verify hijack capability BEFORE dialing upstream. If hijacking
@@ -488,42 +811,103 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Record a SessionRequest event so /v1/sessions and abctl show that
 	// a tunnel was opened. Mirrors the HTTP path's post-Allow recording
-	// (see handleRequest above). The MCP / Inference snapshots are nil
-	// by definition (CONNECT bytes are opaque), but Invocations from
-	// gate plugins (ibac, token-exchange's skip/no_route, etc.) and
-	// any plugin-public Plugins entries are still meaningful.
-	if s.Sessions != nil {
-		sid := s.Sessions.ActiveSession()
-		if sid == "" {
-			sid = session.DefaultSessionID
-		}
-		plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
-		ev := pipeline.SessionEvent{
-			At:          time.Now(),
-			Direction:   pipeline.Outbound,
-			Phase:       pipeline.SessionRequest,
-			Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
-			Plugins:     plugins,
-			Identity:    pipeline.SnapshotIdentity(pctx),
-			Host:        pctx.Host,
-		}
-		if ev.Invocations != nil || plugins != nil {
-			s.Sessions.Append(sid, ev)
-		}
+	// (see handleRequest above). Shared with the transparent-redirect path.
+	// Skipped when the destination matched SkipHosts: no plugin ran, so
+	// there are no Invocations to attribute the event to.
+	if !skipped {
+		s.recordTunnelOpened(pctx)
 	}
 
-	// Bidirectional copy. When either side closes, propagate the close
-	// to the other so both io.Copy goroutines exit. Close-on-each-side
-	// is idempotent on net.Conn.
-	go func() {
-		_, _ = io.Copy(upstream, clientConn)
-		_ = upstream.Close()
-		_ = clientConn.Close()
-	}()
-	_, _ = io.Copy(clientConn, upstream)
-	_ = clientConn.Close()
-	_ = upstream.Close()
+	// Bidirectional copy until either side closes.
+	tunnel(clientConn, upstream)
 }
+
+// writeSSEFrame writes one SSE event built from a sseframe-decoded
+// frame back to w. The decoder folds multi-line `data:` events with
+// `\n` separators; this helper splits on those `\n`s and emits one
+// `data: <line>\n` per original line followed by the blank-line
+// terminator, so a downstream SSE parser sees the same event
+// boundaries the upstream produced. Returns true when every byte
+// was written; false on any write error so the caller can stop
+// forwarding without re-checking each Write.
+func writeSSEFrame(w io.Writer, frame []byte) bool {
+	for len(frame) > 0 {
+		nl := bytes.IndexByte(frame, '\n')
+		var line []byte
+		if nl < 0 {
+			line = frame
+			frame = nil
+		} else {
+			line = frame[:nl]
+			frame = frame[nl+1:]
+		}
+		if _, err := w.Write([]byte("data: ")); err != nil {
+			return false
+		}
+		if _, err := w.Write(line); err != nil {
+			return false
+		}
+		if _, err := w.Write([]byte("\n")); err != nil {
+			return false
+		}
+	}
+	if _, err := w.Write([]byte("\n")); err != nil {
+		return false
+	}
+	return true
+}
+
+// idleReader wraps r so each Read enforces an idle deadline. The
+// goroutine pattern (timer reset on every Read entry, cancelled on
+// every Read exit) is portable across any io.ReadCloser, unlike
+// SetReadDeadline which only applies to net.Conn — and for HTTPS
+// upstreams the proxy holds the *http.Response.Body, not the
+// underlying conn. On idle expiry the reader closes the body, which
+// causes the in-flight Read to return an error and unblocks the
+// caller. Subsequent Reads return the same close error.
+//
+// The wrapper does not buffer; bufio's reader inside sseframe.Reader
+// continues to do that. The deadline is per-Read, not per-frame, so
+// a long-running tool that emits one byte every minute (within the
+// idle window) keeps the stream alive. The streamReadIdleTimeout
+// constant captures the wall-clock budget.
+//
+// Race-with-success note: time.AfterFunc + timer.Stop() does NOT
+// wait for an already-fired callback. If the timer fires just as a
+// Read returns successfully, the close runs after the success and
+// would leave the next Read failing under a healthy upstream. The
+// closeOnce field makes the close idempotent and Close() also runs
+// it, so a stray late timer is harmless: the underlying body is
+// closed at most once, and a successful in-flight Read keeps its
+// data either way. The wider hazard — closing the body concurrently
+// with an active Read — is the documented unblock mechanism the
+// stdlib http transport relies on for forced disconnects.
+type idleReadCloser struct {
+	rc        io.ReadCloser
+	timeout   time.Duration
+	closeOnce sync.Once
+}
+
+func idleReader(rc io.ReadCloser, timeout time.Duration) io.ReadCloser {
+	return &idleReadCloser{rc: rc, timeout: timeout}
+}
+
+func (i *idleReadCloser) Read(p []byte) (int, error) {
+	timer := time.AfterFunc(i.timeout, i.closeIdempotent)
+	n, err := i.rc.Read(p)
+	timer.Stop()
+	return n, err
+}
+
+func (i *idleReadCloser) Close() error {
+	i.closeIdempotent()
+	return nil
+}
+
+func (i *idleReadCloser) closeIdempotent() {
+	i.closeOnce.Do(func() { _ = i.rc.Close() })
+}
+
 
 // enableKeepalive turns on TCP keepalive with a 30s probe interval on
 // the underlying *net.TCPConn, if conn unwraps to one. No-op on other

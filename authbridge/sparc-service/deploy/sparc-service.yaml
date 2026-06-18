@@ -1,16 +1,22 @@
-# SPARC reflection service for the demo, deployed into kagenti-system.
-# Its config (provider/model/track) is supplied by the `sparc-service-config`
-# ConfigMap and the optional `sparc-watsonx` Secret, both created by the
-# Makefile (provider-aware: watsonx or ollama). In production this ships via the
-# kagenti Helm chart (components.sparcService.enabled=true).
+# SPARC reflection service — the backend the AuthBridge `sparc` plugin calls.
+#
+# Deploy this ONCE per cluster (any namespace; kagenti-system by convention)
+# BEFORE enabling the `sparc` plugin on an agent. Agents reach it at
+# http://sparc-service.<namespace>.svc:8090/reflect.
+#
+# Config comes from two objects the installer (Makefile) creates:
+#   - sparc-service-config  ConfigMap  — provider / model / track / etc.
+#   - sparc-creds           Secret     — provider credentials (optional)
+#
+# No namespace is baked in — apply with `kubectl -n <namespace> apply -f`.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: sparc-service
-  namespace: kagenti-system
   labels:
     app.kubernetes.io/name: sparc-service
-    app.kubernetes.io/part-of: finance-sparc-demo
+    app.kubernetes.io/component: reflection-service
+    app.kubernetes.io/part-of: authbridge
 spec:
   replicas: 1
   selector:
@@ -20,7 +26,8 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: sparc-service
-        app.kubernetes.io/part-of: finance-sparc-demo
+        # The service makes its own egress to the LLM provider; keep it out of
+        # agent-side sidecar injection / ambient capture.
         kagenti.io/inject: disabled
     spec:
       securityContext:
@@ -30,7 +37,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: sparc-service
-          image: sparc-service:latest
+          image: ghcr.io/kagenti/kagenti-extensions/sparc-service:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8090
@@ -39,7 +46,7 @@ spec:
             - configMapRef:
                 name: sparc-service-config
             - secretRef:
-                name: sparc-watsonx
+                name: sparc-creds
                 optional: true
           securityContext:
             allowPrivilegeEscalation: false
@@ -69,10 +76,10 @@ apiVersion: v1
 kind: Service
 metadata:
   name: sparc-service
-  namespace: kagenti-system
   labels:
     app.kubernetes.io/name: sparc-service
-    app.kubernetes.io/part-of: finance-sparc-demo
+    app.kubernetes.io/component: reflection-service
+    app.kubernetes.io/part-of: authbridge
 spec:
   selector:
     app.kubernetes.io/name: sparc-service

@@ -67,6 +67,22 @@ grounded) is `<=` it, any reject is escalated to `deny`.
 > governs the case where the conversation/tool context is missing (no `inference-parser` event):
 > `open` skips and records `no_inference_context`; `closed` blocks.
 
+## Prerequisite: deploy the SPARC service
+
+The plugin is a thin client — it calls the [SPARC reflection service](../sparc-service/README.md)
+over HTTP. **Deploy that service once per cluster before enabling this plugin**, or every tool call
+hits an unreachable reflector (and falls back to `fail_policy`). It's one command:
+
+```bash
+cd authbridge/sparc-service/deploy
+export WX_API_KEY=... WX_PROJECT_ID=...   # or PROVIDER=ollama, openai, ...
+make install                              # deploys into kagenti-system by default
+```
+
+See [`sparc-service/deploy/README.md`](../sparc-service/deploy/README.md) for providers, the
+local-image path (`make image install` on kind), and configuration. Point `reflector_endpoint`
+below at the resulting service (`http://sparc-service.<namespace>.svc:8090`).
+
 ## Configuration
 
 ```yaml
