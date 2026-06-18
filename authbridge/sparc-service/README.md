@@ -18,6 +18,21 @@ This service is deliberately *just* a reflection wrapper:
 - It returns SPARC's verdict **faithfully**. All enforcement policy (observe / inject /
   deny, score thresholds) lives in the AuthBridge plugin, not here.
 
+## Deploy to a cluster (one command)
+
+Deploy this service **once per cluster, before enabling the `sparc` plugin** on any agent:
+
+```bash
+cd deploy
+export WX_API_KEY=... WX_PROJECT_ID=...   # or PROVIDER=ollama, openai, ...
+make install                              # → kagenti-system; published image
+# kind dev cluster (build + load a local image first):
+make image install
+```
+
+See [`deploy/README.md`](deploy/README.md) for all providers, namespaces, and the local-build path.
+The rest of this document covers the service's HTTP API and environment configuration.
+
 ## API
 
 ### `POST /reflect`

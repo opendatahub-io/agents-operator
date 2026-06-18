@@ -15,7 +15,7 @@
 # export WX_API_KEY and WX_PROJECT_ID (e.g. `set -a; . /path/.env; set +a`).
 
 .PHONY: help preflight host-setup build-images build-authbridge load-images \
-        ollama-up sparc-config deploy wait-pods patch-config setup-keycloak drive demo \
+        ollama-up deploy wait-pods patch-config setup-keycloak drive demo \
         build-abctl show-result undeploy logs-agent logs-sparc logs-ollama
 
 .DEFAULT_GOAL := help
@@ -36,6 +36,8 @@ AUTHBRIDGE_IMAGE  ?= ghcr.io/kagenti/kagenti-extensions/authbridge:v0.6.0-alpha.
 AGENT_IMAGE := finance-agent:latest
 MCP_IMAGE   := finance-mcp:latest
 SPARC_IMAGE := sparc-service:latest
+# Shared SPARC-service installer (the demo deploys the service through it).
+SPARC_DEPLOY := ../../sparc-service/deploy
 # Pinned (must match k8s/ollama.yaml). Override only if you stage a different tag.
 OLLAMA_IMAGE := ollama/ollama:0.30.2
 # In-cluster Ollama (the agent's reasoning LLM for the watsonx path).
@@ -128,28 +130,15 @@ load-images: build-images build-authbridge  ## Load all images into kind
 	  $(CONTAINER_RUNTIME) exec $(KIND_NODE) ctr -n k8s.io images tag localhost/$$img docker.io/library/$$img >/dev/null 2>&1 || true; \
 	done
 
-sparc-config:  ## Create the SPARC service ConfigMap (+ watsonx secret) for $(PROVIDER)
-	@if [ "$(PROVIDER)" = "watsonx" ]; then \
-	  kubectl -n $(PLATFORM_NS) create configmap sparc-service-config \
-	    --from-literal=SPARC_LLM_PROVIDER=watsonx --from-literal=SPARC_MODEL=$(SPARC_MODEL) \
-	    --from-literal=SPARC_TRACK=fast_track --from-literal=PORT=8090 \
-	    --dry-run=client -o yaml | kubectl apply -f - ; \
-	  kubectl -n $(PLATFORM_NS) create secret generic sparc-watsonx \
-	    --from-literal=WX_API_KEY="$${WX_API_KEY}" --from-literal=WX_PROJECT_ID="$${WX_PROJECT_ID}" \
-	    --from-literal=WX_URL="$${WX_URL:-https://us-south.ml.cloud.ibm.com}" \
-	    --dry-run=client -o yaml | kubectl apply -f - ; \
-	else \
-	  kubectl -n $(PLATFORM_NS) create configmap sparc-service-config \
-	    --from-literal=SPARC_LLM_PROVIDER=ollama --from-literal=SPARC_MODEL=$(SPARC_MODEL) \
-	    --from-literal=SPARC_TRACK=fast_track --from-literal=PORT=8090 \
-	    --from-literal=OLLAMA_BASE_URL=$(SPARC_OLLAMA_URL) \
-	    --dry-run=client -o yaml | kubectl apply -f - ; \
-	  kubectl -n $(PLATFORM_NS) create secret generic sparc-watsonx --dry-run=client -o yaml | kubectl apply -f - ; \
-	fi
-	@kubectl -n $(PLATFORM_NS) rollout restart deploy/sparc-service >/dev/null 2>&1 || true
-
-deploy: sparc-config  ## Deploy the SPARC service, finance MCP server, and agent
-	kubectl apply -f k8s/sparc-service.yaml
+deploy:  ## Deploy the SPARC service (shared installer), finance MCP server, and agent
+	@# The SPARC service is deployed through the shared installer — the same
+	@# one-command path a user runs for any cluster. The demo's images are
+	@# already built + kind-loaded by load-images, so we pass IMAGE and skip the
+	@# installer's own build. WX_* creds (watsonx) are read from the environment.
+	$(MAKE) -C $(SPARC_DEPLOY) install \
+	  NAMESPACE=$(PLATFORM_NS) IMAGE=$(SPARC_IMAGE) PROVIDER=$(PROVIDER) \
+	  MODEL=$(SPARC_MODEL) TRACK=fast_track OLLAMA_BASE_URL=$(SPARC_OLLAMA_URL) \
+	  KIND_CLUSTER_NAME=$(KIND_CLUSTER_NAME)
 	kubectl apply -f k8s/finance-mcp.yaml
 	kubectl apply -f k8s/agent.yaml
 	@# Point the agent's reasoning LLM at the provider's Ollama (in-cluster for
@@ -195,9 +184,7 @@ undeploy:  ## Remove demo resources (kagenti install untouched)
 	-kubectl -n $(NS) delete -f k8s/agent.yaml --ignore-not-found
 	-kubectl -n $(NS) delete -f k8s/finance-mcp.yaml --ignore-not-found
 	-kubectl -n $(NS) delete -f k8s/ollama.yaml --ignore-not-found
-	-kubectl delete -f k8s/sparc-service.yaml --ignore-not-found
-	-kubectl -n $(PLATFORM_NS) delete configmap sparc-service-config --ignore-not-found
-	-kubectl -n $(PLATFORM_NS) delete secret sparc-watsonx --ignore-not-found
+	-$(MAKE) -C $(SPARC_DEPLOY) uninstall NAMESPACE=$(PLATFORM_NS)
 	-kubectl -n $(NS) delete configmap authbridge-config-$(AGENT) --ignore-not-found
 	-kubectl -n $(NS) delete secret -l kagenti.io/client-name=$(AGENT) --ignore-not-found
 	@echo "[*] demo resources removed."

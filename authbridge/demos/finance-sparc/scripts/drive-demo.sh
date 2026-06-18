@@ -60,11 +60,10 @@ send 2 'The transaction id is TX4827. Please proceed with the refund, reason: du
 echo "  agent> $(reply /tmp/finance-t2.json)"
 
 say "SPARC verdicts recorded for this session:"
-SID="$CTX"
 kubectl -n "$NS" port-forward "deploy/$AGENT" 19094:9094 >/tmp/finance-pf94.log 2>&1 &
 PF94=$!; trap 'kill $PF $PF94 $KCPF 2>/dev/null || true' EXIT
 sleep 3
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
-curl -s -m 10 "http://localhost:19094/v1/sessions/$SID" 2>/dev/null | python3 "$SCRIPT_DIR/show-verdicts.py"
+python3 "$SCRIPT_DIR/show-verdicts.py" "http://localhost:19094"
 echo
 echo "Done. Inspect the full pipeline with: make show-result"

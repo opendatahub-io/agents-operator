@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -38,9 +39,12 @@ import (
 	// (no gRPC, no envoy types).
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/forwardproxy"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/reverseproxy"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/skiphost"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/transparentproxy"
 
-	// Only two plugins: drop the parsers and token-broker.
+	// Auth gates only: drop the parsers and token-broker.
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/jwtvalidation"
+	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/opa"
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenbroker"
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenexchange"
 )
@@ -238,12 +242,24 @@ func main() {
 	if err != nil {
 		log.Fatalf("creating forward proxy: %v", err)
 	}
+	// SkipHosts: outbound destinations that bypass the pipeline AND
+	// session recording entirely. See ListenerConfig.SkipHosts.
+	skipHosts, err := skiphost.New(cfg.Listener.SkipHosts)
+	if err != nil {
+		log.Fatalf("listener.skip_hosts: %v", err)
+	}
+	fpSrv.SkipHosts = skipHosts
 	sharedStore := shared.New()
 	defer sharedStore.Close() // stop the TTL janitor on normal main return
 	rpSrv.Shared = sharedStore
 	fpSrv.Shared = sharedStore
 	httpServers = append(httpServers, startReverseProxyServer("reverse-proxy", rpSrv, cfg.Listener.ReverseProxyAddr))
 	httpServers = append(httpServers, startHTTPServer("forward-proxy", fpSrv.Handler(), cfg.Listener.ForwardProxyAddr))
+
+	// Outbound transparent listener (enforce-redirect mode); shares the forward
+	// proxy's outbound pipeline. Closed explicitly on shutdown.
+	transparentLn := startTransparentProxy(fpSrv, cfg.Listener.TransparentProxyAddr)
+
 	_ = mtlsMetrics // TODO Phase 2: surface metrics through /stats
 
 	statsProvider := func() *auth.Stats {
@@ -310,6 +326,9 @@ func main() {
 	for _, srv := range httpServers {
 		srv.Shutdown(shutdownCtx)
 	}
+	if transparentLn != nil {
+		_ = transparentLn.Close()
+	}
 	statSrv.Shutdown(shutdownCtx)
 	if sessionAPISrv != nil {
 		sessionAPISrv.Shutdown(shutdownCtx)
@@ -336,6 +355,33 @@ func startHTTPServer(name string, handler http.Handler, addr string) *http.Serve
 		}
 	}()
 	return srv
+}
+
+// startTransparentProxy binds the outbound transparent listener (enforce-redirect
+// mode) and serves it in a goroutine, dispatching each REDIRECTed connection
+// through the forward proxy's outbound pipeline. Returns the listener for
+// shutdown, or nil when addr is empty. Bind failures are fatal — enforce-redirect
+// iptables would otherwise REDIRECT to a dead port and break all egress silently.
+func startTransparentProxy(fp *forwardproxy.Server, addr string) *net.TCPListener {
+	if addr == "" {
+		return nil
+	}
+	la, err := net.ResolveTCPAddr("tcp", addr)
+	if err != nil {
+		log.Fatalf("resolve transparent-proxy addr %q: %v", addr, err)
+	}
+	ln, err := net.ListenTCP("tcp", la)
+	if err != nil {
+		log.Fatalf("transparent-proxy listen on %q: %v", addr, err)
+	}
+	srv := transparentproxy.NewServer(fp.HandleTransparentConn)
+	go func() {
+		slog.Info("transparent proxy listening", "addr", addr)
+		if err := srv.Serve(ln); err != nil {
+			log.Fatalf("transparent-proxy serve: %v", err)
+		}
+	}()
+	return ln
 }
 
 // startReverseProxyServer mirrors startHTTPServer but routes through
