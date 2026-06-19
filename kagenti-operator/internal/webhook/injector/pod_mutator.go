@@ -909,6 +909,9 @@ func synthesizePipeline(nsConfig *NamespaceConfig) map[string]interface{} {
 		identity := map[string]interface{}{}
 		if nsConfig.ClientAuthType == ClientAuthTypeFederatedJWT {
 			identity["type"] = IdentityTypeSpiffe
+			if nsConfig.JWTAudience != "" {
+				identity["jwt_audience"] = nsConfig.JWTAudience
+			}
 		} else {
 			identity["type"] = nsConfig.ClientAuthType
 		}

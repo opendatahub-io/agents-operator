@@ -1722,6 +1722,37 @@ func TestEnsurePerAgentConfigMap_FederatedJWT_MapsToSpiffe(t *testing.T) {
 	// authbridge/authlib/plugins/CONVENTIONS.md.
 }
 
+func TestEnsurePerAgentConfigMap_FederatedJWT_SetsJWTAudience(t *testing.T) {
+	m := newTestMutator()
+	ctx := context.Background()
+
+	nsConfig := &NamespaceConfig{
+		Issuer:         "http://keycloak:8080/realms/kagenti",
+		KeycloakURL:    "http://keycloak:8080",
+		KeycloakRealm:  "kagenti",
+		ClientAuthType: "federated-jwt",
+		JWTAudience:    "http://keycloak:8080/realms/kagenti",
+	}
+
+	cmName, err := m.ensurePerAgentConfigMap(ctx, "team1", "spiffe-agent",
+		ModeEnvoySidecar, "", nsConfig, nil, "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cm := fetchConfigMap(t, m, "team1", cmName)
+	cfg := parseConfigYAML(t, cm)
+
+	tokCfg := pluginConfigAt(t, cfg, "outbound", "token-exchange")
+	identity, _ := tokCfg["identity"].(map[string]interface{})
+	if identity == nil {
+		t.Fatal("expected identity block under token-exchange config")
+	}
+	if identity["jwt_audience"] != "http://keycloak:8080/realms/kagenti" {
+		t.Errorf("identity.jwt_audience = %v, want http://keycloak:8080/realms/kagenti", identity["jwt_audience"])
+	}
+}
+
 // --- mTLS rendering tests ---
 //
 // These cover the per-agent ConfigMap rendering with the new mtlsMode
