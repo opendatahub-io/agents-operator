@@ -32,6 +32,11 @@ func ResolveOwner(pod *corev1.Pod) OwnerInfo {
 		switch ref.Kind {
 		case "StatefulSet":
 			return OwnerInfo{Name: ref.Name, Kind: "StatefulSet"}
+		case "Sandbox":
+			// agent-sandbox (agents.x-k8s.io) workloads. The Sandbox name is the
+			// workload name an AgentRuntime targetRef points at, so key off the
+			// ownerRef rather than the pod name. Mirrors IsPodOwnedBy below.
+			return OwnerInfo{Name: ref.Name, Kind: "Sandbox"}
 		case "ReplicaSet":
 			name := deploymentNameFromReplicaSet(ref.Name, pod.Labels)
 			if name != "" {

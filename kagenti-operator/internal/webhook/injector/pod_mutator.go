@@ -27,6 +27,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	applyconfigscorev1 "k8s.io/client-go/applyconfigurations/core/v1"
 	applyconfigsmetav1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -1187,9 +1189,32 @@ func (m *PodMutator) buildOwnerReference(ctx context.Context, namespace, crName 
 			WithBlockOwnerDeletion(true)
 	}
 
+	// Try Sandbox (agents.x-k8s.io). The Sandbox CR name == the workload name,
+	// so the per-agent ConfigMap is garbage-collected with the Sandbox, matching
+	// Deployment/StatefulSet behavior.
+	sandbox := &unstructured.Unstructured{}
+	sandbox.SetGroupVersionKind(sandboxOwnerGVK)
+	if err := m.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: crName}, sandbox); err == nil {
+		return applyconfigsmetav1.OwnerReference().
+			WithAPIVersion(sandboxOwnerGVK.GroupVersion().String()).
+			WithKind(sandboxOwnerGVK.Kind).
+			WithName(sandbox.GetName()).
+			WithUID(sandbox.GetUID()).
+			WithController(true).
+			WithBlockOwnerDeletion(true)
+	}
+
 	mutatorLog.V(1).Info("Could not find owner workload for per-agent ConfigMap, skipping OwnerReference",
 		"namespace", namespace, "crName", crName)
 	return nil
+}
+
+// sandboxOwnerGVK is the agent-sandbox CR GVK used to look up the owning Sandbox
+// for per-agent ConfigMap garbage collection. Mirrors the controller's sandboxGVK.
+var sandboxOwnerGVK = schema.GroupVersionKind{
+	Group:   "agents.x-k8s.io",
+	Version: "v1alpha1",
+	Kind:    "Sandbox",
 }
 
 func containerExists(containers []corev1.Container, name string) bool {

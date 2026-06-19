@@ -24,6 +24,24 @@ func TestResolveOwner_StatefulSet(t *testing.T) {
 	}
 }
 
+func TestResolveOwner_Sandbox(t *testing.T) {
+	// A Sandbox pod's controller ownerRef carries the Sandbox (workload) name,
+	// which is what an AgentRuntime targetRef points at. Resolving Kind="Sandbox"
+	// makes override matching exact instead of relying on the pod-name fallback.
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "weather-agent",
+			OwnerReferences: []metav1.OwnerReference{
+				{Kind: "Sandbox", Name: "weather-agent", Controller: boolPtr(true)},
+			},
+		},
+	}
+	info := ResolveOwner(pod)
+	if info.Name != "weather-agent" || info.Kind != "Sandbox" {
+		t.Errorf("expected (weather-agent, Sandbox), got (%s, %s)", info.Name, info.Kind)
+	}
+}
+
 func TestResolveOwner_StatefulSet_NonController_Ignored(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
