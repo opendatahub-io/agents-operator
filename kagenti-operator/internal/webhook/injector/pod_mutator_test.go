@@ -25,6 +25,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -1624,6 +1625,47 @@ func TestEnsurePerAgentConfigMap_OwnerReference_SetFromStatefulSet(t *testing.T)
 	ref := cm.OwnerReferences[0]
 	if ref.Kind != "StatefulSet" || ref.Name != "my-stateful-agent" || ref.UID != "sts-uid-456" {
 		t.Errorf("OwnerReference = %+v, want StatefulSet/my-stateful-agent/sts-uid-456", ref)
+	}
+}
+
+func TestEnsurePerAgentConfigMap_OwnerReference_SetFromSandbox(t *testing.T) {
+	// Sandbox is an agents.x-k8s.io CR (unstructured). The per-agent ConfigMap
+	// should be owned by it so it's garbage-collected with the Sandbox, matching
+	// the Deployment/StatefulSet behavior.
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = agentv1alpha1.AddToScheme(scheme)
+	scheme.AddKnownTypeWithName(sandboxOwnerGVK, &unstructured.Unstructured{})
+
+	sandbox := &unstructured.Unstructured{}
+	sandbox.SetGroupVersionKind(sandboxOwnerGVK)
+	sandbox.SetNamespace("team1")
+	sandbox.SetName("my-sandbox-agent")
+	sandbox.SetUID(types.UID("sandbox-uid-789"))
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(sandbox).Build()
+	m := &PodMutator{
+		Client:            fakeClient,
+		APIReader:         fakeClient,
+		GetPlatformConfig: config.CompiledDefaults,
+		GetFeatureGates:   config.DefaultFeatureGates,
+	}
+	ctx := context.Background()
+
+	cmName, err := m.ensurePerAgentConfigMap(ctx, "team1", "my-sandbox-agent",
+		ModeEnvoySidecar, "", &NamespaceConfig{ClientAuthType: "client-secret"}, nil, "", nil, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cm := fetchConfigMap(t, m, "team1", cmName)
+	if len(cm.OwnerReferences) == 0 {
+		t.Fatal("expected OwnerReference on ConfigMap")
+	}
+	ref := cm.OwnerReferences[0]
+	if ref.Kind != "Sandbox" || ref.Name != "my-sandbox-agent" || ref.UID != "sandbox-uid-789" {
+		t.Errorf("OwnerReference = %+v, want Sandbox/my-sandbox-agent/sandbox-uid-789", ref)
 	}
 }
 

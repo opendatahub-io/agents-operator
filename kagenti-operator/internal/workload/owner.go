@@ -9,18 +9,18 @@ import (
 // OwnerInfo describes the workload that owns a Pod.
 type OwnerInfo struct {
 	Name string
-	Kind string // "Deployment", "StatefulSet", or "" if unknown
+	Kind string // "Deployment", "StatefulSet", "Sandbox", or "" if unknown
 }
 
 // ResolveOwner determines which top-level workload (Deployment,
-// StatefulSet) owns a Pod by inspecting ownerReferences and labels.
+// StatefulSet, Sandbox) owns a Pod by inspecting ownerReferences and labels.
 //
 // For Deployment pods the chain is Pod → ReplicaSet → Deployment;
 // the Deployment name is recovered from the ReplicaSet name by
 // stripping the pod-template-hash suffix.
 //
-// For StatefulSet pods the ownerReference points directly to the
-// StatefulSet (only controller ownerReferences are considered).
+// For StatefulSet and Sandbox pods the ownerReference points directly to the
+// workload (only controller ownerReferences are considered).
 //
 // Returns empty OwnerInfo when ownership cannot be determined.
 func ResolveOwner(pod *corev1.Pod) OwnerInfo {
@@ -32,6 +32,11 @@ func ResolveOwner(pod *corev1.Pod) OwnerInfo {
 		switch ref.Kind {
 		case "StatefulSet":
 			return OwnerInfo{Name: ref.Name, Kind: "StatefulSet"}
+		case "Sandbox":
+			// agent-sandbox (agents.x-k8s.io) workloads. The Sandbox name is the
+			// workload name an AgentRuntime targetRef points at, so key off the
+			// ownerRef rather than the pod name. Mirrors IsPodOwnedBy below.
+			return OwnerInfo{Name: ref.Name, Kind: "Sandbox"}
 		case "ReplicaSet":
 			name := deploymentNameFromReplicaSet(ref.Name, pod.Labels)
 			if name != "" {

@@ -1331,6 +1331,12 @@ func newRuntimePodTemplateAccessor(kind string) (*runtimePodTemplateAccessor, bo
 				u := o.(*unstructured.Unstructured)
 				_ = unstructured.SetNestedStringMap(u.Object, a, "spec", "podTemplate", "metadata", "annotations")
 			},
+			// getPodSpec is not implemented for Sandbox: extracting a typed
+			// *corev1.PodSpec out of the unstructured podTemplate isn't needed
+			// today (the only former caller, OCI skill mounting, was removed).
+			// Return nil rather than leaving the func nil so a future caller hits
+			// a nil-check, not a nil-function-call panic.
+			getPodSpec: func(client.Object) *corev1.PodSpec { return nil },
 		}, true
 	default:
 		return nil, false
