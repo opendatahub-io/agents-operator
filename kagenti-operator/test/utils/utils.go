@@ -291,7 +291,7 @@ func InstallSpire(trustDomain string) error {
 		"-n", "spire-system",
 		fmt.Sprintf("--set=global.spire.trustDomain=%s", trustDomain),
 		"--wait",
-		"--timeout", "5m",
+		"--timeout", "10m",
 	)
 	_, err := Run(cmd)
 	return err
