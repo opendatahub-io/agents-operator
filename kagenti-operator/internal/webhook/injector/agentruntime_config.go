@@ -60,6 +60,11 @@ type AgentRuntimeOverrides struct {
 	// applies.
 	MTLSMode *string
 
+	// TLSBridgeMode is the per-workload override for the outbound TLS bridge.
+	// Nil = no override; the namespace tls_bridge.mode (if set) or "disabled"
+	// applies.
+	TLSBridgeMode *string
+
 	// Egress enforcement — from .spec.egressEnforcement
 	// Nil = no per-workload override; the namespace's
 	// authbridge-runtime-config egressEnforcement (if set) or
@@ -148,6 +153,12 @@ func extractOverrides(rt *agentv1alpha1.AgentRuntime) *AgentRuntimeOverrides {
 	if rt.Spec.MTLSMode != "" {
 		mode := rt.Spec.MTLSMode
 		overrides.MTLSMode = &mode
+	}
+
+	// .spec.tlsBridgeMode
+	if rt.Spec.TLSBridgeMode != "" {
+		mode := rt.Spec.TLSBridgeMode
+		overrides.TLSBridgeMode = &mode
 	}
 
 	// .spec.egressEnforcement

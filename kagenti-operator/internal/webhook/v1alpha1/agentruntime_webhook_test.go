@@ -311,3 +311,29 @@ func TestAgentRuntimeValidator_MTLSCompatWithMode(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckTLSBridgeCompatibleWithMode(t *testing.T) {
+	cases := []struct {
+		name        string
+		bridge, abm string
+		wantErr     bool
+	}{
+		{"enabled+envoy rejected", "enabled", "envoy-sidecar", true},
+		{"enabled+waypoint rejected", "enabled", "waypoint", true},
+		{"enabled+proxy-sidecar ok", "enabled", "proxy-sidecar", false},
+		{"enabled+lite ok", "enabled", "lite", false},
+		{"enabled+empty ok", "enabled", "", false},
+		{"disabled+envoy ok", "disabled", "envoy-sidecar", false},
+		{"unset bridge ok", "", "envoy-sidecar", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := &agentv1alpha1.AgentRuntime{Spec: agentv1alpha1.AgentRuntimeSpec{
+				TLSBridgeMode: tc.bridge, AuthBridgeMode: tc.abm,
+			}}
+			if err := checkTLSBridgeCompatibleWithMode(rt); (err != nil) != tc.wantErr {
+				t.Errorf("got err=%v, wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
+}

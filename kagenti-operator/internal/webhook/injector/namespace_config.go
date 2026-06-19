@@ -204,3 +204,25 @@ func ExtractMTLSMode(authbridgeYAML string) string {
 	}
 	return top.MTLS.Mode
 }
+
+// ExtractTLSBridgeMode parses an authbridge-runtime-config config.yaml string
+// and returns the value of its `tls_bridge.mode` field. Returns "" if the YAML
+// is empty, malformed, has no `tls_bridge` block, or its `mode` field is unset
+// — the caller then falls back to the next resolution layer (or "disabled").
+// Same surgical-parse pattern as ExtractMTLSMode.
+func ExtractTLSBridgeMode(authbridgeYAML string) string {
+	if authbridgeYAML == "" {
+		return ""
+	}
+	var top struct {
+		TLSBridge struct {
+			Mode string `json:"mode"`
+		} `json:"tls_bridge"`
+	}
+	if err := yaml.Unmarshal([]byte(authbridgeYAML), &top); err != nil {
+		nsConfigLog.Info("WARN: failed to parse authbridge-runtime-config config.yaml for tls_bridge.mode; falling back to next resolution layer",
+			"error", err.Error())
+		return ""
+	}
+	return top.TLSBridge.Mode
+}

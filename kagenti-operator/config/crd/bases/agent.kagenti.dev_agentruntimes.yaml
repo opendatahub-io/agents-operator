@@ -204,6 +204,16 @@ spec:
                 - kind
                 - name
                 type: object
+              tlsBridgeMode:
+                default: disabled
+                description: |-
+                  TLSBridgeMode controls AuthBridge's outbound TLS bridge (decrypt agent
+                  egress HTTPS into the pipeline). Only honored for authBridgeMode
+                  proxy-sidecar or lite; rejected with envoy-sidecar. Requires cert-manager.
+                enum:
+                - disabled
+                - enabled
+                type: string
               type:
                 description: Type classifies the workload as an agent or tool
                 enum:

@@ -81,3 +81,19 @@ const (
 	MTLSModePermissive = "permissive"
 	MTLSModeStrict     = "strict"
 )
+
+const (
+	// TLSBridgeCAVolumeName is the Secret-backed volume carrying the FULL
+	// per-agent cert-manager CA keypair (tls.crt + tls.key + ca.crt). It is
+	// mounted ONLY into the authbridge sidecar, which needs tls.key to mint
+	// leaves. It must never be mounted into the agent container — the key has
+	// no Name Constraints, so an agent holding it could forge a cert for any
+	// host. The mode values + secret-name suffix are the shared contract and
+	// live in api/v1alpha1 (TLSBridgeMode*, TLSBridgeCASecretSuffix).
+	TLSBridgeCAVolumeName = "tls-bridge-ca"
+	// TLSBridgeCACertVolumeName carries ONLY ca.crt (projected from the same
+	// Secret) and is mounted into agent containers so they trust the bridge's
+	// minted leaves — without ever seeing the private key.
+	TLSBridgeCACertVolumeName = "tls-bridge-ca-cert"
+	TLSBridgeCAMountPath      = "/etc/authbridge/tls-bridge-ca"
+)

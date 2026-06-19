@@ -137,3 +137,20 @@ func TestResolveConfig_TokenExchange_NotOverridable(t *testing.T) {
 		t.Errorf("TargetScopes = %q, want namespace value", resolved.TargetScopes)
 	}
 }
+
+func TestResolveConfig_TLSBridgeMode_Precedence(t *testing.T) {
+	// CR override wins.
+	ar := &AgentRuntimeOverrides{TLSBridgeMode: ptr.To("enabled")}
+	if rc := ResolveConfig(config.CompiledDefaults(), nil, ar); rc.TLSBridgeMode != "enabled" {
+		t.Errorf("CR override: got %q, want enabled", rc.TLSBridgeMode)
+	}
+	// Namespace value (tls_bridge.mode in the runtime YAML) when no CR override.
+	ns := &NamespaceConfig{AuthBridgeRuntimeYAML: "tls_bridge:\n  mode: enabled\n"}
+	if rc := ResolveConfig(config.CompiledDefaults(), ns, nil); rc.TLSBridgeMode != "enabled" {
+		t.Errorf("namespace: got %q, want enabled", rc.TLSBridgeMode)
+	}
+	// Default when nothing sets it.
+	if rc := ResolveConfig(config.CompiledDefaults(), nil, nil); rc.TLSBridgeMode != "disabled" {
+		t.Errorf("default: got %q, want disabled", rc.TLSBridgeMode)
+	}
+}

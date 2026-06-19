@@ -52,6 +52,9 @@ func (v *AgentRuntimeValidator) ValidateCreate(ctx context.Context, rt *agentv1a
 	if err := checkMTLSCompatibleWithMode(rt); err != nil {
 		return nil, err
 	}
+	if err := checkTLSBridgeCompatibleWithMode(rt); err != nil {
+		return nil, err
+	}
 	return nil, nil
 }
 
@@ -62,6 +65,9 @@ func (v *AgentRuntimeValidator) ValidateUpdate(ctx context.Context, _ *agentv1al
 		return nil, err
 	}
 	if err := checkMTLSCompatibleWithMode(rt); err != nil {
+		return nil, err
+	}
+	if err := checkTLSBridgeCompatibleWithMode(rt); err != nil {
 		return nil, err
 	}
 
@@ -96,6 +102,27 @@ func checkMTLSCompatibleWithMode(rt *agentv1alpha1.AgentRuntime) error {
 	// instead of getting scattered across the validator.
 	_ = rt
 	return nil
+}
+
+// checkTLSBridgeCompatibleWithMode rejects tlsBridgeMode=enabled with any
+// authBridgeMode other than proxy-sidecar / lite. The TLS bridge lives in the
+// Go forward proxy, which only exists in those shapes; under envoy-sidecar
+// (Envoy data plane) or waypoint it would silently do nothing, so fail loud at
+// admission. Empty authBridgeMode defaults to proxy-sidecar and is allowed.
+func checkTLSBridgeCompatibleWithMode(rt *agentv1alpha1.AgentRuntime) error {
+	if rt.Spec.TLSBridgeMode != agentv1alpha1.TLSBridgeModeEnabled {
+		return nil
+	}
+	switch rt.Spec.AuthBridgeMode {
+	case "", "proxy-sidecar", "lite":
+		return nil
+	default:
+		return fmt.Errorf(
+			"tlsBridgeMode=enabled requires authBridgeMode proxy-sidecar or lite "+
+				"(the TLS bridge lives in the Go forward proxy); it is not supported with authBridgeMode %q",
+			rt.Spec.AuthBridgeMode,
+		)
+	}
 }
 
 // checkDuplicateTargetRef rejects creation/update if another AgentRuntime already
