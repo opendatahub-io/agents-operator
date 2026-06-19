@@ -136,7 +136,7 @@ var _ = BeforeSuite(func() {
 		if !isSpireAlreadyInstalled {
 			_, _ = fmt.Fprintf(GinkgoWriter, "Installing SPIRE...\n")
 			Expect(utils.InstallSpire("example.org")).To(Succeed(), "Failed to install SPIRE")
-			Expect(utils.WaitForSpireReady(5*time.Minute)).To(Succeed(), "SPIRE pods not ready in time")
+			Expect(utils.WaitForSpireReady(10*time.Minute)).To(Succeed(), "SPIRE pods not ready in time")
 		} else {
 			_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: SPIRE is already installed. Skipping installation...\n")
 		}
