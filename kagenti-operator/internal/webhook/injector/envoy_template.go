@@ -57,8 +57,6 @@ type envoyTemplateData struct {
 const defaultExtProcPort int32 = 9090
 
 // RenderEnvoyConfig generates an envoy.yaml from the resolved config.
-// If the resolved config already contains an EnvoyYAML string (from the
-// namespace ConfigMap), it is returned as-is for backward compatibility.
 //
 // The TLS blocks are gated on cfg.MTLSMode: permissive renders both a
 // TLS chain and a raw_buffer chain on the inbound listener; strict
@@ -67,9 +65,6 @@ const defaultExtProcPort int32 = 9090
 func RenderEnvoyConfig(cfg *ResolvedConfig) (string, error) {
 	if cfg == nil || cfg.Platform == nil {
 		return "", fmt.Errorf("resolved config or platform config is nil")
-	}
-	if cfg.EnvoyYAML != "" {
-		return cfg.EnvoyYAML, nil
 	}
 
 	// MTLSEnabled: empty string is treated as permissive (mTLS is on

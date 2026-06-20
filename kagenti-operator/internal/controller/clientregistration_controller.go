@@ -242,7 +242,7 @@ func (r *ClientRegistrationReconciler) reconcileOne(
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	spireEnabled := strings.EqualFold(strings.TrimSpace(ab.SpireEnabled), "true")
+	spireEnabled := r.SpireTrustDomain != ""
 	clientName := ns + "/" + workloadName
 	clientID, err := resolveKeycloakClientID(ns, workloadName, template.Spec.ServiceAccountName, spireEnabled, r.SpireTrustDomain)
 	if err != nil {
@@ -333,7 +333,6 @@ func workloadWantsOperatorClientReg(labels map[string]string, injectTools bool) 
 type authbridgeConfig struct {
 	KeycloakURL                  string
 	KeycloakRealm                string
-	SpireEnabled                 string
 	ClientAuthType               string
 	SpiffeIDPAlias               string
 	KeycloakTokenExchangeEnabled string
@@ -356,7 +355,6 @@ func readAuthbridgeConfigMap(ctx context.Context, c client.Reader, namespace str
 	return authbridgeConfig{
 		KeycloakURL:                  cm.Data["KEYCLOAK_URL"],
 		KeycloakRealm:                cm.Data["KEYCLOAK_REALM"],
-		SpireEnabled:                 cm.Data["SPIRE_ENABLED"],
 		ClientAuthType:               cm.Data["CLIENT_AUTH_TYPE"],
 		SpiffeIDPAlias:               cm.Data["SPIFFE_IDP_ALIAS"],
 		KeycloakTokenExchangeEnabled: cm.Data["KEYCLOAK_TOKEN_EXCHANGE_ENABLED"],

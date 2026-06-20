@@ -73,11 +73,11 @@ Other workloads are ignored by this controller.
 ### 2.4 Operator reconcile flow (simplified)
 
 1. Read **cluster feature gates** (`kagenti-webhook` ConfigMap in the cluster defaults namespace). If `globalEnabled` or `clientRegistration` is false, skip.
-2. Read **`authbridge-config`** in the workload namespace (`KEYCLOAK_URL`, `KEYCLOAK_REALM`, `SPIRE_ENABLED`, etc.).
+2. Read **`authbridge-config`** in the workload namespace (`KEYCLOAK_URL`, `KEYCLOAK_REALM`, etc.).
 3. Read **`keycloak-admin-secret`** (admin username/password).
 4. Compute **Keycloak client ID**:
-   - If `SPIRE_ENABLED` is not true: `namespace/workloadName`.
-   - If SPIRE is enabled: `spiffe://<trust-domain>/ns/<namespace>/sa/<serviceAccount>` (requires a **non-default** `serviceAccountName` and operator **`--spire-trust-domain`**).
+   - If `--spire-trust-domain` is not set: `namespace/workloadName`.
+   - If `--spire-trust-domain` is set: `spiffe://<trust-domain>/ns/<namespace>/sa/<serviceAccount>` (requires a **non-default** `serviceAccountName`).
 5. **Register or fetch** the client via Keycloak admin API (`internal/keycloak`).
 6. **Create or update** the credentials Secret; set **owner** to the Deployment/StatefulSet.
 7. **Patch** the pod template annotation `kagenti.io/keycloak-client-credentials-secret-name` to the deterministic secret name.
@@ -87,7 +87,7 @@ Other workloads are ignored by this controller.
 | Component | Flag / gate | Role |
 |-----------|-------------|------|
 | Operator (controller) | `--enable-operator-client-registration` (default **false**) | Master switch for the ClientRegistration controller. |
-| Operator (controller) | `--spire-trust-domain` | Required for SPIFFE-shaped client IDs when `authbridge-config` has `SPIRE_ENABLED=true`. |
+| Operator (controller) | `--spire-trust-domain` | Required for SPIFFE-shaped client IDs; presence of this flag enables SPIRE-based registration. |
 | Operator (webhook) | `--enable-client-registration` | Cluster-wide gate for client-registration **injection** (precedence still applies). |
 | Operator (webhook) | Feature gates file (`/etc/kagenti/feature-gates/feature-gates.yaml`) | `clientRegistration`, `injectTools`, `globalEnabled`, etc., same as for injected sidecars. |
 
@@ -97,7 +97,7 @@ Other workloads are ignored by this controller.
 
 ### 3.1 Platform / namespace
 
-- **`authbridge-config`** ConfigMap in the workload namespace with at least `KEYCLOAK_URL`, `KEYCLOAK_REALM`, and consistent `SPIRE_ENABLED` with the mesh.
+- **`authbridge-config`** ConfigMap in the workload namespace with at least `KEYCLOAK_URL` and `KEYCLOAK_REALM`.
 - **`keycloak-admin-secret`** in the same namespace with `KEYCLOAK_ADMIN_USERNAME` and `KEYCLOAK_ADMIN_PASSWORD`.
 - **kagenti-operator** deployed with webhook enabled (`webhook.enable: true` in Helm values).
 
@@ -109,7 +109,7 @@ Other workloads are ignored by this controller.
 
 ### 3.3 Operator configuration
 
-- When `authbridge-config` sets `SPIRE_ENABLED=true`, configure **`--spire-trust-domain`** to match the SPIRE server trust domain (same value as used for workload SPIFFE IDs).
+- Configure **`--spire-trust-domain`** to match the SPIRE server trust domain when SPIRE is deployed (same value as used for workload SPIFFE IDs).
 - Ensure the operator can read **`authbridge-config`** and **`keycloak-admin-secret`** in agent namespaces, and create/update **`kagenti-keycloak-client-credentials-*`** Secrets there (see RBAC below).
 
 ### 3.4 RBAC: why Secret rules are cluster-wide
@@ -143,7 +143,7 @@ That shape is intentional for this controller:
 
 1. **Upgrade kagenti-operator** to a version that includes the AuthBridge webhook and ClientRegistration controller.
 2. **Enable the webhook** via Helm values (`webhook.enable: true`) and optionally `--enable-operator-client-registration`.
-3. **Configure** `--spire-trust-domain` if agent namespaces use SPIRE (`SPIRE_ENABLED=true`).
+3. **Configure** `--spire-trust-domain` if agent namespaces use SPIRE.
 4. **Remove the kagenti-extensions webhook** chart dependency from the umbrella chart once the operator webhook is verified.
 
 Since both the webhook and controller ship in the same binary, there is no ordering concern between them.

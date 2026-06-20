@@ -972,7 +972,6 @@ func computeCardContentHash(cardData *agentv1alpha1.AgentCardData) string {
 var templateConfigMapNames = []string{
 	"authbridge-config",
 	"authbridge-runtime-config",
-	"envoy-config",
 	"spiffe-helper-config",
 }
 

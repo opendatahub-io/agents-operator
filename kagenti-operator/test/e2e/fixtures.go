@@ -833,11 +833,11 @@ spec:
 
 // --- AuthBridge Injection E2E fixtures ---
 
-// authBridgeConfigMapFixture returns YAML for the 4 ConfigMaps required by
-// the auth bridge webhook: authbridge-config, authbridge-runtime-config, spiffe-helper-config, envoy-config.
+// authBridgeConfigMapFixture returns YAML for the 3 ConfigMaps required by
+// the auth bridge webhook: authbridge-config, authbridge-runtime-config, spiffe-helper-config.
 // Only the mandatory keys are set (ISSUER, KEYCLOAK_URL, KEYCLOAK_REALM, TOKEN_URL,
 // DEFAULT_OUTBOUND_POLICY). The operator reads additional optional keys
-// (EXPECTED_AUDIENCE, TARGET_AUDIENCE, SPIRE_ENABLED, etc.) which default to empty.
+// (EXPECTED_AUDIENCE, TARGET_AUDIENCE, etc.) which default to empty.
 func authBridgeConfigMapFixture() string {
 	return `apiVersion: v1
 kind: ConfigMap
@@ -867,62 +867,6 @@ data:
     svid_key_file_name = "svid_key.pem"
     svid_bundle_file_name = "svid_bundle.pem"
     jwt_svids = [{jwt_audience="kagenti", jwt_svid_file_name="jwt_svid.token"}]
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: envoy-config
-  namespace: ` + authBridgeTestNamespace + `
-data:
-  envoy.yaml: |
-    admin:
-      address:
-        socket_address:
-          address: 127.0.0.1
-          port_value: 9901
-    static_resources:
-      listeners:
-        - name: outbound
-          address:
-            socket_address:
-              address: 0.0.0.0
-              port_value: 15123
-          filter_chains:
-            - filters:
-                - name: envoy.filters.network.tcp_proxy
-                  typed_config:
-                    "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
-                    stat_prefix: outbound_passthrough
-                    cluster: original_dst
-        - name: inbound
-          address:
-            socket_address:
-              address: 0.0.0.0
-              port_value: 15124
-          filter_chains:
-            - filters:
-                - name: envoy.filters.network.tcp_proxy
-                  typed_config:
-                    "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
-                    stat_prefix: inbound_passthrough
-                    cluster: local_app
-      clusters:
-        - name: original_dst
-          connect_timeout: 5s
-          type: ORIGINAL_DST
-          lb_policy: CLUSTER_PROVIDED
-        - name: local_app
-          connect_timeout: 5s
-          type: STATIC
-          load_assignment:
-            cluster_name: local_app
-            endpoints:
-              - lb_endpoints:
-                  - endpoint:
-                      address:
-                        socket_address:
-                          address: 127.0.0.1
-                          port_value: 8080
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -1233,8 +1177,8 @@ spec:
 `
 }
 
-// combinedConfigMapFixture returns YAML for the 4 AuthBridge ConfigMaps
-// (authbridge-config, spiffe-helper-config, envoy-config, authbridge-runtime-config)
+// combinedConfigMapFixture returns YAML for the 3 AuthBridge ConfigMaps
+// (authbridge-config, spiffe-helper-config, authbridge-runtime-config)
 // scoped to the combined test namespace.
 func combinedConfigMapFixture() string {
 	return `apiVersion: v1
@@ -1265,62 +1209,6 @@ data:
     svid_key_file_name = "svid_key.pem"
     svid_bundle_file_name = "svid_bundle.pem"
     jwt_svids = [{jwt_audience="kagenti", jwt_svid_file_name="jwt_svid.token"}]
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: envoy-config
-  namespace: ` + combinedTestNamespace + `
-data:
-  envoy.yaml: |
-    admin:
-      address:
-        socket_address:
-          address: 127.0.0.1
-          port_value: 9901
-    static_resources:
-      listeners:
-        - name: outbound
-          address:
-            socket_address:
-              address: 0.0.0.0
-              port_value: 15123
-          filter_chains:
-            - filters:
-                - name: envoy.filters.network.tcp_proxy
-                  typed_config:
-                    "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
-                    stat_prefix: outbound_passthrough
-                    cluster: original_dst
-        - name: inbound
-          address:
-            socket_address:
-              address: 0.0.0.0
-              port_value: 15124
-          filter_chains:
-            - filters:
-                - name: envoy.filters.network.tcp_proxy
-                  typed_config:
-                    "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
-                    stat_prefix: inbound_passthrough
-                    cluster: local_app
-      clusters:
-        - name: original_dst
-          connect_timeout: 5s
-          type: ORIGINAL_DST
-          lb_policy: CLUSTER_PROVIDED
-        - name: local_app
-          connect_timeout: 5s
-          type: STATIC
-          load_assignment:
-            cluster_name: local_app
-            endpoints:
-              - lb_endpoints:
-                  - endpoint:
-                      address:
-                        socket_address:
-                          address: 127.0.0.1
-                          port_value: 8080
 ---
 apiVersion: v1
 kind: ConfigMap

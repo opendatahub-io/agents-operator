@@ -33,7 +33,6 @@ type AuthbridgeConfigPlatform struct {
 	KeycloakAdminSecretNamespace string
 	KeycloakRealm                string
 	KeycloakPublicURL            string
-	SpireTrustDomain             string
 	ClientAuthType               string
 	SpiffeIdpAlias               string
 	CredentialWaitTimeout        string
@@ -146,11 +145,6 @@ func (r *AuthbridgeConfigReconciler) buildConfigMapData() map[string]string {
 		issuer = r.Platform.KeycloakPublicURL + "/realms/" + realm
 	}
 
-	spireEnabled := "false" //nolint:goconst // boolean string, not worth a constant
-	if r.Platform.SpireTrustDomain != "" {
-		spireEnabled = "true"
-	}
-
 	clientAuthType := r.Platform.ClientAuthType
 	if clientAuthType == "" {
 		clientAuthType = "client-secret"
@@ -165,7 +159,6 @@ func (r *AuthbridgeConfigReconciler) buildConfigMapData() map[string]string {
 		"KEYCLOAK_URL":            keycloakURL,
 		"KEYCLOAK_REALM":          realm,
 		"KEYCLOAK_NAMESPACE":      kcNS,
-		"SPIRE_ENABLED":           spireEnabled,
 		"CLIENT_AUTH_TYPE":        clientAuthType,
 		"SPIFFE_IDP_ALIAS":        spiffeIdpAlias,
 		"CREDENTIAL_WAIT_TIMEOUT": r.credentialWaitTimeout(),

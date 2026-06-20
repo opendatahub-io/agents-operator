@@ -39,7 +39,6 @@ func TestReadNamespaceConfig_AllPresent(t *testing.T) {
 		Data: map[string]string{
 			"KEYCLOAK_URL":            "http://keycloak:8080",
 			"KEYCLOAK_REALM":          "kagenti",
-			"SPIRE_ENABLED":           "true",
 			"PLATFORM_CLIENT_IDS":     "id1,id2",
 			"TOKEN_URL":               "http://keycloak:8080/realms/demo/protocol/openid-connect/token",
 			"ISSUER":                  "http://keycloak:8080/realms/demo",
@@ -53,16 +52,12 @@ func TestReadNamespaceConfig_AllPresent(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: SpiffeHelperConfigMapName, Namespace: "ns1"},
 		Data:       map[string]string{"helper.conf": "agent_address = \"/spiffe-workload-api/spire-agent.sock\""},
 	}
-	envoyCM := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: EnvoyConfigMapName, Namespace: "ns1"},
-		Data:       map[string]string{"envoy.yaml": "admin:\n  address: 127.0.0.1"},
-	}
 	routesCM := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: AuthproxyRoutesConfigMapName, Namespace: "ns1"},
 		Data:       map[string]string{"routes.yaml": "routes: []"},
 	}
 
-	reader := newFakeReader(abCM, spiffeCM, envoyCM, routesCM)
+	reader := newFakeReader(abCM, spiffeCM, routesCM)
 	cfg, err := ReadNamespaceConfig(context.Background(), reader, "ns1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -82,9 +77,6 @@ func TestReadNamespaceConfig_AllPresent(t *testing.T) {
 	}
 	if cfg.SpiffeHelperConf == "" {
 		t.Error("SpiffeHelperConf is empty")
-	}
-	if cfg.EnvoyYAML == "" {
-		t.Error("EnvoyYAML is empty")
 	}
 	if cfg.TargetAudience != "auth-target" {
 		t.Errorf("TargetAudience = %q", cfg.TargetAudience)

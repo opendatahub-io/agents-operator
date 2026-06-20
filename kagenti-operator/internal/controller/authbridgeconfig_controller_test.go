@@ -156,6 +156,18 @@ func TestAuthbridgeConfigReconciler_Reconcile(t *testing.T) {
 			},
 		},
 		{
+			name: "created ConfigMap has no SPIRE_ENABLED key",
+			objs: []client.Object{
+				kagentiEnabledNamespace(authbridgeConfigTestNamespace),
+			},
+			check: func(t *testing.T, c client.Client) {
+				cm := getCM(t, c)
+				if _, ok := cm.Data["SPIRE_ENABLED"]; ok {
+					t.Fatalf("SPIRE_ENABLED should not be present in authbridge-config, got %v", cm.Data)
+				}
+			},
+		},
+		{
 			name: "skips namespace without kagenti-enabled label",
 			objs: []client.Object{
 				&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: authbridgeConfigTestNamespace}},

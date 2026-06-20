@@ -810,7 +810,7 @@ var _ = Describe("AgentRuntime Controller", func() {
 			Expect(abCfg.Data["KEYCLOAK_URL"]).To(Equal("http://existing"))
 
 			// The other 3 should be created from templates
-			for _, name := range []string{"authbridge-runtime-config", "envoy-config", "spiffe-helper-config"} {
+			for _, name := range []string{"authbridge-runtime-config", "spiffe-helper-config"} {
 				cm := &corev1.ConfigMap{}
 				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: cmTestNS}, cm)).To(Succeed())
 				Expect(cm.Data["config.yaml"]).To(Equal("template-" + name))

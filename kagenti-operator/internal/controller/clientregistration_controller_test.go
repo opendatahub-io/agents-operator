@@ -348,6 +348,46 @@ func TestClientRegistrationReconciler_Reconcile(t *testing.T) {
 		})
 	}
 
+	t.Run("spireEnabled derived from SpireTrustDomain not from CM", func(t *testing.T) {
+		srv := startTestKeycloakServer(t)
+		defer srv.Close()
+
+		scheme := clientRegistrationTestScheme(t)
+		dep := testDeploymentForClientReg()
+		dep.Spec.Template.Spec.ServiceAccountName = "mysa"
+		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+			clusterFeatureGatesConfigMap(true),
+			dep,
+			authbridgeConfigMapForTest(clientRegistrationTestNamespace, srv.URL),
+			keycloakAdminSecretForTest(clientRegistrationTestKeycloakNS),
+		).Build()
+		r := &ClientRegistrationReconciler{
+			Client:                       c,
+			Scheme:                       scheme,
+			OperatorNamespace:            clientRegistrationTestOperatorNS,
+			KeycloakAdminSecretNamespace: clientRegistrationTestKeycloakNS,
+			SpireTrustDomain:             "example.org",
+		}
+		res, err := r.Reconcile(ctx, req)
+		if err != nil || res != (ctrl.Result{}) {
+			t.Fatalf("got (%v, %v), want (zero Result, nil)", res, err)
+		}
+
+		secretName := keycloakClientCredentialsSecretName(clientRegistrationTestNamespace, clientRegistrationTestDeploymentName)
+		sec := &corev1.Secret{}
+		if err := c.Get(ctx, types.NamespacedName{Namespace: clientRegistrationTestNamespace, Name: secretName}, sec); err != nil {
+			t.Fatal(err)
+		}
+		clientID := string(sec.Data["client-id.txt"])
+		if clientID == "" && sec.StringData != nil {
+			clientID = sec.StringData["client-id.txt"]
+		}
+		want := "spiffe://example.org/ns/" + clientRegistrationTestNamespace + "/sa/mysa"
+		if clientID != want {
+			t.Fatalf("client-id=%q, want SPIFFE URI %q", clientID, want)
+		}
+	})
+
 	t.Run("happy path registers client patches deployment and creates secret", func(t *testing.T) {
 		srv := startTestKeycloakServer(t)
 		defer srv.Close()

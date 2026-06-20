@@ -598,7 +598,7 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 				"reverse_proxy_backend": fmt.Sprintf("http://127.0.0.1:%d", newAgentPort),
 				"forward_proxy_addr":    fmt.Sprintf(":%d", forwardProxyPort),
 			},
-			mtlsMode, allowedAudiences, tlsBridgeMode)
+			mtlsMode, allowedAudiences, tlsBridgeMode, spireEnabled)
 		if err != nil {
 			return false, fmt.Errorf("proxy-sidecar per-agent ConfigMap: %w", err)
 		}
@@ -734,28 +734,18 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 	// inbound listener (gated on MTLSEnabled) and UpstreamTlsContext on
 	// original_destination_tls (strict only).
 	perAgentCMName, err := m.ensurePerAgentConfigMap(ctx, namespace, crName,
-		ModeEnvoySidecar, nsConfig.AuthBridgeRuntimeYAML, nsConfig, nil, mtlsMode, allowedAudiences, "") // bridge never runs under envoy-sidecar
+		ModeEnvoySidecar, nsConfig.AuthBridgeRuntimeYAML, nsConfig, nil, mtlsMode, allowedAudiences, "", spireEnabled) // bridge never runs under envoy-sidecar
 	if err != nil {
 		return false, fmt.Errorf("envoy-sidecar per-agent ConfigMap: %w", err)
 	}
 	requiredVolumes = overrideAuthBridgeConfigMapInVolumes(requiredVolumes, perAgentCMName)
 
-	// When mtlsMode is non-disabled, render a per-agent envoy-config CM
-	// so the workload's Envoy data plane carries the right TLS blocks.
-	// disabled stays on the namespace-level envoy-config (today's
-	// behavior, no per-agent CM churn).
-	if mtlsMode != MTLSModeDisabled {
-		// ResolveConfig is cheap/idempotent; we clear EnvoyYAML so
-		// RenderEnvoyConfig uses the template path (with mtls TLS
-		// blocks) instead of short-circuiting on the namespace CM.
-		resolvedForEnvoy := ResolveConfig(currentConfig, nsConfig, arOverrides)
-		resolvedForEnvoy.EnvoyYAML = ""
-		envoyCMName, err := m.ensurePerAgentEnvoyConfigMap(ctx, namespace, crName, resolvedForEnvoy)
-		if err != nil {
-			return false, fmt.Errorf("envoy-sidecar per-agent envoy ConfigMap: %w", err)
-		}
-		requiredVolumes = overrideEnvoyConfigMapInVolumes(requiredVolumes, envoyCMName)
+	resolvedForEnvoy := ResolveConfig(currentConfig, nsConfig, arOverrides)
+	envoyCMName, err := m.ensurePerAgentEnvoyConfigMap(ctx, namespace, crName, resolvedForEnvoy)
+	if err != nil {
+		return false, fmt.Errorf("envoy-sidecar per-agent envoy ConfigMap: %w", err)
 	}
+	requiredVolumes = overrideEnvoyConfigMapInVolumes(requiredVolumes, envoyCMName)
 
 	if decision.EnvoyProxy.Inject && !containerExists(podSpec.Containers, EnvoyProxyContainerName) {
 		podSpec.Containers = append(podSpec.Containers, builder.BuildEnvoyProxyContainerWithSpireOption(spireEnabled))
@@ -919,6 +909,9 @@ func synthesizePipeline(nsConfig *NamespaceConfig) map[string]interface{} {
 		identity := map[string]interface{}{}
 		if nsConfig.ClientAuthType == ClientAuthTypeFederatedJWT {
 			identity["type"] = IdentityTypeSpiffe
+			if nsConfig.JWTAudience != "" {
+				identity["jwt_audience"] = nsConfig.JWTAudience
+			}
 		} else {
 			identity["type"] = nsConfig.ClientAuthType
 		}
@@ -999,6 +992,7 @@ func (m *PodMutator) ensurePerAgentConfigMap(
 	mtlsMode string,
 	allowedAudiences []string,
 	tlsBridgeMode string,
+	spireEnabled bool,
 ) (string, error) {
 	cmName := perAgentConfigMapName(crName)
 
@@ -1081,6 +1075,14 @@ func (m *PodMutator) ensurePerAgentConfigMap(
 		}
 	} else {
 		delete(cfg, "tls_bridge")
+	}
+
+	if spireEnabled {
+		cfg["spiffe"] = map[string]interface{}{
+			"socket": m.GetPlatformConfig().Spiffe.SocketPath,
+		}
+	} else {
+		delete(cfg, "spiffe")
 	}
 
 	// Marshal back to YAML

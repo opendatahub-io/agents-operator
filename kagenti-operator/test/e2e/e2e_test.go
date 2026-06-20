@@ -381,6 +381,19 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 		_, err = utils.KubectlApplyStdin(authBridgeConfigMapFixture(), authBridgeTestNamespace)
 		Expect(err).NotTo(HaveOccurred())
 
+		By("verifying authbridge-config has no SPIRE_ENABLED key")
+		spireVal, err := utils.KubectlGetJsonpath("configmap", "authbridge-config",
+			authBridgeTestNamespace, "{.data.SPIRE_ENABLED}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(spireVal).To(BeEmpty(), "SPIRE_ENABLED should not be present in authbridge-config")
+
+		By("verifying no namespace-level envoy-config CM is required")
+		cmd = exec.Command("kubectl", "get", "configmap", "envoy-config",
+			"-n", authBridgeTestNamespace, "--ignore-not-found")
+		out, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out).To(BeEmpty(), "per-namespace envoy-config CM should not exist")
+
 		By("pre-creating Keycloak client credentials Secret (no real Keycloak in e2e)")
 		_, err = utils.KubectlApplyStdin(
 			keycloakClientCredentialsSecretFixture(authBridgeTestNamespace, "authbridge-agent"),
@@ -442,11 +455,11 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 			Expect(utils.WaitForDeploymentReady("authbridge-agent", authBridgeTestNamespace, 3*time.Minute)).To(Succeed())
 
 			// Spiffe-helper is bundled inside the authbridge-envoy combined
-			// image and gated by SPIRE_ENABLED — there is no separate
-			// "spiffe-helper" container anymore. Same for client-registration
-			// (operator-managed Secret). Bundling is verified below via the
-			// SPIRE_ENABLED env var + spiffe-helper-config volume mount on
-			// the envoy-proxy container.
+			// image and gated by the SPIRE_ENABLED container env var — there
+			// is no separate "spiffe-helper" container anymore. Same for
+			// client-registration (operator-managed Secret). Bundling is
+			// verified below via the SPIRE_ENABLED env var +
+			// spiffe-helper-config volume mount on the envoy-proxy container.
 			By("verifying injected sidecar containers")
 			Eventually(func(g Gomega) {
 				containers, err := utils.KubectlGetJsonpath("pod", "",
@@ -1564,6 +1577,19 @@ rules:
 		_, err = utils.KubectlApplyStdin(combinedConfigMapFixture(), combinedTestNamespace)
 		Expect(err).NotTo(HaveOccurred())
 
+		By("verifying authbridge-config has no SPIRE_ENABLED key")
+		spireVal, err := utils.KubectlGetJsonpath("configmap", "authbridge-config",
+			combinedTestNamespace, "{.data.SPIRE_ENABLED}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(spireVal).To(BeEmpty(), "SPIRE_ENABLED should not be present in authbridge-config")
+
+		By("verifying no namespace-level envoy-config CM is required")
+		cmd = exec.Command("kubectl", "get", "configmap", "envoy-config",
+			"-n", combinedTestNamespace, "--ignore-not-found")
+		out, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out).To(BeEmpty(), "per-namespace envoy-config CM should not exist")
+
 		By("pre-creating Keycloak client credentials Secret (no real Keycloak in e2e)")
 		_, err = utils.KubectlApplyStdin(
 			keycloakClientCredentialsSecretFixture(combinedTestNamespace, "combined-agent"),
@@ -1784,8 +1810,8 @@ rules:
 
 	It("should inject Auth Bridge sidecars into workload pods", func() {
 		// Spiffe-helper is bundled inside the envoy-proxy combined image
-		// and gated by SPIRE_ENABLED — verified below via env var, not
-		// by presence of a separate container.
+		// and gated by the SPIRE_ENABLED container env var — verified
+		// below via env var, not by presence of a separate container.
 		By("verifying injected sidecar containers")
 		Eventually(func(g Gomega) {
 			containers, err := utils.KubectlGetJsonpath("pod", "",

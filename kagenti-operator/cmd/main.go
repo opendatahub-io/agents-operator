@@ -820,7 +820,6 @@ func main() {
 				KeycloakAdminSecretNamespace: keycloakAdminSecretNamespace,
 				KeycloakRealm:                keycloakRealm,
 				KeycloakPublicURL:            keycloakPublicURL,
-				SpireTrustDomain:             spireTrustDomain,
 				ClientAuthType:               clientAuthType,
 				SpiffeIdpAlias:               spiffeIdpAlias,
 				CredentialWaitTimeout:        credentialWaitTimeout,

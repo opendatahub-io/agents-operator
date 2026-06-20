@@ -23,21 +23,6 @@ import (
 	"github.com/kagenti/operator/internal/webhook/config"
 )
 
-func TestRenderEnvoyConfig_UsesExistingYAML(t *testing.T) {
-	cfg := &ResolvedConfig{
-		Platform:  config.CompiledDefaults(),
-		EnvoyYAML: "existing-envoy-config",
-	}
-
-	result, err := RenderEnvoyConfig(cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result != "existing-envoy-config" {
-		t.Errorf("expected existing envoy config to be returned as-is, got %q", result)
-	}
-}
-
 func TestRenderEnvoyConfig_TemplateRendering(t *testing.T) {
 	cfg := &ResolvedConfig{
 		Platform: config.CompiledDefaults(),

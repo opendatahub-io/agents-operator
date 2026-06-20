@@ -137,7 +137,7 @@ When the `perWorkloadConfigResolution` feature gate is enabled, the webhook reso
 │   (spec.identity)                    │
 ├──────────────────────────────────────┤
 │ Layer 2: Namespace ConfigMaps        │
-│   (authbridge-config, envoy-config,  │
+│   (authbridge-config,                │
 │    spiffe-helper-config, etc.)       │
 ├──────────────────────────────────────┤
 │ Layer 1: PlatformConfig              │  ← lowest precedence
@@ -161,9 +161,8 @@ When the `perWorkloadConfigResolution` feature gate is enabled, the webhook reso
 
 | ConfigMap | Keys | Purpose |
 |-----------|------|---------|
-| `authbridge-config` | `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `SPIRE_ENABLED`, `PLATFORM_CLIENT_IDS`, `TOKEN_URL`, `ISSUER`, `EXPECTED_AUDIENCE`, `TARGET_AUDIENCE`, `TARGET_SCOPES`, `DEFAULT_OUTBOUND_POLICY` | Identity and token exchange settings |
+| `authbridge-config` | `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `PLATFORM_CLIENT_IDS`, `TOKEN_URL`, `ISSUER`, `EXPECTED_AUDIENCE`, `TARGET_AUDIENCE`, `TARGET_SCOPES`, `DEFAULT_OUTBOUND_POLICY` | Identity and token exchange settings |
 | `spiffe-helper-config` | `helper.conf` | SPIFFE helper configuration |
-| `envoy-config` | `envoy.yaml` | Custom Envoy configuration (overrides template rendering) |
 | `authproxy-routes` | `routes.yaml` | Auth proxy route definitions |
 
 **Merge behavior**: Each ConfigMap is read independently. Missing ConfigMaps result in empty strings for those fields. Non-empty namespace values override PlatformConfig defaults.

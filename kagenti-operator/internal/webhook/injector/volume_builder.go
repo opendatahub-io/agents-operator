@@ -173,6 +173,7 @@ func BuildRequiredVolumes() []corev1.Volume {
 					LocalObjectReference: corev1.LocalObjectReference{
 						Name: "envoy-config",
 					},
+					Optional: ptr.To(true),
 				},
 			},
 		},
@@ -218,6 +219,7 @@ func BuildRequiredVolumesNoSpire() []corev1.Volume {
 					LocalObjectReference: corev1.LocalObjectReference{
 						Name: "envoy-config",
 					},
+					Optional: ptr.To(true),
 				},
 			},
 		},
@@ -305,6 +307,7 @@ func BuildResolvedVolumes(spireEnabled bool, envoyConfigMapName string) []corev1
 					LocalObjectReference: corev1.LocalObjectReference{
 						Name: envoyConfigMapName,
 					},
+					Optional: ptr.To(true),
 				},
 			},
 		},

@@ -69,6 +69,34 @@ func TestBuildResolvedVolumes_SpireEnabled(t *testing.T) {
 	}
 }
 
+func TestEnvoyConfigVolume_Optional(t *testing.T) {
+	check := func(t *testing.T, volumes []corev1.Volume) {
+		t.Helper()
+		for _, v := range volumes {
+			if v.Name == "envoy-config" && v.ConfigMap != nil {
+				if v.ConfigMap.Optional == nil || !*v.ConfigMap.Optional {
+					t.Fatalf("envoy-config volume must be Optional, got %v", v.ConfigMap.Optional)
+				}
+				return
+			}
+		}
+		t.Fatal("envoy-config volume not found")
+	}
+
+	t.Run("BuildRequiredVolumes", func(t *testing.T) {
+		check(t, BuildRequiredVolumes())
+	})
+	t.Run("BuildRequiredVolumesNoSpire", func(t *testing.T) {
+		check(t, BuildRequiredVolumesNoSpire())
+	})
+	t.Run("BuildResolvedVolumes_spireOff", func(t *testing.T) {
+		check(t, BuildResolvedVolumes(false, ""))
+	})
+	t.Run("BuildResolvedVolumes_spireOn", func(t *testing.T) {
+		check(t, BuildResolvedVolumes(true, ""))
+	})
+}
+
 func TestBuildResolvedVolumes_CustomEnvoyConfigMapName(t *testing.T) {
 	volumes := BuildResolvedVolumes(false, "my-custom-envoy")
 

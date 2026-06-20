@@ -97,7 +97,6 @@ func TestResolveConfig_SpiffeTrustDomain_AROverride(t *testing.T) {
 func TestResolveConfig_SidecarConfigs_NotOverridable(t *testing.T) {
 	ns := &NamespaceConfig{
 		SpiffeHelperConf:    "helper.conf content",
-		EnvoyYAML:           "envoy.yaml content",
 		AuthproxyRoutesYAML: "routes.yaml content",
 	}
 	// AR overrides don't have fields for these — they flow through from namespace
@@ -108,9 +107,6 @@ func TestResolveConfig_SidecarConfigs_NotOverridable(t *testing.T) {
 	resolved := ResolveConfig(config.CompiledDefaults(), ns, ar)
 	if resolved.SpiffeHelperConf != "helper.conf content" {
 		t.Errorf("SpiffeHelperConf should come from namespace")
-	}
-	if resolved.EnvoyYAML != "envoy.yaml content" {
-		t.Errorf("EnvoyYAML should come from namespace")
 	}
 	if resolved.AuthproxyRoutesYAML != "routes.yaml content" {
 		t.Errorf("AuthproxyRoutesYAML should come from namespace")
