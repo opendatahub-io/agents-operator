@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
 	"github.com/kagenti/operator/internal/webhook/config"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -2135,9 +2136,11 @@ func TestInjectAuthBridge_TLSBridge_Enabled_MountsCA(t *testing.T) {
 	// tlsBridgeMode=enabled in proxy-sidecar mode → the FULL keypair Secret is
 	// mounted into the sidecar only; the agent gets a ca.crt-only volume + trust
 	// env. No cluster feature gate is involved (per-agent field only, like mtls).
-	rt := newAgentRuntimeWithMode("team1", "my-agent", ModeProxySidecar)
-	rt.Spec.TLSBridgeMode = agentv1alpha1.TLSBridgeModeEnabled
-	m := newTestMutator(rt)
+	runtimeCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: AuthBridgeRuntimeConfigMapName, Namespace: "team1"},
+		Data:       map[string]string{"config.yaml": "mode: proxy-sidecar\ntls_bridge:\n  mode: enabled\nmtls:\n  mode: disabled\n"},
+	}
+	m := newTestMutator(runtimeCM)
 	ctx := context.Background()
 
 	podSpec := &corev1.PodSpec{
@@ -2234,9 +2237,11 @@ func TestInjectAuthBridge_TLSBridge_Enabled_MountsCA(t *testing.T) {
 func TestInjectAuthBridge_TLSBridge_Disabled_NoMount(t *testing.T) {
 	// Default tlsBridgeMode (disabled / unset) → no CA volume, no trust env.
 	// The bridge is off unless the agent explicitly opts in.
-	rt := newAgentRuntimeWithMode("team1", "my-agent", ModeProxySidecar)
-	// rt.Spec.TLSBridgeMode left unset (defaults to disabled)
-	m := newTestMutator(rt)
+	runtimeCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: AuthBridgeRuntimeConfigMapName, Namespace: "team1"},
+		Data:       map[string]string{"config.yaml": "mode: proxy-sidecar\nmtls:\n  mode: disabled\n"},
+	}
+	m := newTestMutator(runtimeCM)
 	ctx := context.Background()
 
 	podSpec := &corev1.PodSpec{
@@ -2328,10 +2333,11 @@ func TestInjectAuthBridge_TLSBridge_NoSPIRE_NoForcedFSGroup(t *testing.T) {
 	// still mount its CA, and must NOT force a fixed fsGroup — the keypair is
 	// 0444 so the non-root sidecar reads it without one (OpenShift restricted-v2
 	// SCC would reject a fixed fsGroup=0).
-	rt := newAgentRuntimeWithMode("team1", "my-agent", ModeProxySidecar)
-	rt.Spec.TLSBridgeMode = agentv1alpha1.TLSBridgeModeEnabled
-	rt.Spec.MTLSMode = MTLSModeDisabled
-	m := newTestMutator(rt)
+	runtimeCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: AuthBridgeRuntimeConfigMapName, Namespace: "team1"},
+		Data:       map[string]string{"config.yaml": "mode: proxy-sidecar\ntls_bridge:\n  mode: enabled\nmtls:\n  mode: disabled\n"},
+	}
+	m := newTestMutator(runtimeCM)
 	ctx := context.Background()
 
 	podSpec := &corev1.PodSpec{
