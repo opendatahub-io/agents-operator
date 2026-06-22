@@ -31,11 +31,14 @@ import (
 
 var (
 	// Optional Environment Variables:
+	// - E2E_BUILD_SKIP=true: Skips all image builds, Kind image loading, and infrastructure
+	//   installs/teardown. Use when running against a pre-installed operator on an existing cluster.
 	// - PROMETHEUS_INSTALL_SKIP=true: Skips Prometheus Operator installation during test setup.
 	// - CERT_MANAGER_INSTALL_SKIP=true: Skips CertManager installation during test setup.
 	// - SPIRE_INSTALL_SKIP=true: Skips SPIRE installation during test setup.
 	// These variables are useful if Prometheus, CertManager, or SPIRE is already installed,
 	// avoiding re-installation and conflicts.
+	skipBuild              = os.Getenv("E2E_BUILD_SKIP") == "true"
 	skipPrometheusInstall  = os.Getenv("PROMETHEUS_INSTALL_SKIP") == "true"
 	skipCertManagerInstall = os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true"
 	skipSpireInstall       = os.Getenv("SPIRE_INSTALL_SKIP") == "true"
@@ -77,6 +80,11 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	if skipBuild {
+		_, _ = fmt.Fprintf(GinkgoWriter, "E2E_BUILD_SKIP=true — skipping all image builds and infrastructure installs\n")
+		return
+	}
+
 	By("Ensure that Prometheus is enabled")
 	_ = utils.UncommentCode("config/default/kustomization.yaml", "#- ../prometheus", "#")
 
@@ -144,6 +152,11 @@ var _ = BeforeSuite(func() {
 })
 
 var _ = AfterSuite(func() {
+	if skipBuild {
+		_, _ = fmt.Fprintf(GinkgoWriter, "E2E_BUILD_SKIP=true — skipping infrastructure teardown\n")
+		return
+	}
+
 	// Teardown Prometheus, CertManager, and SPIRE after the suite if not skipped
 	// and if they were not already installed
 	if !skipPrometheusInstall && !isPrometheusOperatorAlreadyInstalled {

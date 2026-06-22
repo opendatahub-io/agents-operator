@@ -19,9 +19,28 @@ package e2e
 import (
 	"encoding/base64"
 	"fmt"
+	"os"
 
 	"github.com/kagenti/operator/internal/clientreg"
 )
+
+// curlImage returns the container image used for curl-based test pods.
+// Override with E2E_CURL_IMAGE for environments where Docker Hub is unavailable.
+func curlImage() string {
+	if v := os.Getenv("E2E_CURL_IMAGE"); v != "" {
+		return v
+	}
+	return "curlimages/curl:latest"
+}
+
+// pythonImage returns the container image used for Python-based test workloads.
+// Override with E2E_PYTHON_IMAGE for environments that need a different registry.
+func pythonImage() string {
+	if v := os.Getenv("E2E_PYTHON_IMAGE"); v != "" {
+		return v
+	}
+	return "docker.io/python:3.11-slim"
+}
 
 const testNamespace = "e2e-agentcard-test"
 const authBridgeTestNamespace = "e2e-authbridge-test"
@@ -82,7 +101,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: echo
-          image: docker.io/python:3.11-slim
+          image: ` + pythonImage() + `
           imagePullPolicy: IfNotPresent
           command:
             - python3
@@ -228,7 +247,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: echo
-          image: docker.io/python:3.11-slim
+          image: ` + pythonImage() + `
           imagePullPolicy: IfNotPresent
           command:
             - python3
@@ -425,7 +444,7 @@ spec:
               memory: 32Mi
       containers:
         - name: agent
-          image: docker.io/python:3.11-slim
+          image: ` + pythonImage() + `
           imagePullPolicy: IfNotPresent
           command: ["python3", "-m", "http.server", "8080", "--directory", "/app"]
           ports:
@@ -949,7 +968,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: echo
-          image: docker.io/python:3.11-slim
+          image: ` + pythonImage() + `
           imagePullPolicy: IfNotPresent
           command:
             - python3
@@ -1104,7 +1123,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: echo
-          image: docker.io/python:3.11-slim
+          image: ` + pythonImage() + `
           imagePullPolicy: IfNotPresent
           command:
             - python3

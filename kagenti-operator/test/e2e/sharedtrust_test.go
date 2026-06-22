@@ -29,7 +29,7 @@ import (
 )
 
 var _ = Describe("SharedTrust E2E", Ordered, func() {
-	const controllerNamespace = "kagenti-operator-system"
+	controllerNamespace := controllerNS()
 
 	BeforeAll(func() {
 		Expect(utils.DeployController(controllerNamespace, projectImage)).To(Succeed(), "Failed to deploy controller")

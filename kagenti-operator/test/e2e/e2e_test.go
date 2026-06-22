@@ -31,8 +31,29 @@ import (
 	"github.com/kagenti/operator/test/utils"
 )
 
+func controllerNS() string {
+	if v := os.Getenv("E2E_CONTROLLER_NAMESPACE"); v != "" {
+		return v
+	}
+	return "kagenti-operator-system"
+}
+
+func controllerDeploy() string {
+	if v := os.Getenv("E2E_CONTROLLER_DEPLOYMENT"); v != "" {
+		return v
+	}
+	return "kagenti-operator-controller-manager"
+}
+
+func webhookServiceName() string {
+	if v := os.Getenv("E2E_WEBHOOK_SERVICE"); v != "" {
+		return v
+	}
+	return "kagenti-operator-webhook-service"
+}
+
 // namespace where the project is deployed in
-const namespace = "kagenti-operator-system"
+var namespace = controllerNS()
 
 // serviceAccountName created for the project
 const serviceAccountName = "kagenti-operator-controller-manager"
@@ -194,7 +215,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("waiting for the webhook endpoint to be ready")
 			verifyWebhookEndpointReady := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "endpoints",
-					"kagenti-operator-webhook-service", "-n", namespace,
+					webhookServiceName(), "-n", namespace,
 					"-o", "jsonpath={.subsets[0].addresses[0].ip}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -218,13 +239,13 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(func() error {
 				cmd = exec.Command("kubectl", "run", "curl-metrics", "--restart=Never",
 					"--namespace", namespace,
-					"--image=curlimages/curl:latest",
+					"--image="+curlImage(),
 					"--overrides",
 					fmt.Sprintf(`{
 						"spec": {
 							"containers": [{
 								"name": "curl",
-								"image": "curlimages/curl:latest",
+								"image": %q,
 								"command": ["/bin/sh", "-c"],
 								"args": [%q],
 								"securityContext": {
@@ -233,7 +254,6 @@ var _ = Describe("Manager", Ordered, func() {
 										"drop": ["ALL"]
 									},
 									"runAsNonRoot": true,
-									"runAsUser": 1000,
 									"seccompProfile": {
 										"type": "RuntimeDefault"
 									}
@@ -241,7 +261,7 @@ var _ = Describe("Manager", Ordered, func() {
 							}],
 							"serviceAccountName": "%s"
 						}
-					}`, curlCmd, serviceAccountName))
+					}`, curlImage(), curlCmd, serviceAccountName))
 				_, runErr := utils.Run(cmd)
 				if runErr != nil && strings.Contains(runErr.Error(), "already exists") {
 					return nil
@@ -331,7 +351,7 @@ type tokenRequest struct {
 }
 
 var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
-	const controllerNamespace = "kagenti-operator-system"
+	controllerNamespace := controllerNS()
 
 	BeforeAll(func() {
 		Expect(utils.DeployController(controllerNamespace, projectImage)).To(Succeed(), "Failed to deploy controller")
@@ -349,7 +369,7 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 		By("waiting for webhook endpoint to be ready")
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "endpoints",
-				"kagenti-operator-webhook-service", "-n", controllerNamespace,
+				webhookServiceName(), "-n", controllerNamespace,
 				"-o", "jsonpath={.subsets[0].addresses[0].ip}")
 			output, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
@@ -672,7 +692,7 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 			cmd = exec.Command("kubectl", "run", curlPodName,
 				"--restart=Never",
 				"--namespace", authBridgeTestNamespace,
-				"--image=curlimages/curl:latest",
+				"--image="+curlImage(),
 				"--command", "--",
 				"curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
 				fmt.Sprintf("http://authbridge-agent.%s.svc:8080/", authBridgeTestNamespace))
@@ -700,8 +720,8 @@ var _ = Describe("AuthBridge Injection E2E", Ordered, func() {
 })
 
 var _ = Describe("AgentCard E2E", Ordered, func() {
-	const controllerNamespace = "kagenti-operator-system"
-	const controllerDeployment = "kagenti-operator-controller-manager"
+	controllerNamespace := controllerNS()
+	controllerDeployment := controllerDeploy()
 
 	BeforeAll(func() {
 		Expect(utils.DeployController(controllerNamespace, projectImage)).To(Succeed(), "Failed to deploy controller")
@@ -719,7 +739,7 @@ var _ = Describe("AgentCard E2E", Ordered, func() {
 		By("waiting for webhook endpoint to be ready")
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "endpoints",
-				"kagenti-operator-webhook-service", "-n", controllerNamespace,
+				webhookServiceName(), "-n", controllerNamespace,
 				"-o", "jsonpath={.subsets[0].addresses[0].ip}")
 			output, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
@@ -1036,7 +1056,7 @@ var _ = Describe("AgentCard E2E", Ordered, func() {
 })
 
 var _ = Describe("AgentRuntime E2E", Ordered, func() {
-	const controllerNamespace = "kagenti-operator-system"
+	controllerNamespace := controllerNS()
 
 	BeforeAll(func() {
 		By("ensuring mlflow-operator ClusterRole exists for ServiceAccount informer")
@@ -1067,7 +1087,7 @@ rules:
 		By("waiting for webhook endpoint to be ready")
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "endpoints",
-				"kagenti-operator-webhook-service", "-n", controllerNamespace,
+				webhookServiceName(), "-n", controllerNamespace,
 				"-o", "jsonpath={.subsets[0].addresses[0].ip}")
 			output, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
@@ -1504,8 +1524,8 @@ rules:
 })
 
 var _ = Describe("Combined AgentRuntime + AgentCard + Auth Bridge E2E", Ordered, func() {
-	const controllerNamespace = "kagenti-operator-system"
-	const controllerDeployment = "kagenti-operator-controller-manager"
+	controllerNamespace := controllerNS()
+	controllerDeployment := controllerDeploy()
 
 	var origArgs []string
 
@@ -1538,7 +1558,7 @@ rules:
 		By("waiting for webhook endpoint to be ready")
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "endpoints",
-				"kagenti-operator-webhook-service", "-n", controllerNamespace,
+				webhookServiceName(), "-n", controllerNamespace,
 				"-o", "jsonpath={.subsets[0].addresses[0].ip}")
 			output, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
@@ -1977,8 +1997,8 @@ rules:
 })
 
 var _ = Describe("Skill Discovery E2E", Ordered, func() {
-	const controllerNamespace = "kagenti-operator-system"
-	const controllerDeployment = "kagenti-operator-controller-manager"
+	controllerNamespace := controllerNS()
+	controllerDeployment := controllerDeploy()
 
 	BeforeAll(func() {
 		By("ensuring mlflow-operator ClusterRole exists for ServiceAccount informer")
@@ -2017,7 +2037,7 @@ rules:
 		By("waiting for webhook endpoint to be ready")
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "endpoints",
-				"kagenti-operator-webhook-service", "-n", controllerNamespace,
+				webhookServiceName(), "-n", controllerNamespace,
 				"-o", "jsonpath={.subsets[0].addresses[0].ip}")
 			output, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
@@ -2181,7 +2201,7 @@ rules:
 			By("waiting for webhook endpoint to be ready after restart")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "endpoints",
-					"kagenti-operator-webhook-service", "-n", controllerNamespace,
+					webhookServiceName(), "-n", controllerNamespace,
 					"-o", "jsonpath={.subsets[0].addresses[0].ip}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -2422,7 +2442,7 @@ rules:
 })
 
 var _ = Describe("Istio Mesh Enrollment E2E", Ordered, func() {
-	const controllerNamespace = "kagenti-operator-system"
+	controllerNamespace := controllerNS()
 
 	BeforeAll(func() {
 		Expect(utils.DeployController(controllerNamespace, projectImage)).To(Succeed(), "Failed to deploy controller")
@@ -2440,7 +2460,7 @@ var _ = Describe("Istio Mesh Enrollment E2E", Ordered, func() {
 		By("waiting for webhook endpoint to be ready")
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "endpoints",
-				"kagenti-operator-webhook-service", "-n", controllerNamespace,
+				webhookServiceName(), "-n", controllerNamespace,
 				"-o", "jsonpath={.subsets[0].addresses[0].ip}")
 			output, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
