@@ -22,52 +22,46 @@ import (
 )
 
 // ResolvedConfig is the fully-merged configuration for a single workload injection.
-// It combines PlatformConfig (images, ports, resources) with namespace ConfigMap
-// values and optional AgentRuntime CR overrides.
+// It combines PlatformConfig (images, ports, resources) with namespace ConfigMap values.
 type ResolvedConfig struct {
 	// Platform config (images, ports, resources) — from PlatformConfig
 	Platform *config.PlatformConfig
 
-	// Identity — merged from namespace CMs + AgentRuntime overrides
+	// Identity — from namespace CMs
 	KeycloakURL                string
 	KeycloakRealm              string
 	AdminCredentialsSecretName string // Secret name for KEYCLOAK_ADMIN_USERNAME/PASSWORD (default: "keycloak-admin-secret")
 	SpiffeTrustDomain          string
 	PlatformClientIDs          string
 
-	// Token exchange — from namespace CMs (not overridable by AgentRuntime v1alpha1)
+	// Token exchange — from namespace CMs
 	TokenURL              string
 	Issuer                string
 	ExpectedAudience      string
-	AllowedAudiences      []string // from AgentRuntime .spec.identity.allowedAudiences or namespace CM
 	TargetAudience        string
 	TargetScopes          string
 	DefaultOutboundPolicy string
 	ClientAuthType        string // "client-secret" or "federated-jwt"
 	SpiffeIdpAlias        string // Keycloak SPIFFE Identity Provider alias
 
-	// Sidecar configs — from namespace CMs (not overridable by AgentRuntime v1alpha1)
+	// Sidecar configs — from namespace CMs
 	SpiffeHelperConf    string
 	AuthproxyRoutesYAML string
 
 	// AuthBridge runtime config — from namespace "authbridge-runtime-config" ConfigMap
 	AuthBridgeRuntimeYAML string // raw config.yaml (base for per-agent ConfigMap)
 
-	// AuthBridgeMode and MTLSMode are the resolved values from the chain
-	// CR > namespace ConfigMap > default. They're populated alongside the
-	// raw AuthBridgeRuntimeYAML so callers (e.g. RenderEnvoyConfig) can
-	// branch on the resolved values without re-parsing the YAML.
-	// AuthBridgeMode is "" when no source set it (caller picks the default).
-	// MTLSMode is "" when no source set it (caller treats as "permissive").
+	// AuthBridgeMode and MTLSMode are resolved from the namespace
+	// ConfigMap (or left empty for caller-side defaults).
+	// AuthBridgeMode "" → caller picks default. MTLSMode "" → "permissive".
 	AuthBridgeMode string
 	MTLSMode       string
 	// TLSBridgeMode is "disabled" unless CR/namespace set it to "enabled".
 	TLSBridgeMode string
 }
 
-// ResolveConfig merges all three configuration layers into a single ResolvedConfig.
-// Merge precedence (highest wins): AgentRuntime > namespace CMs > platform defaults.
-func ResolveConfig(platform *config.PlatformConfig, ns *NamespaceConfig, ar *AgentRuntimeOverrides) *ResolvedConfig {
+// ResolveConfig merges platform defaults with namespace ConfigMap values.
+func ResolveConfig(platform *config.PlatformConfig, ns *NamespaceConfig) *ResolvedConfig {
 	if platform == nil {
 		platform = config.CompiledDefaults()
 	}
@@ -97,39 +91,15 @@ func ResolveConfig(platform *config.PlatformConfig, ns *NamespaceConfig, ar *Age
 		AuthBridgeRuntimeYAML:      ns.AuthBridgeRuntimeYAML,
 	}
 
-	// Apply AgentRuntime identity overrides (highest precedence)
-	if ar != nil {
-		if len(ar.AllowedAudiences) > 0 {
-			resolved.AllowedAudiences = ar.AllowedAudiences
-		}
-		if ar.SpiffeTrustDomain != nil {
-			resolved.SpiffeTrustDomain = *ar.SpiffeTrustDomain
-		}
-		if ar.ClientRegistrationRealm != nil {
-			resolved.KeycloakRealm = *ar.ClientRegistrationRealm
-		}
-	}
-
-	// Resolve AuthBridgeMode + MTLSMode along the same CR > namespace > ""
-	// chain that pod_mutator uses. Keep this resolution local to
-	// ResolveConfig so consumers (e.g. RenderEnvoyConfig) can read the
-	// already-merged values straight off ResolvedConfig instead of
-	// re-implementing the chain.
-	if ar != nil && ar.AuthBridgeMode != nil {
-		resolved.AuthBridgeMode = *ar.AuthBridgeMode
-	} else if m := ExtractMode(resolved.AuthBridgeRuntimeYAML); m != "" {
+	if m := ExtractMode(resolved.AuthBridgeRuntimeYAML); m != "" {
 		resolved.AuthBridgeMode = m
 	}
-	if ar != nil && ar.MTLSMode != nil {
-		resolved.MTLSMode = *ar.MTLSMode
-	} else if m := ExtractMTLSMode(resolved.AuthBridgeRuntimeYAML); m != "" {
+	if m := ExtractMTLSMode(resolved.AuthBridgeRuntimeYAML); m != "" {
 		resolved.MTLSMode = m
 	}
-	// TLS bridge defaults to disabled; CR override > namespace > disabled.
+	// TLS bridge defaults to disabled; namespace > disabled.
 	resolved.TLSBridgeMode = agentv1alpha1.TLSBridgeModeDisabled
-	if ar != nil && ar.TLSBridgeMode != nil {
-		resolved.TLSBridgeMode = *ar.TLSBridgeMode
-	} else if m := ExtractTLSBridgeMode(resolved.AuthBridgeRuntimeYAML); m != "" {
+	if m := ExtractTLSBridgeMode(resolved.AuthBridgeRuntimeYAML); m != "" {
 		resolved.TLSBridgeMode = m
 	}
 

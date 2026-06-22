@@ -20,11 +20,10 @@ import (
 	"testing"
 
 	"github.com/kagenti/operator/internal/webhook/config"
-	"k8s.io/utils/ptr"
 )
 
 func TestResolveConfig_NilInputs(t *testing.T) {
-	resolved := ResolveConfig(nil, nil, nil)
+	resolved := ResolveConfig(nil, nil)
 	if resolved.Platform == nil {
 		t.Fatal("expected Platform to be set to compiled defaults")
 	}
@@ -43,28 +42,12 @@ func TestResolveConfig_NamespaceOnly(t *testing.T) {
 		TargetScopes:   "openid",
 	}
 
-	resolved := ResolveConfig(config.CompiledDefaults(), ns, nil)
+	resolved := ResolveConfig(config.CompiledDefaults(), ns)
 	if resolved.KeycloakURL != "http://keycloak:8080" {
 		t.Errorf("KeycloakURL = %q", resolved.KeycloakURL)
 	}
 	if resolved.TokenURL != "http://keycloak:8080/token" {
 		t.Errorf("TokenURL = %q", resolved.TokenURL)
-	}
-}
-
-func TestResolveConfig_AgentRuntimeOverrides_Realm(t *testing.T) {
-	ns := &NamespaceConfig{
-		KeycloakRealm: "ns-realm",
-	}
-	ar := &AgentRuntimeOverrides{
-		ClientRegistrationRealm: ptr.To("ar-realm"),
-	}
-
-	resolved := ResolveConfig(config.CompiledDefaults(), ns, ar)
-
-	// AgentRuntime realm override should win
-	if resolved.KeycloakRealm != "ar-realm" {
-		t.Errorf("KeycloakRealm = %q, want AR override", resolved.KeycloakRealm)
 	}
 }
 
@@ -74,37 +57,19 @@ func TestResolveConfig_SpiffeTrustDomain_FromPlatform(t *testing.T) {
 
 	ns := &NamespaceConfig{}
 
-	resolved := ResolveConfig(platform, ns, nil)
+	resolved := ResolveConfig(platform, ns)
 	if resolved.SpiffeTrustDomain != "custom.domain" {
 		t.Errorf("SpiffeTrustDomain = %q, want %q", resolved.SpiffeTrustDomain, "custom.domain")
 	}
 }
 
-func TestResolveConfig_SpiffeTrustDomain_AROverride(t *testing.T) {
-	platform := config.CompiledDefaults()
-	platform.Spiffe.TrustDomain = "platform.domain"
-
-	ar := &AgentRuntimeOverrides{
-		SpiffeTrustDomain: ptr.To("ar.domain"),
-	}
-
-	resolved := ResolveConfig(platform, &NamespaceConfig{}, ar)
-	if resolved.SpiffeTrustDomain != "ar.domain" {
-		t.Errorf("SpiffeTrustDomain = %q, want %q", resolved.SpiffeTrustDomain, "ar.domain")
-	}
-}
-
-func TestResolveConfig_SidecarConfigs_NotOverridable(t *testing.T) {
+func TestResolveConfig_SidecarConfigs_FromNamespace(t *testing.T) {
 	ns := &NamespaceConfig{
 		SpiffeHelperConf:    "helper.conf content",
 		AuthproxyRoutesYAML: "routes.yaml content",
 	}
-	// AR overrides don't have fields for these — they flow through from namespace
-	ar := &AgentRuntimeOverrides{
-		SpiffeTrustDomain: ptr.To("override"),
-	}
 
-	resolved := ResolveConfig(config.CompiledDefaults(), ns, ar)
+	resolved := ResolveConfig(config.CompiledDefaults(), ns)
 	if resolved.SpiffeHelperConf != "helper.conf content" {
 		t.Errorf("SpiffeHelperConf should come from namespace")
 	}
@@ -113,16 +78,14 @@ func TestResolveConfig_SidecarConfigs_NotOverridable(t *testing.T) {
 	}
 }
 
-func TestResolveConfig_TokenExchange_NotOverridable(t *testing.T) {
+func TestResolveConfig_TokenExchange_FromNamespace(t *testing.T) {
 	ns := &NamespaceConfig{
 		TokenURL:       "http://keycloak:8080/token",
 		TargetAudience: "my-audience",
 		TargetScopes:   "openid",
 	}
-	// AR has no token exchange fields — they come from namespace only
-	ar := &AgentRuntimeOverrides{}
 
-	resolved := ResolveConfig(config.CompiledDefaults(), ns, ar)
+	resolved := ResolveConfig(config.CompiledDefaults(), ns)
 	if resolved.TokenURL != "http://keycloak:8080/token" {
 		t.Errorf("TokenURL = %q, want namespace value", resolved.TokenURL)
 	}
@@ -135,18 +98,13 @@ func TestResolveConfig_TokenExchange_NotOverridable(t *testing.T) {
 }
 
 func TestResolveConfig_TLSBridgeMode_Precedence(t *testing.T) {
-	// CR override wins.
-	ar := &AgentRuntimeOverrides{TLSBridgeMode: ptr.To("enabled")}
-	if rc := ResolveConfig(config.CompiledDefaults(), nil, ar); rc.TLSBridgeMode != "enabled" {
-		t.Errorf("CR override: got %q, want enabled", rc.TLSBridgeMode)
-	}
-	// Namespace value (tls_bridge.mode in the runtime YAML) when no CR override.
+	// Namespace value (tls_bridge.mode in the runtime YAML).
 	ns := &NamespaceConfig{AuthBridgeRuntimeYAML: "tls_bridge:\n  mode: enabled\n"}
-	if rc := ResolveConfig(config.CompiledDefaults(), ns, nil); rc.TLSBridgeMode != "enabled" {
+	if rc := ResolveConfig(config.CompiledDefaults(), ns); rc.TLSBridgeMode != "enabled" {
 		t.Errorf("namespace: got %q, want enabled", rc.TLSBridgeMode)
 	}
 	// Default when nothing sets it.
-	if rc := ResolveConfig(config.CompiledDefaults(), nil, nil); rc.TLSBridgeMode != "disabled" {
+	if rc := ResolveConfig(config.CompiledDefaults(), nil); rc.TLSBridgeMode != "disabled" {
 		t.Errorf("default: got %q, want disabled", rc.TLSBridgeMode)
 	}
 }

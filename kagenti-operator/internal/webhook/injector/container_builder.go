@@ -62,7 +62,7 @@ func NewContainerBuilder(cfg *config.PlatformConfig) *ContainerBuilder {
 // env var values from the resolved config (admission-time resolution).
 func NewResolvedContainerBuilder(resolved *ResolvedConfig) *ContainerBuilder {
 	if resolved == nil {
-		resolved = ResolveConfig(nil, nil, nil)
+		resolved = ResolveConfig(nil, nil)
 	}
 	return &ContainerBuilder{
 		cfg:      resolved.Platform,

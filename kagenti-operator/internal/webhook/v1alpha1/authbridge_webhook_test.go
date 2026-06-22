@@ -100,9 +100,18 @@ var _ = Describe("AuthBridge Pod Webhook", func() {
 
 	Context("when a Pod has kagenti.io/type=agent and kagenti.io/inject=enabled", func() {
 		It("should inject sidecars", func() {
-			// AgentRuntime CR pins envoy-sidecar mode so this test continues to
-			// exercise the envoy-proxy + proxy-init injection path.
-			createAgentRuntimeWithMode(testNamespace, "agent-pod", injector.ModeEnvoySidecar)
+			// Namespace ConfigMap pins envoy-sidecar mode so this test exercises
+			// the envoy-proxy + proxy-init injection path.
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      injector.AuthBridgeRuntimeConfigMapName,
+					Namespace: testNamespace,
+				},
+				Data: map[string]string{
+					"config.yaml": "mode: " + injector.ModeEnvoySidecar + "\n",
+				},
+			}
+			Expect(k8sClient.Create(ctx, cm)).To(Succeed())
 
 			pod := newTestPod("agent-pod", map[string]string{
 				"kagenti.io/type":   "agent",
