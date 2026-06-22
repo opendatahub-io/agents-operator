@@ -9,6 +9,7 @@ rules:
   - ""
   resources:
   - configmaps
+  - secrets
   verbs:
   - create
   - delete
@@ -23,28 +24,16 @@ rules:
   - endpoints
   verbs:
   - get
-  - list
-  - watch
 - apiGroups:
   - ""
   resources:
   - namespaces
-  - services
   verbs:
   - create
   - get
   - list
   - patch
-  - update
   - watch
-- apiGroups:
-  - ""
-  - events.k8s.io
-  resources:
-  - events
-  verbs:
-  - create
-  - patch
 - apiGroups:
   - ""
   resources:
@@ -58,46 +47,22 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - secrets
+  - serviceaccounts
+  - services
   verbs:
   - create
-  - delete
   - get
   - list
-  - patch
   - update
   - watch
 - apiGroups:
   - ""
+  - events.k8s.io
   resources:
-  - serviceaccounts
+  - events
   verbs:
   - create
-  - get
-  - list
-  - update
-  - watch
-- apiGroups:
-  - cert-manager.io
-  resources:
-  - certificates
-  - issuers
-  verbs:
-  - create
-  - delete
-  - get
-  - list
   - patch
-  - update
-  - watch
-- apiGroups:
-  - cert-manager.io
-  resources:
-  - clusterissuers
-  verbs:
-  - get
-  - list
-  - watch
 - apiGroups:
   - agent.kagenti.dev
   resources:
@@ -165,6 +130,13 @@ rules:
 - apiGroups:
   - apps
   resources:
+  - deployments/finalizers
+  - statefulsets/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - apps
+  resources:
   - statefulsets
   verbs:
   - create
@@ -174,27 +146,22 @@ rules:
   - update
   - watch
 - apiGroups:
-  - apps
+  - cert-manager.io
   resources:
-  - deployments/finalizers
-  - statefulsets/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - kuadrant.io
-  resources:
-  - kuadrants
+  - certificates
+  - issuers
   verbs:
   - create
+  - delete
   - get
   - list
   - patch
   - update
   - watch
 - apiGroups:
-  - discovery.k8s.io
+  - cert-manager.io
   resources:
-  - endpointslices
+  - clusterissuers
   verbs:
   - get
   - list
@@ -208,13 +175,33 @@ rules:
   - list
   - watch
 - apiGroups:
-  - mlflow.opendatahub.io
+  - discovery.k8s.io
   resources:
-  - mlflows
+  - endpointslices
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - k8s.keycloak.org
+  resources:
+  - keycloakrealmimports
+  - keycloaks
   verbs:
   - create
   - get
   - list
+  - patch
+  - update
+- apiGroups:
+  - kuadrant.io
+  resources:
+  - kuadrants
+  verbs:
+  - create
+  - get
+  - list
+  - patch
   - update
   - watch
 - apiGroups:
@@ -224,8 +211,18 @@ rules:
   verbs:
   - get
   - list
-  - watch
   - update
+  - watch
+- apiGroups:
+  - mlflow.opendatahub.io
+  resources:
+  - mlflows
+  verbs:
+  - create
+  - get
+  - list
+  - update
+  - watch
 - apiGroups:
   - networking.k8s.io
   resources:
@@ -249,30 +246,15 @@ rules:
   - operator.openshift.io
   resources:
   - networks
+  verbs:
+  - get
+- apiGroups:
+  - operator.openshift.io
+  resources:
   - zerotrustworkloadidentitymanagers
   verbs:
   - get
   - list
-- apiGroups:
-  - k8s.keycloak.org
-  resources:
-  - keycloakrealmimports
-  - keycloaks
-  verbs:
-  - create
-  - get
-  - list
-  - patch
-  - update
-- apiGroups:
-  - route.openshift.io
-  resources:
-  - routes
-  verbs:
-  - create
-  - get
-  - list
-  - update
 - apiGroups:
   - operator.tekton.dev
   resources:
@@ -290,17 +272,16 @@ rules:
   - get
 - apiGroups:
   - rbac.authorization.k8s.io
+  resourceNames:
+  - mlflow-operator-mlflow-edit
+  - mlflow-operator-mlflow-integration
   resources:
   - clusterroles
-  resourceNames:
-  - mlflow-operator-mlflow-integration
-  - mlflow-operator-mlflow-edit
   verbs:
   - bind
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:
-  - roles
   - rolebindings
   verbs:
   - create
@@ -309,3 +290,22 @@ rules:
   - list
   - update
   - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - roles
+  verbs:
+  - create
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - route.openshift.io
+  resources:
+  - routes
+  verbs:
+  - create
+  - get
+  - list
+  - update
