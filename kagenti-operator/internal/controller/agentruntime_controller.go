@@ -213,6 +213,8 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			r.Recorder.Eventf(rt, nil, corev1.EventTypeWarning, "ConfigMapEnsureError",
 				"EnsureSpiffeHelperConfig", err.Error())
 		}
+		r.updateErrorStatus(ctx, req.NamespacedName, ConditionTypeReady, "SpiffeHelperConfigError", err.Error())
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	// 4.6. Ensure namespace has Istio ambient mesh labels for ztunnel mTLS.
@@ -1066,7 +1068,6 @@ func computeCardContentHash(cardData *agentv1alpha1.AgentCardData) string {
 var templateConfigMapNames = []string{
 	"authbridge-config",
 	"authbridge-runtime-config",
-	"spiffe-helper-config",
 }
 
 // ensureNamespaceConfigMaps copies template ConfigMaps from kagenti-system to the
