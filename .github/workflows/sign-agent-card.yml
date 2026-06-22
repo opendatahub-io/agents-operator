@@ -1,97 +1,76 @@
-name: Sign AgentCard with Sigstore
+# Sign A2A agent card with sigstore-a2a using the official pattern from sigstore-a2a repo
+# Based on: https://github.com/sigstore/sigstore-a2a/blob/main/.github/workflows/ci.yml
+name: Sign and verify agent card (sigstore-a2a)
 
 on:
-  workflow_dispatch:  # Manual trigger for demo
   push:
-    branches: ['**']  # Any branch (for demo purposes)
-    paths:
-      - 'demo/sigstore/unsigned-agent-card.json'
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
-  id-token: write   # Required for OIDC token (keyless signing)
+  id-token: write
   contents: read
-  actions: read
 
 jobs:
-  sign:
+  sign-agent-card:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-      
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
-      
-      - name: Create canonical AgentCard JSON
-        run: |
-          # Remove signatures field and sort keys for canonical form
-          jq -S 'del(.signatures)' demo/sigstore/unsigned-agent-card.json > canonical-card.json
-          echo "=== Canonical AgentCard JSON ==="
-          cat canonical-card.json
-      
-      - name: Sign with Sigstore (keyless)
-        run: |
-          echo "=== Signing with Sigstore (keyless via GitHub OIDC) ==="
-          cosign sign-blob \
-            --yes \
-            --output-signature signature.sig \
-            --output-certificate certificate.pem \
-            canonical-card.json
-          
-          echo ""
-          echo "=== Fulcio Certificate ==="
-          openssl x509 -in certificate.pem -text -noout | head -30
-      
-      - name: Assemble signed AgentCard
-        run: |
-          echo "=== Assembling Signed AgentCard ==="
-          
-          # Create base64url-encoded protected header
-          PROTECTED=$(echo -n '{"alg":"ES256","typ":"JWT"}' | base64 -w0 | tr '+/' '-_' | tr -d '=')
-          
-          # Read signature and convert to base64url
-          SIGNATURE=$(cat signature.sig | tr '+/' '-_' | tr -d '=' | tr -d '\n')
-          
-          # Convert certificate to base64 DER for x5c
-          X5C=$(openssl x509 -in certificate.pem -outform DER | base64 -w0)
-          
-          # Get current timestamp
-          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          
-          # For now use a placeholder index (cosign doesn't easily expose this)
-          # The actual index can be found in Rekor after the fact
-          INDEX=0
-          
-          # Assemble the signed card
-          jq --arg protected "$PROTECTED" \
-             --arg signature "$SIGNATURE" \
-             --arg x5c "$X5C" \
-             --argjson rekor_index "$INDEX" \
-             --arg timestamp "$TIMESTAMP" \
-             '. + {signatures: [{protected: $protected, signature: $signature, header: {x5c: [$x5c], rekor_log_index: $rekor_index, timestamp: $timestamp}}]}' \
-             demo/sigstore/unsigned-agent-card.json > signed-agent-card.json
-          
-          echo ""
-          echo "=== Signed AgentCard ==="
-          cat signed-agent-card.json | jq .
-      
-      - name: Upload signed card as artifact
-        uses: actions/upload-artifact@v7
+      - name: Checkout repository
+        uses: actions/checkout@72f2cec99f417b1a1c5e2e88945068983b7965f9 # v6.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          name: signed-weather-agent-card
-          path: |
-            signed-agent-card.json
-            certificate.pem
-            signature.sig
-          retention-days: 30
-      
-      - name: Summary
+          python-version: "3.13"
+
+      - name: Install UV
+        uses: astral-sh/setup-uv@eb1897b8dc4b5d5bfe39a428a8f2304605e0983c # v7.0.0
+        with:
+          version: "latest"
+
+      - name: Cache UV dependencies
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-uv-sigstore-a2a-293f9bd
+
+      - name: Install sigstore-a2a with pinned dependencies
         run: |
-          echo "## Sigstore Signing Complete! :white_check_mark:" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**AgentCard:** WeatherAgent v1.0.0" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
-          echo "1. Download the \`signed-weather-agent-card\` artifact" >> $GITHUB_STEP_SUMMARY
-          echo "2. Deploy to your Kubernetes cluster with kagenti-operator" >> $GITHUB_STEP_SUMMARY
-          echo "3. The operator will verify the Sigstore signature" >> $GITHUB_STEP_SUMMARY
+          # Pin a2a-sdk to specific version
+          uv pip install --system --prerelease=allow "a2a-sdk==0.2.16"
+          # Pin sigstore-a2a to specific commit SHA for reproducibility and security
+          # Commit 293f9bd from 2026-03-30: "ci(deps): Bump actions/deploy-pages from 4 to 5"
+          # Update periodically by checking: https://github.com/sigstore/sigstore-a2a/commits/main
+          uv pip install --system --prerelease=allow "git+https://github.com/sigstore/sigstore-a2a.git@293f9bd"
+
+      - name: Get GitHub OIDC token
+        run: |
+          OIDC_TOKEN=$(curl -sf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sigstore" | jq -r '.value')
+          echo "$OIDC_TOKEN" > oidc-token.txt
+
+      - name: Sign agent card
+        run: |
+          sigstore-a2a sign \
+            --output signed-agent-card.json \
+            --repository "${{ github.repository }}" \
+            --commit_sha "${{ github.sha }}" \
+            --provenance \
+            --identity_token "$(cat oidc-token.txt)" \
+            kagenti-operator/examples/ci-agent-card.json
+
+      - name: Verify signature
+        run: |
+          sigstore-a2a verify \
+            --identity_provider "https://token.actions.githubusercontent.com" \
+            --identity "https://github.com/${{ github.repository }}/.github/workflows/sign-agent-card.yml@${{ github.ref }}" \
+            --repository "${{ github.repository }}" \
+            --workflow "${{ github.workflow }}" \
+            signed-agent-card.json
+
+      - name: Upload signed agent card
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: signed-agent-card
+          path: signed-agent-card.json
+          retention-days: 14
