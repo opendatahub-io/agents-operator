@@ -302,7 +302,7 @@ func ztwimMockCRDsYAML() string {
 		if i > 0 {
 			sb.WriteString("---\n")
 		}
-		sb.WriteString(fmt.Sprintf(`apiVersion: apiextensions.k8s.io/v1
+		fmt.Fprintf(&sb, `apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   name: %s.operator.openshift.io
@@ -322,7 +322,7 @@ spec:
       openAPIV3Schema:
         type: object
         x-kubernetes-preserve-unknown-fields: true
-`, crd.plural, crd.kind, crd.listKind, crd.plural, crd.singular))
+`, crd.plural, crd.kind, crd.listKind, crd.plural, crd.singular)
 	}
 	return sb.String()
 }

@@ -100,7 +100,7 @@ func (r *SpireOperandReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		effectiveTD = td
 	}
 
-	if _, err := r.ensureUnstructuredCR(ctx, kd.ZTWIMGVK, spireOperandName, r.ztwimSpec(effectiveTD)); err != nil {
+	if err := r.ensureUnstructuredCR(ctx, kd.ZTWIMGVK, spireOperandName, r.ztwimSpec(effectiveTD)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring ZTWIM CR: %w", err)
 	}
 
@@ -123,7 +123,7 @@ func (r *SpireOperandReconciler) ensureChildren(ctx context.Context, trustDomain
 		{spireOIDCProviderGVK, r.spireOIDCProviderSpec(trustDomain)},
 	}
 	for _, child := range children {
-		if _, err := r.ensureUnstructuredCR(ctx, child.gvk, spireOperandName, child.spec); err != nil {
+		if err := r.ensureUnstructuredCR(ctx, child.gvk, spireOperandName, child.spec); err != nil {
 			return fmt.Errorf("ensuring %s: %w", child.gvk.Kind, err)
 		}
 	}
@@ -133,7 +133,7 @@ func (r *SpireOperandReconciler) ensureChildren(ctx context.Context, trustDomain
 func (r *SpireOperandReconciler) ensureUnstructuredCR(
 	ctx context.Context, gvk schema.GroupVersionKind,
 	name string, spec map[string]interface{},
-) (controllerutil.OperationResult, error) {
+) error {
 	logger := log.FromContext(ctx)
 
 	obj := &unstructured.Unstructured{}
@@ -163,7 +163,7 @@ func (r *SpireOperandReconciler) ensureUnstructuredCR(
 		return nil
 	})
 	if err != nil {
-		return result, err
+		return err
 	}
 
 	switch result {
@@ -181,7 +181,7 @@ func (r *SpireOperandReconciler) ensureUnstructuredCR(
 		}
 	}
 
-	return result, nil
+	return nil
 }
 
 // mergeNestedMap recursively merges src into dst. For nested maps, it recurses.

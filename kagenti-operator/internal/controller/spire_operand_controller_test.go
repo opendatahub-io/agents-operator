@@ -349,8 +349,8 @@ var _ = Describe("SPIRE Operand Controller", func() {
 			r := &SpireOperandReconciler{TrustDomain: testTrustDomain}
 
 			for name, spec := range map[string]map[string]interface{}{
-				"SpiffeCSIDriver":           r.spiffeCSIDriverSpec(),
-				"SpireAgent":                r.spireAgentSpec(),
+				"SpiffeCSIDriver":            r.spiffeCSIDriverSpec(),
+				"SpireAgent":                 r.spireAgentSpec(),
 				"SpireOIDCDiscoveryProvider": r.spireOIDCProviderSpec(testTrustDomain),
 			} {
 				_, hasTD := spec["trustDomain"]
