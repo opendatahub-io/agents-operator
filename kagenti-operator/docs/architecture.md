@@ -75,6 +75,18 @@ The Kagenti Operator is a Kubernetes controller that implements the [Operator Pa
 - On CR deletion: removes type label, managed-by label and config-hash annotation (causing the workload to lose sidecars)
 - Coordinates with the AuthBridge mutating webhook (in-process) which injects sidecars at Pod CREATE time
 
+#### SPIRE Operand Controller
+- Creates and reconciles 5 SPIRE operand CRs (`operator.openshift.io/v1alpha1`) when ZTWIM CRDs are present on the cluster
+- CRD-gated: no feature flag needed — automatically activates on OpenShift 4.19+ where ZTWIM operator is installed
+- Manages: ZeroTrustWorkloadIdentityManager (parent), SpiffeCSIDriver, SpireServer, SpireAgent, SpireOIDCDiscoveryProvider (children)
+- Drift correction: any manual change to CR spec or deletion is automatically corrected
+- Replaces fragile Helm post-install hooks with proper reconciliation loop
+- Uses `SpireBootstrapRunnable` to create initial ZTWIM CR at startup, triggering the controller's watch
+
+#### MLflow Operand Controller
+- Watches DataScienceCluster resources and ensures MLflow CR exists when DSC has `mlflowoperator: Managed`
+- Creates per-namespace OTEL RoleBindings for agent Deployments
+
 ### Supporting Components
 
 #### Webhooks
@@ -108,11 +120,22 @@ graph TB
         CardController[AgentCard Controller]
         SyncController[AgentCardSync Controller]
         RuntimeController[AgentRuntime Controller]
+        SpireController[SPIRE Operand Controller]
         CardCR -->|Validates| ValidationWebhook
         RuntimeCR -->|Validates| ValidationWebhook
         Deployment -->|CREATE/UPDATE with kagenti.io/type| VAP
 
         ValidationWebhook -->|Valid CR| CardController
+    end
+
+    subgraph "SPIRE Infrastructure"
+        ZTWIMCR[ZTWIM CR]
+        SpireCRs[SpireServer + SpireAgent + SpiffeCSIDriver + SpireOIDC]
+        ZTWIMOperator[ZTWIM Operator]
+        SpireController -->|Creates/Updates| ZTWIMCR
+        SpireController -->|Creates/Updates| SpireCRs
+        ZTWIMOperator -->|Reconciles| ZTWIMCR
+        ZTWIMOperator -->|Reconciles| SpireCRs
     end
 
     subgraph "Config Sources"
@@ -261,6 +284,60 @@ AgentRuntime CR created/updated
 | `ConfigResolved` | Configuration merged successfully. Reason is `ConfigResolved` when clean, `ConfigWarning` when ambiguity detected (e.g., multiple namespace defaults ConfigMaps). Warnings are surfaced in the condition message and as Kubernetes events. |
 | `Ready` | Labels and config-hash applied successfully |
 
+### SPIRE Operand Controller
+
+The SPIRE Operand Controller manages the lifecycle of 5 SPIRE operand CRs on OpenShift clusters where the ZTWIM (Zero Trust Workload Identity Manager) operator is installed. It replaces fragile Helm post-install hooks with a proper reconciliation loop that corrects drift.
+
+#### CRD Gating
+
+The controller uses `SpireOperandCRDExists()` to check for the `ZeroTrustWorkloadIdentityManager` CRD via the Kubernetes discovery API (3 retries). No feature flag is needed — the controller activates automatically when CRDs are present (OpenShift 4.19+).
+
+#### Bootstrap Flow
+
+`SpireBootstrapRunnable` is a one-shot `manager.Runnable` that creates the initial ZTWIM CR at startup if absent. This triggers the controller's watch, which then creates the 4 child CRs.
+
+#### Reconciliation Flow
+
+```
+1. Get ZTWIM CR "cluster" — if NotFound, return (bootstrap pending)
+2. ensureUnstructuredCR(ZTWIM) — CreateOrUpdate with desired spec:
+   - trustDomain (auto-discovered), clusterName="agent-platform", bundleConfigMap="spire-bundle"
+3. ensureChildren() — CreateOrUpdate for each of 4 children:
+   a. SpiffeCSIDriver: agentSocketPath, pluginName
+   b. SpireServer: caSubject, persistence, datastore, jwtIssuer
+   c. SpireAgent: nodeAttestor, workloadAttestors
+   d. SpireOIDCDiscoveryProvider: csiDriverName, jwtIssuer
+4. Record events on create/update, return success
+```
+
+Children inherit `trustDomain` and `clusterName` from the parent ZTWIM CR — these fields are NOT set on child CRs (OCP 4.19 CRD constraint).
+
+#### Managed CRs
+
+All CRs are `operator.openshift.io/v1alpha1`, cluster-scoped, name `"cluster"`:
+
+| CR | Key Spec Fields | Role |
+|---|---|---|
+| ZeroTrustWorkloadIdentityManager | trustDomain, clusterName, bundleConfigMap | Parent — created first |
+| SpiffeCSIDriver | agentSocketPath, pluginName | CSI volume plugin for SVID mounting |
+| SpireServer | caSubject, persistence, datastore, jwtIssuer | SPIRE server configuration |
+| SpireAgent | nodeAttestor, workloadAttestors | Node-level SPIRE agent |
+| SpireOIDCDiscoveryProvider | csiDriverName, jwtIssuer | OIDC endpoint for JWT-SVID |
+
+#### Watches
+
+| Resource | Scope | Purpose |
+|----------|-------|---------|
+| ZeroTrustWorkloadIdentityManager | Cluster | Primary resource — reconcile on create/update/delete |
+| SpiffeCSIDriver | Cluster | Secondary — map to ZTWIM reconcile for drift correction |
+| SpireServer | Cluster | Secondary — map to ZTWIM reconcile for drift correction |
+| SpireAgent | Cluster | Secondary — map to ZTWIM reconcile for drift correction |
+| SpireOIDCDiscoveryProvider | Cluster | Secondary — map to ZTWIM reconcile for drift correction |
+
+#### Drift Correction
+
+Uses `controllerutil.CreateOrUpdate` — if a CR exists but spec differs from desired state, it is updated. If a CR is deleted, it is recreated on next reconcile (triggered by the child watch). All CRs are labeled `app.kubernetes.io/managed-by: kagenti-operator`.
+
 ### NetworkPolicy Controller
 
 The NetworkPolicy Controller enforces network isolation based on signature verification.
@@ -355,6 +432,18 @@ Source: `internal/controller/agentcard_networkpolicy_controller.go`
 |-----------|-----------|-------|---------|
 | `networking.k8s.io` | `networkpolicies` | get, list, watch, create, update, patch, delete | Create permissive/restrictive NetworkPolicies based on signature verification |
 | `""` (core) | `pods` | get, list, watch, update, patch | Resolve pod selectors from workload pod template labels |
+
+#### SPIRE Operand Controller Permissions
+
+Source: `internal/controller/spire_operand_controller.go`
+
+| API Group | Resources | Verbs | Purpose |
+|-----------|-----------|-------|---------|
+| `operator.openshift.io` | `zerotrustworkloadidentitymanagers` | create, get, list, update, watch | Create and reconcile ZTWIM parent CR |
+| `operator.openshift.io` | `spiffecsidrivers` | create, get, list, update, watch | Create and reconcile SpiffeCSIDriver CR |
+| `operator.openshift.io` | `spireservers` | create, get, list, update, watch | Create and reconcile SpireServer CR |
+| `operator.openshift.io` | `spireagents` | create, get, list, update, watch | Create and reconcile SpireAgent CR |
+| `operator.openshift.io` | `spireoidcdiscoveryproviders` | create, get, list, update, watch | Create and reconcile SpireOIDCDiscoveryProvider CR |
 
 #### Cross-Namespace Considerations
 
