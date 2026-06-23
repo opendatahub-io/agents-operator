@@ -82,6 +82,9 @@ The Kagenti Operator is a Kubernetes controller that implements the [Operator Pa
 - **AgentCard Validator**: Ensures `targetRef` is set on AgentCards. Rejects duplicate `targetRef` entries (prevents multiple AgentCards targeting the same workload in a namespace).
 - **AgentRuntime Validator**: Rejects duplicate `targetRef` entries (prevents multiple AgentRuntime CRs targeting the same workload in a namespace). Uses authoritative API server reads to eliminate informer cache-lag races.
 
+#### Admission Policies
+- **Agent Label Protection (ValidatingAdmissionPolicy)**: Prevents manual application of the `kagenti.io/type` label on Deployments and StatefulSets. Only the operator's service account (via an AgentRuntime CR) is allowed to set this label. Users who attempt to add the label directly are rejected with a message directing them to create an AgentRuntime instead. The policy allows non-operator users to update workloads that already carry the label, as long as they don't change its value.
+
 #### Signature Providers
 - **X5CProvider**: Validates `x5c` certificate chains against the SPIRE X.509 trust bundle and verifies JWS signatures using the leaf public key
 
@@ -101,11 +104,13 @@ graph TB
     subgraph "Kagenti Operator"
         ValidationWebhook[Validating Webhooks]
         InjectionWebhook[AuthBridge Mutating Webhook]
+        VAP[Agent Label Protection VAP]
         CardController[AgentCard Controller]
         SyncController[AgentCardSync Controller]
         RuntimeController[AgentRuntime Controller]
         CardCR -->|Validates| ValidationWebhook
         RuntimeCR -->|Validates| ValidationWebhook
+        Deployment -->|CREATE/UPDATE with kagenti.io/type| VAP
 
         ValidationWebhook -->|Valid CR| CardController
     end
@@ -142,6 +147,7 @@ graph TB
     style RuntimeCR fill:#e1f5fe
     style ValidationWebhook fill:#fff3e0
     style InjectionWebhook fill:#fff3e0
+    style VAP fill:#fff3e0
     style CardController fill:#ffe0b2
     style SyncController fill:#ffe0b2
     style Deployment fill:#d1c4e9
@@ -356,6 +362,36 @@ Source: `internal/controller/agentcard_networkpolicy_controller.go`
 - In **namespaced mode** (`NAMESPACES2WATCH` env var), the same permissions are scoped to specific namespaces via **Role** and **RoleBinding**
 - The AgentRuntime controller reads ConfigMaps from `kagenti-system` (cluster defaults) regardless of mode — this requires cross-namespace read access
 - Namespace defaults ConfigMaps are read from the workload's own namespace
+
+### Admission Control — Agent Label Protection
+
+The operator deploys a `ValidatingAdmissionPolicy` (VAP) that prevents direct application of the `kagenti.io/type` label on Deployments and StatefulSets. This label is the entry point for the entire kagenti platform (webhook injection, agent discovery, client registration), so it must only be set through the official enrollment path — creating an AgentRuntime CR.
+
+#### How It Works
+
+| Layer | Purpose |
+|-------|---------|
+| **matchConstraints** | Targets CREATE and UPDATE of `apps/v1` Deployments and StatefulSets |
+| **matchConditions** | Skips evaluation when the object doesn't have `kagenti.io/type` or when the request comes from the operator's service account |
+| **validation** | On UPDATE, allows the request only if `kagenti.io/type` was already present with the same value (user is modifying other fields). On CREATE, always rejects since the label should not be set manually. |
+
+#### Scenarios
+
+| Action | Result |
+|--------|--------|
+| User creates Deployment with `kagenti.io/type: agent` | **Rejected** — create an AgentRuntime instead |
+| User adds `kagenti.io/type` to existing Deployment | **Rejected** — create an AgentRuntime instead |
+| User changes `kagenti.io/type` from `agent` to `tool` | **Rejected** — update the AgentRuntime instead |
+| User updates Deployment that already has the label (label unchanged) | **Allowed** |
+| User removes `kagenti.io/type` from Deployment | **Allowed** (matchCondition skips — new object has no label) |
+| Operator controller applies label via AgentRuntime | **Allowed** (service account exemption) |
+
+#### Resources
+
+The VAP is deployed as part of the operator's kustomize manifests (`config/vap/`):
+
+- `ValidatingAdmissionPolicy` — `agent-label-protection`
+- `ValidatingAdmissionPolicyBinding` — binds with `validationActions: [Deny]`
 
 ### Secret Management
 

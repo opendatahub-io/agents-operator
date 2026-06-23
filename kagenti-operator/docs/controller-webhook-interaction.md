@@ -160,7 +160,7 @@ The webhook performs its own merge at Pod CREATE time, including CR overrides, t
 
 ## Global and Cluster Configuration
 
-When workloads are deployed with the right labels (`kagenti.io/type: agent` or `tool`), the webhook uses two levels of global configuration regardless of whether an AgentRuntime CR exists:
+When workloads have the `kagenti.io/type` label (applied by the operator via an AgentRuntime CR), the webhook uses two levels of global configuration:
 
 ### PlatformConfig (Global Defaults)
 
@@ -195,17 +195,9 @@ When `perWorkloadConfigResolution` is **false** (default), the webhook builds si
 
 When `perWorkloadConfigResolution` is **true**, the webhook resolves all config values at admission time by reading namespace ConfigMaps and AgentRuntime CR overrides, then injects literal environment variable values into the sidecar containers.
 
-## Defaults-Only Path (No AgentRuntime CR)
+## AgentRuntime Required — Admission Policy
 
-When a workload has `kagenti.io/type` labels applied manually (without an AgentRuntime CR):
-
-- The webhook still evaluates the workload for injection using PlatformConfig and feature gates
-- Configuration comes from PlatformConfig (layer 1) and namespace ConfigMaps (layer 2) only
-- No controller manages the config hash — configuration drift is not detected automatically, and changes to cluster/namespace defaults do not trigger rolling updates
-- The controller does not watch or reconcile these workloads
-- Per-workload identity (SPIFFE trust domain) overrides are not available
-
-The AgentRuntime CR is the recommended approach because it provides:
+A `ValidatingAdmissionPolicy` prevents the `kagenti.io/type` label from being set directly on Deployments or StatefulSets. Only the operator's service account (via the AgentRuntime controller) can apply this label. This ensures every enrolled workload has a corresponding AgentRuntime CR, which provides:
 - Automatic rolling updates on config change (any layer)
 - Per-workload identity overrides
 - Status reporting (phase, conditions, configured pod count)

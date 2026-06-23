@@ -40,9 +40,11 @@ Exposes /.well-known/    Enables kubectl get agentcards
 
 ## How It Works
 
-### 1. Workload Labeling
+### 1. Workload Enrollment via AgentRuntime
 
-Agent workloads (Deployments or StatefulSets) must be labeled to enable discovery:
+Agent workloads (Deployments or StatefulSets) are enrolled by creating an `AgentRuntime` CR. The operator's controller applies the `kagenti.io/type` label automatically — a `ValidatingAdmissionPolicy` prevents setting it directly on workloads.
+
+The workload itself carries a protocol label to declare which protocol it speaks:
 
 ```yaml
 apiVersion: apps/v1
@@ -50,18 +52,27 @@ kind: Deployment
 metadata:
   name: weather-agent
   labels:
-    kagenti.io/type: agent             # Identifies as an agent
     protocol.kagenti.io/a2a: ""        # Speaks A2A protocol
     app.kubernetes.io/name: weather-agent
 spec:
   # ... standard Deployment spec
+---
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: weather-agent
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: weather-agent
 ```
 
-Multiple protocols can be declared simultaneously:
+Multiple protocols can be declared simultaneously on the Deployment:
 
 ```yaml
   labels:
-    kagenti.io/type: agent
     protocol.kagenti.io/a2a: ""        # Speaks A2A
     protocol.kagenti.io/mcp: ""        # Also speaks MCP
 ```
@@ -204,7 +215,6 @@ kind: Deployment
 metadata:
   name: assistant-agent
   labels:
-    kagenti.io/type: agent
     protocol.kagenti.io/a2a: ""
     app.kubernetes.io/name: assistant-agent
 spec:
@@ -234,9 +244,20 @@ spec:
     - name: http
       port: 8000
       targetPort: 8000
+---
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: assistant-agent
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: assistant-agent
 ```
 
-The AgentCard is created automatically by the AgentCardSync controller when agent labels are present, or can be created explicitly with `targetRef`.
+The operator applies the `kagenti.io/type: agent` label to the Deployment, and the AgentCard is created automatically by the AgentCardSync controller when both `kagenti.io/type` and a protocol label are present.
 
 ### Query Agent Cards
 

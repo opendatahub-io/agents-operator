@@ -59,6 +59,7 @@ type AgentCardNetworkPolicyReconciler struct {
 	KubeAPIServerCIDRs []string
 }
 
+// +kubebuilder:rbac:groups=core,resources=endpoints,verbs=get
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=agents.x-k8s.io,resources=sandboxes,verbs=get;list;watch

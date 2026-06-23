@@ -102,6 +102,7 @@ data:
 }
 
 // echoAgentFixture returns YAML for echo-agent Deployment + Service (used by S1, S3).
+// The kagenti.io/type label is applied by the operator via an AgentRuntime CR.
 func echoAgentFixture() string {
 	return `apiVersion: apps/v1
 kind: Deployment
@@ -109,7 +110,6 @@ metadata:
   name: echo-agent
   namespace: ` + testNamespace + `
   labels:
-    kagenti.io/type: agent
     protocol.kagenti.io/a2a: ""
     app.kubernetes.io/name: echo-agent
 spec:
@@ -117,12 +117,10 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: echo-agent
-      kagenti.io/type: agent
   template:
     metadata:
       labels:
         app.kubernetes.io/name: echo-agent
-        kagenti.io/type: agent
         kagenti.io/inject: disabled
         protocol.kagenti.io/a2a: ""
     spec:
@@ -175,11 +173,10 @@ spec:
 `
 }
 
-// noProtocolAgentFixture returns YAML for noproto-agent Deployment (S2) - has
-// kagenti.io/type=agent but NO protocol.kagenti.io/* label.
+// noProtocolAgentFixture returns YAML for noproto-agent Deployment (S2) - receives
+// kagenti.io/type=agent via AgentRuntime but has NO protocol.kagenti.io/* label.
 // kagenti.io/inject=disabled is set because this test validates AgentCard sync
-// behaviour, not sidecar injection. Without the opt-out the defaults-only
-// injection path would inject sidecars that the pause container cannot support.
+// behaviour, not sidecar injection.
 func noProtocolAgentFixture() string {
 	return `apiVersion: apps/v1
 kind: Deployment
@@ -187,19 +184,16 @@ metadata:
   name: noproto-agent
   namespace: ` + testNamespace + `
   labels:
-    kagenti.io/type: agent
     app.kubernetes.io/name: noproto-agent
 spec:
   replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: noproto-agent
-      kagenti.io/type: agent
   template:
     metadata:
       labels:
         app.kubernetes.io/name: noproto-agent
-        kagenti.io/type: agent
         kagenti.io/inject: disabled
     spec:
       securityContext:
@@ -246,6 +240,7 @@ spec:
 }
 
 // auditAgentFixture returns YAML for audit-agent Deployment + Service (S5).
+// The kagenti.io/type label is applied by the operator via an AgentRuntime CR.
 func auditAgentFixture() string {
 	return `apiVersion: apps/v1
 kind: Deployment
@@ -253,7 +248,6 @@ metadata:
   name: audit-agent
   namespace: ` + testNamespace + `
   labels:
-    kagenti.io/type: agent
     protocol.kagenti.io/a2a: ""
     app.kubernetes.io/name: audit-agent
 spec:
@@ -261,12 +255,10 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: audit-agent
-      kagenti.io/type: agent
   template:
     metadata:
       labels:
         app.kubernetes.io/name: audit-agent
-        kagenti.io/type: agent
         kagenti.io/inject: disabled
         protocol.kagenti.io/a2a: ""
     spec:
@@ -406,7 +398,6 @@ metadata:
   name: signed-agent
   namespace: ` + testNamespace + `
   labels:
-    kagenti.io/type: agent
     protocol.kagenti.io/a2a: ""
     app.kubernetes.io/name: signed-agent
 spec:
@@ -414,12 +405,10 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: signed-agent
-      kagenti.io/type: agent
   template:
     metadata:
       labels:
         app.kubernetes.io/name: signed-agent
-        kagenti.io/type: agent
         kagenti.io/inject: disabled
         protocol.kagenti.io/a2a: ""
     spec:
@@ -549,6 +538,70 @@ spec:
   namespaceSelector:
     matchLabels:
       agentcard: "true"
+`
+}
+
+// echoAgentRuntimeFixture returns YAML for an AgentRuntime CR targeting echo-agent.
+func echoAgentRuntimeFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: echo-agent
+  namespace: ` + testNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: echo-agent
+`
+}
+
+// noProtoAgentRuntimeFixture returns YAML for an AgentRuntime CR targeting noproto-agent.
+func noProtoAgentRuntimeFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: noproto-agent
+  namespace: ` + testNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: noproto-agent
+`
+}
+
+// auditAgentRuntimeFixture returns YAML for an AgentRuntime CR targeting audit-agent.
+func auditAgentRuntimeFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: audit-agent
+  namespace: ` + testNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: audit-agent
+`
+}
+
+// signedAgentRuntimeFixture returns YAML for an AgentRuntime CR targeting signed-agent.
+func signedAgentRuntimeFixture() string {
+	return `apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: signed-agent
+  namespace: ` + testNamespace + `
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: signed-agent
 `
 }
 
@@ -955,8 +1008,8 @@ spec:
 }
 
 // authBridgeAgentFixture returns YAML for the authbridge-agent Deployment,
-// ServiceAccount, and Service. The deployment uses a Python echo server on
-// port 8080 and has the kagenti.io/type=agent label required for injection.
+// ServiceAccount, and Service. The kagenti.io/type label is applied by the
+// operator via the AgentRuntime CR created in BeforeAll.
 func authBridgeAgentFixture() string {
 	return `apiVersion: v1
 kind: ServiceAccount
@@ -970,19 +1023,16 @@ metadata:
   name: authbridge-agent
   namespace: ` + authBridgeTestNamespace + `
   labels:
-    kagenti.io/type: agent
     app.kubernetes.io/name: authbridge-agent
 spec:
   replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: authbridge-agent
-      kagenti.io/type: agent
   template:
     metadata:
       labels:
         app.kubernetes.io/name: authbridge-agent
-        kagenti.io/type: agent
     spec:
       serviceAccountName: authbridge-agent
       securityContext:
@@ -1030,6 +1080,7 @@ spec:
 
 // authBridgeDisabledAgentFixture returns YAML for a Deployment that opts out
 // of sidecar injection via the kagenti.io/inject=disabled pod template label.
+// The kagenti.io/type label is applied by the operator via an AgentRuntime CR.
 func authBridgeDisabledAgentFixture() string {
 	return `apiVersion: apps/v1
 kind: Deployment
@@ -1037,19 +1088,16 @@ metadata:
   name: authbridge-disabled-agent
   namespace: ` + authBridgeTestNamespace + `
   labels:
-    kagenti.io/type: agent
     app.kubernetes.io/name: authbridge-disabled-agent
 spec:
   replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: authbridge-disabled-agent
-      kagenti.io/type: agent
   template:
     metadata:
       labels:
         app.kubernetes.io/name: authbridge-disabled-agent
-        kagenti.io/type: agent
         kagenti.io/inject: disabled
     spec:
       securityContext:

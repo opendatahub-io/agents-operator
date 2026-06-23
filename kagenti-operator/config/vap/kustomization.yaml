@@ -1,0 +1,3 @@
+resources:
+- validating-admission-policy.yaml
+- validating-admission-policy-binding.yaml

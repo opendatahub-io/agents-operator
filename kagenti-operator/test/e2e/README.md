@@ -83,7 +83,7 @@ kind delete cluster
 | Apply labels and config-hash | Agent lifecycle | AgentRuntime controller adds `kagenti.io/type=agent`, `managed-by`, config-hash, and triggers AgentCard auto-creation |
 | Ready=True | Agent lifecycle | AgentRuntime CR reaches Ready=True condition |
 | Idempotent re-reconcile | Agent lifecycle | Deployment generation stays stable over 30s (no spurious updates) |
-| Clean up on deletion | Agent lifecycle | Deletion preserves `kagenti.io/type`, removes `managed-by`, config-hash stays the same (no CR fields in hash) |
+| Clean up on deletion | Agent lifecycle | Deletion removes `kagenti.io/type`, `managed-by`, and config-hash from the workload |
 | Missing target error | Error cases | AgentRuntime targeting non-existent Deployment sets TargetResolved=False |
 | Tool type label | Tool type | AgentRuntime with type=tool applies `kagenti.io/type=tool` label and no AgentCard is created |
 | StatefulSet target | StatefulSet target | AgentRuntime applies labels, config-hash, and reaches Active for a StatefulSet workload |
@@ -331,10 +331,9 @@ spec on each reconcile loop, which would trigger unnecessary rolling restarts.
 Deletes the AgentRuntime CR and verifies the finalizer (`kagenti.io/cleanup`) runs correctly:
 
 1. **Target Deployment still exists** — the controller cleans up labels, not the workload
-2. **`kagenti.io/type=agent` preserved** — workload remains classified after runtime removal
+2. **`kagenti.io/type` removed** — the label was applied by the operator and is removed on cleanup
 3. **`app.kubernetes.io/managed-by` removed** — workload is no longer operator-managed
-4. **`kagenti.io/config-hash` stays the same** — no CR fields in hash, so deletion does not
-   change the hash or trigger a rolling update
+4. **`kagenti.io/config-hash` removed** — annotation is cleared since the workload is no longer managed
 5. **AgentRuntime CR returns 404** — finalizer completed and CR was fully deleted
 
 #### Missing target error
