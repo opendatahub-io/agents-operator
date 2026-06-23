@@ -508,7 +508,13 @@ func RestoreControllerArgs(namespace, deploy string, origArgs []string) error {
 }
 
 // DeployController installs CRDs and deploys the controller-manager.
+// Set E2E_CONTROLLER_DEPLOY_SKIP=true to skip when running against a pre-installed operator.
 func DeployController(namespace, img string) error {
+	if os.Getenv("E2E_CONTROLLER_DEPLOY_SKIP") == "true" {
+		By("skipping controller deployment (E2E_CONTROLLER_DEPLOY_SKIP=true)")
+		return nil
+	}
+
 	By("creating manager namespace")
 	if err := ensureNamespaceReady(namespace, 120*time.Second); err != nil {
 		return fmt.Errorf("namespace %s not ready: %w", namespace, err)
@@ -689,7 +695,13 @@ data:
 }
 
 // UndeployController undeploys the controller-manager and uninstalls CRDs.
+// Set E2E_CONTROLLER_DEPLOY_SKIP=true to skip when running against a pre-installed operator.
 func UndeployController() {
+	if os.Getenv("E2E_CONTROLLER_DEPLOY_SKIP") == "true" {
+		By("skipping controller undeployment (E2E_CONTROLLER_DEPLOY_SKIP=true)")
+		return
+	}
+
 	By("undeploying the controller-manager")
 	cmd := exec.Command("make", "undeploy")
 	if _, err := Run(cmd); err != nil {

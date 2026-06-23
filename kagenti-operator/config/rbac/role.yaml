@@ -41,15 +41,6 @@ rules:
   - ""
   resources:
   - serviceaccounts
-  verbs:
-  - create
-  - get
-  - list
-  - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
   - services
   verbs:
   - create
@@ -169,17 +160,6 @@ rules:
   - list
   - watch
 - apiGroups:
-  - k8s.keycloak.org
-  resources:
-  - keycloakrealmimports
-  - keycloaks
-  verbs:
-  - create
-  - get
-  - list
-  - patch
-  - update
-- apiGroups:
   - datasciencecluster.opendatahub.io
   resources:
   - datascienceclusters
@@ -195,6 +175,17 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - k8s.keycloak.org
+  resources:
+  - keycloakrealmimports
+  - keycloaks
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
 - apiGroups:
   - kuadrant.io
   resources:

@@ -29,7 +29,7 @@ import (
 )
 
 var _ = Describe("SharedTrust E2E", Ordered, func() {
-	const controllerNamespace = "kagenti-operator-system"
+	controllerNamespace := controllerNS()
 
 	BeforeAll(func() {
 		Expect(utils.DeployController(controllerNamespace, projectImage)).To(Succeed(), "Failed to deploy controller")
@@ -370,8 +370,7 @@ spec:
         app: istiod
     spec:
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 65534
+        runAsNonRoot: true` + runAsUserYAML("65534") + `
       containers:
       - name: discovery
         image: registry.k8s.io/pause:3.9
@@ -400,8 +399,7 @@ spec:
         app: ztunnel
     spec:
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 65534
+        runAsNonRoot: true` + runAsUserYAML("65534") + `
       containers:
       - name: ztunnel
         image: registry.k8s.io/pause:3.9

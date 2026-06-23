@@ -19,9 +19,60 @@ package e2e
 import (
 	"encoding/base64"
 	"fmt"
+	"os"
 
 	"github.com/kagenti/operator/internal/clientreg"
 )
+
+// curlImage returns the container image used for curl-based test pods.
+// Override with E2E_CURL_IMAGE for environments where Docker Hub is unavailable.
+func curlImage() string {
+	if v := os.Getenv("E2E_CURL_IMAGE"); v != "" {
+		return v
+	}
+	return "curlimages/curl:latest"
+}
+
+// pythonImage returns the container image used for Python-based test workloads.
+// Override with E2E_PYTHON_IMAGE for environments that need a different registry.
+func pythonImage() string {
+	if v := os.Getenv("E2E_PYTHON_IMAGE"); v != "" {
+		return v
+	}
+	return "docker.io/python:3.11-slim"
+}
+
+// runAsUserYAML returns a YAML line setting runAsUser for pod security contexts.
+// The default images (curlimages/curl, python:3.11-slim) need an explicit numeric
+// UID because they either use a non-numeric user or run as root, which fails the
+// runAsNonRoot check without it.
+// Set E2E_RUN_AS_USER=none to omit the line entirely (e.g. OpenShift assigns UIDs
+// via SCC), or E2E_RUN_AS_USER=<uid> to override the value.
+func runAsUserYAML(defaultUID string) string {
+	v := os.Getenv("E2E_RUN_AS_USER")
+	if v == "none" {
+		return ""
+	}
+	uid := defaultUID
+	if v != "" {
+		uid = v
+	}
+	return fmt.Sprintf("\n        runAsUser: %s", uid)
+}
+
+// runAsUserJSON returns a JSON fragment for runAsUser inside a securityContext.
+// Returns empty string when E2E_RUN_AS_USER=none.
+func runAsUserJSON(defaultUID string) string {
+	v := os.Getenv("E2E_RUN_AS_USER")
+	if v == "none" {
+		return ""
+	}
+	uid := defaultUID
+	if v != "" {
+		uid = v
+	}
+	return fmt.Sprintf(`, "runAsUser": %s`, uid)
+}
 
 const testNamespace = "e2e-agentcard-test"
 const authBridgeTestNamespace = "e2e-authbridge-test"
@@ -76,13 +127,12 @@ spec:
         protocol.kagenti.io/a2a: ""
     spec:
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
+        runAsNonRoot: true` + runAsUserYAML("1000") + `
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: echo
-          image: docker.io/python:3.11-slim
+          image: ` + pythonImage() + `
           imagePullPolicy: IfNotPresent
           command:
             - python3
@@ -153,8 +203,7 @@ spec:
         kagenti.io/inject: disabled
     spec:
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
+        runAsNonRoot: true` + runAsUserYAML("1000") + `
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -222,13 +271,12 @@ spec:
         protocol.kagenti.io/a2a: ""
     spec:
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
+        runAsNonRoot: true` + runAsUserYAML("1000") + `
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: echo
-          image: docker.io/python:3.11-slim
+          image: ` + pythonImage() + `
           imagePullPolicy: IfNotPresent
           command:
             - python3
@@ -377,8 +425,7 @@ spec:
     spec:
       serviceAccountName: signed-agent-sa
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
+        runAsNonRoot: true` + runAsUserYAML("1000") + `
         seccompProfile:
           type: RuntimeDefault
       initContainers:
@@ -425,7 +472,7 @@ spec:
               memory: 32Mi
       containers:
         - name: agent
-          image: docker.io/python:3.11-slim
+          image: ` + pythonImage() + `
           imagePullPolicy: IfNotPresent
           command: ["python3", "-m", "http.server", "8080", "--directory", "/app"]
           ports:
@@ -531,8 +578,7 @@ spec:
         app.kubernetes.io/name: runtime-agent-target
     spec:
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
+        runAsNonRoot: true` + runAsUserYAML("1000") + `
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -599,8 +645,7 @@ spec:
         app.kubernetes.io/name: runtime-tool-target
     spec:
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
+        runAsNonRoot: true` + runAsUserYAML("1000") + `
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -692,8 +737,7 @@ spec:
         app.kubernetes.io/name: runtime-sts-target
     spec:
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
+        runAsNonRoot: true` + runAsUserYAML("1000") + `
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -744,8 +788,7 @@ spec:
         app.kubernetes.io/name: runtime-minimal-target
     spec:
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
+        runAsNonRoot: true` + runAsUserYAML("1000") + `
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -796,8 +839,7 @@ spec:
         app.kubernetes.io/name: runtime-overrides-target
     spec:
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
+        runAsNonRoot: true` + runAsUserYAML("1000") + `
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -944,13 +986,12 @@ spec:
     spec:
       serviceAccountName: authbridge-agent
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
+        runAsNonRoot: true` + runAsUserYAML("1000") + `
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: echo
-          image: docker.io/python:3.11-slim
+          image: ` + pythonImage() + `
           imagePullPolicy: IfNotPresent
           command:
             - python3
@@ -1012,8 +1053,7 @@ spec:
         kagenti.io/inject: disabled
     spec:
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
+        runAsNonRoot: true` + runAsUserYAML("1000") + `
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -1098,13 +1138,12 @@ spec:
     spec:
       serviceAccountName: combined-agent
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
+        runAsNonRoot: true` + runAsUserYAML("1000") + `
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: echo
-          image: docker.io/python:3.11-slim
+          image: ` + pythonImage() + `
           imagePullPolicy: IfNotPresent
           command:
             - python3
@@ -1265,8 +1304,7 @@ spec:
         kagenti.io/inject: disabled
     spec:
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
+        runAsNonRoot: true` + runAsUserYAML("1000") + `
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -1323,8 +1361,7 @@ spec:
         kagenti.io/inject: disabled
     spec:
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
+        runAsNonRoot: true` + runAsUserYAML("1000") + `
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -1377,8 +1414,7 @@ spec:
         kagenti.io/inject: disabled
     spec:
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
+        runAsNonRoot: true` + runAsUserYAML("1000") + `
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -1461,8 +1497,7 @@ spec:
         app.kubernetes.io/name: istio-mesh-agent
     spec:
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
+        runAsNonRoot: true` + runAsUserYAML("1000") + `
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -1512,8 +1547,7 @@ spec:
         app.kubernetes.io/name: istio-mesh-optout-agent
     spec:
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
+        runAsNonRoot: true` + runAsUserYAML("1000") + `
         seccompProfile:
           type: RuntimeDefault
       containers:
