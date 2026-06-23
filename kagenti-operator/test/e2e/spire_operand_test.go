@@ -72,7 +72,7 @@ var _ = Describe("SPIRE Operand Controller E2E", Ordered, func() {
 
 		By("setting SPIRE trust domain for SPIRE operand controller (no ZTWIM CR to discover from in Kind)")
 		setEnvCmd := exec.Command("kubectl", "set", "env",
-			"deployment/kagenti-controller-manager",
+			"deployment/kagenti-operator-controller-manager",
 			"-n", controllerNamespace,
 			"KAGENTI_SPIRE_TRUST_DOMAIN=example.org")
 		_, err = utils.Run(setEnvCmd)

@@ -308,7 +308,7 @@ func SpireOperandCRDExists(cfg *rest.Config) bool {
 
 	for attempt := range 3 {
 		if attempt > 0 {
-			delay := time.Duration(attempt) * 5 * time.Second
+			delay := time.Duration(attempt) * time.Second
 			spireOperandLogger.Info("Retrying ZTWIM CRD discovery", "attempt", attempt+1, "delay", delay)
 			time.Sleep(delay)
 		}
