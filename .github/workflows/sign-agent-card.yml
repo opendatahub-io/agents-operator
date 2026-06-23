@@ -24,12 +24,12 @@ jobs:
           python-version: "3.13"
 
       - name: Install UV
-        uses: astral-sh/setup-uv@eb1897b8dc4b5d5bfe39a428a8f2304605e0983c # v7.0.0
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           version: "latest"
 
       - name: Cache UV dependencies
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ~/.cache/uv
           key: ${{ runner.os }}-uv-sigstore-a2a-293f9bd
