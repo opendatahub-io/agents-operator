@@ -325,7 +325,6 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 		"namespace", namespace, "crName", crName,
 		"mode", egressEnforcement, "source", egressEnforcementSource)
 
-
 	// ========================================
 	// Resolve TLS bridge posture (CR > namespace > "disabled")
 	// ========================================

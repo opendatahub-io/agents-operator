@@ -87,7 +87,7 @@ kind delete cluster
 | Missing target error | Error cases | AgentRuntime targeting non-existent Deployment sets TargetResolved=False |
 | Tool type label | Tool type | AgentRuntime with type=tool applies `kagenti.io/type=tool` label and no AgentCard is created |
 | StatefulSet target | StatefulSet target | AgentRuntime applies labels, config-hash, and reaches Active for a StatefulSet workload |
-| Identity/trace overrides | Identity and trace overrides | AgentRuntime with identity+trace spec produces the same config-hash as a minimal CR (CR fields excluded from hash) |
+| CR overrides | CR overrides | AgentRuntime with CR overrides produces the same config-hash as a minimal CR (CR fields excluded from hash) |
 ## Architecture
 
 ### What gets installed
@@ -358,13 +358,13 @@ the StatefulSet target identically to Deployments via `runtimePodTemplateAccesso
 verifies `kagenti.io/type=agent` and `app.kubernetes.io/managed-by=kagenti-operator` on
 StatefulSet metadata, Phase=Active, and a valid 64-char config-hash on the pod template.
 
-#### Identity and trace overrides
+#### CR overrides
 
 Deploys two target Deployments and creates two AgentRuntime CRs: one minimal (no overrides)
-and one with `spec.identity.spiffe.trustDomain` and `spec.trace` (endpoint, protocol, sampling
-rate). Both CRs reach Phase=Active. The test records each Deployment's `kagenti.io/config-hash`
-annotation and asserts they are the same, confirming that CR-level overrides are excluded from
-the config hash (2-layer merge). The webhook reads CR overrides at pod CREATE time instead.
+and one with CR-level fields. Both CRs reach Phase=Active. The test records each Deployment's
+`kagenti.io/config-hash` annotation and asserts they are the same, confirming that CR-level
+overrides are excluded from the config hash (2-layer merge). The webhook reads CR overrides
+at pod CREATE time instead.
 
 ## Troubleshooting
 

@@ -148,7 +148,7 @@ The controller computes the config hash from platform-level configuration only (
 └──────────────────────────────────────┘
 ```
 
-**CR-level overrides** (type, identity, authBridgeMode, mtlsMode, skills) are **not** included in the controller's config hash. The webhook reads these fields at pod CREATE time.
+**CR-level overrides** (type, authBridgeMode, mtlsMode, skills) are **not** included in the controller's config hash. The webhook reads these fields at pod CREATE time.
 
 **Feature gates** (`kagenti-feature-gates` ConfigMap) are platform-wide policy and are **not** part of the merge hierarchy. They control which sidecar components are enabled globally and cannot be overridden by namespace defaults or AgentRuntime CRs.
 
@@ -199,7 +199,6 @@ When `perWorkloadConfigResolution` is **true**, the webhook resolves all config 
 
 A `ValidatingAdmissionPolicy` prevents the `kagenti.io/type` label from being set directly on Deployments or StatefulSets. Only the operator's service account (via the AgentRuntime controller) can apply this label. This ensures every enrolled workload has a corresponding AgentRuntime CR, which provides:
 - Automatic rolling updates on config change (any layer)
-- Per-workload identity overrides
 - Status reporting (phase, conditions, configured pod count)
 - Graceful cleanup via finalizer
 

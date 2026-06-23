@@ -71,7 +71,7 @@ func SetClusterDefaultsNamespace(ns string) {
 
 // resolvedConfig is the canonical representation used for hash computation.
 // It captures the 2-layer merge of cluster defaults → namespace defaults.
-// CR-level fields (type, identity, skills, etc.) are NOT included — the
+// CR-level fields (type, authBridgeMode, mtlsMode, etc.) are NOT included — the
 // webhook reads those at pod CREATE time (RHAIENG-4936).
 type resolvedConfig struct {
 	FeatureGates map[string]string `json:"featureGates,omitempty"`

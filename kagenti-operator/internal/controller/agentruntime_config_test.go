@@ -118,7 +118,7 @@ var _ = Describe("AgentRuntime Config", func() {
 			Expect(r1.Hash).To(Equal(r2.Hash))
 		})
 
-		It("should NOT change when identity/TrustDomain changes", func() {
+		It("should NOT change when CR-level fields change", func() {
 			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace)
 			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace)
 			Expect(r1.Hash).To(Equal(r2.Hash))

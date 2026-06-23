@@ -402,7 +402,7 @@ The controller computes the config hash from two platform layers (highest priori
 1. **Namespace defaults** — ConfigMap with `kagenti.io/defaults=true` label in the workload's namespace
 2. **Cluster defaults** — `kagenti-platform-config` ConfigMap in `kagenti-system`
 
-> **Note:** Per-CR overrides (identity, authBridgeMode, mtlsMode) are **not** included in the controller's config hash. The webhook reads these fields at pod CREATE time.
+> **Note:** Per-CR overrides (authBridgeMode, mtlsMode) are **not** included in the controller's config hash. The webhook reads these fields at pod CREATE time.
 
 > **Note:** Feature gates (`kagenti-feature-gates`) are platform-wide policy and are **not** overrideable by namespace defaults or AgentRuntime CRs. They control which AuthBridge components (envoy proxy, SPIFFE helper, client registration) are enabled globally, and whether skill discovery (`skillDiscovery`) is active.
 
@@ -412,22 +412,6 @@ The controller computes the config hash from two platform layers (highest priori
 |-------|------|----------|-------------|
 | `type` | string | Yes | Classifies the workload as `agent` or `tool` |
 | `targetRef` | [TargetRef](#targetref) | Yes | Identifies the workload backing this runtime (uses the same TargetRef type as AgentCard) |
-| `identity` | [IdentitySpec](#identityspec) | No | Optional per-workload identity overrides |
-
-#### IdentitySpec
-
-Configures workload identity for an AgentRuntime.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `spiffe` | [SPIFFEIdentity](#spiffeidentity) | No | SPIFFE identity configuration overrides |
-
-#### SPIFFEIdentity
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `trustDomain` | string | No | Overrides the operator-level `--spire-trust-domain` for this workload. If empty, the operator flag value is used. Must match pattern: `^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$` |
-
 ### Labels and Annotations Applied to Target Workloads
 
 The AgentRuntime controller applies the following labels and annotations to the target workload:

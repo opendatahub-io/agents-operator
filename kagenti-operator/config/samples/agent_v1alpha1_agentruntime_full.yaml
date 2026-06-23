@@ -1,5 +1,4 @@
-# Full AgentRuntime: enroll a Deployment as an agent with per-workload overrides.
-# Overrides the SPIFFE trust domain for this workload.
+# Full AgentRuntime: enroll a Deployment as an agent.
 apiVersion: agent.kagenti.dev/v1alpha1
 kind: AgentRuntime
 metadata:
@@ -13,6 +12,3 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: weather-agent
-  identity:
-    spiffe:
-      trustDomain: custom.example.com

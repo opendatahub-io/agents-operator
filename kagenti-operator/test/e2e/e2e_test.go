@@ -1542,8 +1542,8 @@ rules:
 		})
 	})
 
-	Context("Identity overrides", func() {
-		It("should produce a different config-hash than a minimal CR", func() {
+	Context("CR overrides (no identity)", func() {
+		It("should produce the same config-hash as a minimal CR (CR fields excluded from hash)", func() {
 			By("deploying two target workloads")
 			_, err := utils.KubectlApplyStdin(runtimeMinimalTargetDeploymentFixture(), agentRuntimeTestNamespace)
 			Expect(err).NotTo(HaveOccurred())
@@ -1559,7 +1559,7 @@ rules:
 			_, err = utils.KubectlApplyStdin(runtimeMinimalCRFixture(), agentRuntimeTestNamespace)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("creating AgentRuntime CR with identity overrides")
+			By("creating AgentRuntime CR with overrides")
 			_, err = utils.KubectlApplyStdin(runtimeOverridesCRFixture(), agentRuntimeTestNamespace)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1603,7 +1603,7 @@ rules:
 
 			By("verifying config-hashes are the same (CR fields excluded from 2-layer hash)")
 			Expect(overridesHash).To(Equal(minimalHash),
-				"identity overrides should NOT affect config-hash (CR fields excluded)")
+				"CR overrides should NOT affect config-hash (CR fields excluded)")
 
 			By("cleaning up")
 			cmd := exec.Command("kubectl", "delete", "agentruntime", "test-minimal-runtime", "test-overrides-runtime",

@@ -907,7 +907,9 @@ spec:
 `
 }
 
-// runtimeOverridesCRFixture returns YAML for an AgentRuntime CR with identity overrides.
+// runtimeOverridesCRFixture returns YAML for an AgentRuntime CR with CR-level overrides.
+// The mtlsMode override is a real spec field that the controller stamps as an annotation
+// but excludes from the config hash, so the hash should match the minimal CR.
 func runtimeOverridesCRFixture() string {
 	return `apiVersion: agent.kagenti.dev/v1alpha1
 kind: AgentRuntime
@@ -920,9 +922,7 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: runtime-overrides-target
-  identity:
-    spiffe:
-      trustDomain: custom.example.com
+  mtlsMode: strict
 `
 }
 
@@ -1245,7 +1245,7 @@ spec:
 }
 
 // combinedAgentRuntimeFixture returns YAML for an AgentRuntime CR targeting
-// the combined-agent Deployment with SPIFFE identity override.
+// the combined-agent Deployment.
 func combinedAgentRuntimeFixture() string {
 	return `apiVersion: agent.kagenti.dev/v1alpha1
 kind: AgentRuntime
@@ -1258,9 +1258,6 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: combined-agent
-  identity:
-    spiffe:
-      trustDomain: example.org
 `
 }
 

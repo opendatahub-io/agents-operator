@@ -79,7 +79,7 @@ These checks run first in `PodMutator.InjectAuthBridge()` (`internal/webhook/inj
 | 3 | Tool gate | `featureGates.injectTools` | `kagenti.io/type=tool` and gate is `false` |
 | 4 | Workload opt-out | Pod label `kagenti.io/inject` | Value is `disabled` |
 | 5 | Per-sidecar precedence | See Phase 2 | All sidecars evaluate to skip |
-| 6 | AgentRuntime CR | `ReadAgentRuntimeOverrides()` | No matching CR found in namespace |
+| 6 | AgentRuntime CR | Matches by `spec.targetRef.name` | No matching CR found in namespace |
 
 ### Phase 2: Per-Sidecar Precedence Evaluation
 
@@ -133,17 +133,23 @@ When the `perWorkloadConfigResolution` feature gate is enabled, the webhook reso
 
 ```
 ┌──────────────────────────────────────┐
-│ Layer 3: AgentRuntime CR overrides   │  ← highest precedence
-│   (spec.identity)                    │
-├──────────────────────────────────────┤
-│ Layer 2: Namespace ConfigMaps        │
+│ Layer 2: Namespace ConfigMaps        │  ← higher precedence
 │   (authbridge-config,                │
+│    authbridge-runtime-config,        │
 │    spiffe-helper-config, etc.)       │
 ├──────────────────────────────────────┤
 │ Layer 1: PlatformConfig              │  ← lowest precedence
 │   (compiled defaults + config.yaml)  │
 └──────────────────────────────────────┘
 ```
+
+> **Note:** The webhook does **not** read AgentRuntime CR spec fields
+> (`authBridgeMode`, `mtlsMode`, `tlsBridgeMode`, `egressEnforcement`)
+> at admission time. Mode resolution uses the namespace
+> `authbridge-runtime-config` ConfigMap exclusively. CR spec fields are
+> consumed by the **controller** (for annotations and status conditions)
+> and the **validating webhook** (for compatibility checks), not by the
+> mutating webhook's injection logic.
 
 ### Layer 1: PlatformConfig (compiled defaults + config file)
 
@@ -167,49 +173,40 @@ When the `perWorkloadConfigResolution` feature gate is enabled, the webhook reso
 
 **Merge behavior**: Each ConfigMap is read independently. Missing ConfigMaps result in empty strings for those fields. Non-empty namespace values override PlatformConfig defaults.
 
-### Layer 3: AgentRuntime CR Overrides
+### Mode Resolution (authBridgeMode, mtlsMode, tlsBridgeMode, egressEnforcement)
 
-**Source**: The `AgentRuntime` CR matching the workload via `spec.targetRef.name`, read by `ReadAgentRuntimeOverrides()` (`internal/webhook/injector/agentruntime_config.go`).
+The webhook resolves operational modes from the namespace `authbridge-runtime-config` ConfigMap using `Extract*()` helpers (`internal/webhook/injector/namespace_config.go`). Each mode falls back to a hardcoded default if the ConfigMap key is absent:
 
-**Overridable fields**:
-
-| AgentRuntime field | ResolvedConfig field | Description |
-|-------------------|---------------------|-------------|
-| `spec.identity.spiffe.trustDomain` | `SpiffeTrustDomain` | SPIFFE trust domain |
-| `spec.identity.clientRegistration.realm` | `KeycloakRealm` | Keycloak realm (future — not yet in CRD) |
-
-**Non-overridable fields** (always from PlatformConfig or namespace CMs):
-- Container images, resource limits, proxy ports
-- Token exchange settings (tokenURL, audience, scopes)
-- Sidecar configuration files (envoy.yaml, helper.conf, routes.yaml)
-
-**Merge behavior**: Only non-nil AgentRuntime override fields replace the value from lower layers. Nil fields (absent from the CR spec) leave the lower-layer value intact.
+| Mode | ConfigMap key | Extractor | Default |
+|------|--------------|-----------|---------|
+| `authBridgeMode` | `mode:` | `ExtractMode()` | `proxy-sidecar` |
+| `mtlsMode` | `mtls.mode:` | `ExtractMTLSMode()` | `permissive` |
+| `tlsBridgeMode` | `tls_bridge.mode:` | `ExtractTLSBridgeMode()` | `disabled` |
+| `egressEnforcement` | `egressEnforcement:` | `ExtractEgressEnforcement()` | `enforce-redirect` |
 
 ### Merge Code Path
 
 ```
 PodMutator.InjectAuthBridge()                       ← pod_mutator.go
   │
-  ├─ ReadAgentRuntimeOverrides(ctx, client, ns, name)  ← agentruntime_config.go
-  │     Lists AgentRuntime CRs, matches spec.targetRef.name
-  │     Returns *AgentRuntimeOverrides (nil if no match)
+  ├─ ReadNamespaceConfig(ctx, client, ns)            ← namespace_config.go
+  │     Reads well-known ConfigMaps from namespace
+  │     Returns *NamespaceConfig
+  │
+  ├─ Extract*(nsConfig.AuthBridgeRuntimeYAML)        ← namespace_config.go
+  │     Resolves authBridgeMode, mtlsMode,
+  │     tlsBridgeMode, egressEnforcement
   │
   ├─ [if perWorkloadConfigResolution=true]
-  │   ├─ ReadNamespaceConfig(ctx, client, ns)           ← namespace_config.go
-  │   │     Reads 4 well-known ConfigMaps from namespace
-  │   │     Returns *NamespaceConfig
-  │   │
-  │   ├─ ResolveConfig(platform, nsConfig, arOverrides) ← resolved_config.go
-  │   │     Starts with namespace CM values
-  │   │     Falls back to PlatformConfig for spiffeTrustDomain
-  │   │     Applies AgentRuntime overrides (highest precedence)
+  │   ├─ ResolveConfig(platform, nsConfig)           ← resolved_config.go
+  │   │     Merges namespace CM values with PlatformConfig
   │   │     Returns *ResolvedConfig
   │   │
-  │   └─ NewResolvedContainerBuilder(resolved)          ← container_builder.go
+  │   └─ NewResolvedContainerBuilder(resolved)       ← container_builder.go
   │         Builds containers with literal env var values
   │
   └─ [if perWorkloadConfigResolution=false (default)]
-      └─ NewContainerBuilder(platformConfig)            ← container_builder.go
+      └─ NewContainerBuilder(platformConfig)         ← container_builder.go
             Builds containers with ValueFrom ConfigMapKeyRef/SecretKeyRef
             Kubelet resolves values at container start time
 ```

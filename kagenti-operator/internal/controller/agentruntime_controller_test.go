@@ -551,7 +551,7 @@ var _ = Describe("AgentRuntime Controller", func() {
 		})
 	})
 
-	Context("When the AgentRuntime has identity overrides", func() {
+	Context("When the AgentRuntime has CR overrides", func() {
 		var dep *appsv1.Deployment
 		var rt *agentv1alpha1.AgentRuntime
 
@@ -571,9 +571,7 @@ var _ = Describe("AgentRuntime Controller", func() {
 						Kind:       "Deployment",
 						Name:       "override-deploy",
 					},
-					Identity: &agentv1alpha1.IdentitySpec{
-						SPIFFE: &agentv1alpha1.SPIFFEIdentity{TrustDomain: "custom.org"},
-					},
+					MTLSMode: "strict",
 				},
 			}
 			Expect(k8sClient.Create(ctx, rt)).To(Succeed())

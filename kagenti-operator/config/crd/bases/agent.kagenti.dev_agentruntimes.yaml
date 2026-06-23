@@ -38,8 +38,7 @@ spec:
       openAPIV3Schema:
         description: |-
           AgentRuntime attaches runtime configuration to a backing workload classified as an
-          agent or tool, providing per-workload overrides for SPIFFE identity.
-          The controller reports pod configuration coverage and phase in status.
+          agent or tool. The controller reports pod configuration coverage and phase in status.
         properties:
           apiVersion:
             description: |-
@@ -120,29 +119,6 @@ spec:
                 - enforce-redirect
                 - none
                 type: string
-              identity:
-                description: Identity specifies optional per-workload identity overrides
-                properties:
-                  allowedAudiences:
-                    description: |-
-                      AllowedAudiences specifies additional JWT audiences that the AuthProxy
-                      sidecar should accept for inbound requests. This is a transitional
-                      mechanism to support application-to-agent flows until the auth model
-                      is finalized. See https://github.com/kagenti/kagenti-operator/issues/368
-                    items:
-                      type: string
-                    type: array
-                  spiffe:
-                    description: SPIFFE specifies SPIFFE identity configuration overrides
-                    properties:
-                      trustDomain:
-                        description: |-
-                          TrustDomain overrides the operator-level --spire-trust-domain for this workload.
-                          If empty, the operator flag value is used.
-                        pattern: ^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$
-                        type: string
-                    type: object
-                type: object
               mtlsMode:
                 default: permissive
                 description: |-

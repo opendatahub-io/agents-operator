@@ -56,10 +56,6 @@ type AgentRuntimeSpec struct {
 	// TargetRef identifies the workload backing this agent runtime (duck typing).
 	TargetRef TargetRef `json:"targetRef"`
 
-	// Identity specifies optional per-workload identity overrides
-	// +optional
-	Identity *IdentitySpec `json:"identity,omitempty"`
-
 	// AuthBridgeMode selects the deployment shape for this workload's
 	// authbridge sidecar. When unset, the namespace-level
 	// authbridge-runtime-config ConfigMap's mode is used; if that is
@@ -161,29 +157,6 @@ type AgentRuntimeSpec struct {
 	EgressEnforcement string `json:"egressEnforcement,omitempty"`
 }
 
-// IdentitySpec configures workload identity for an AgentRuntime.
-type IdentitySpec struct {
-	// SPIFFE specifies SPIFFE identity configuration overrides
-	// +optional
-	SPIFFE *SPIFFEIdentity `json:"spiffe,omitempty"`
-
-	// AllowedAudiences specifies additional JWT audiences that the AuthProxy
-	// sidecar should accept for inbound requests. This is a transitional
-	// mechanism to support application-to-agent flows until the auth model
-	// is finalized. See https://github.com/kagenti/kagenti-operator/issues/368
-	// +optional
-	AllowedAudiences []string `json:"allowedAudiences,omitempty"`
-}
-
-// SPIFFEIdentity configures SPIFFE workload identity for an AgentRuntime.
-type SPIFFEIdentity struct {
-	// TrustDomain overrides the operator-level --spire-trust-domain for this workload.
-	// If empty, the operator flag value is used.
-	// +optional
-	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$`
-	TrustDomain string `json:"trustDomain,omitempty"`
-}
-
 // CardStatus holds the fetched A2A agent card data along with fetch metadata
 // and optional verification results. Populated by the card discovery phase when
 // --enable-card-discovery is set.
@@ -258,8 +231,7 @@ type AgentRuntimeStatus struct {
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // AgentRuntime attaches runtime configuration to a backing workload classified as an
-// agent or tool, providing per-workload overrides for SPIFFE identity.
-// The controller reports pod configuration coverage and phase in status.
+// agent or tool. The controller reports pod configuration coverage and phase in status.
 type AgentRuntime struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
