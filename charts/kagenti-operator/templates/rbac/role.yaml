@@ -251,10 +251,17 @@ rules:
 - apiGroups:
   - operator.openshift.io
   resources:
+  - spiffecsidrivers
+  - spireagents
+  - spireoidcdiscoveryproviders
+  - spireservers
   - zerotrustworkloadidentitymanagers
   verbs:
+  - create
   - get
   - list
+  - update
+  - watch
 - apiGroups:
   - operator.tekton.dev
   resources:
