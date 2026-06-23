@@ -70,6 +70,14 @@ var _ = Describe("SPIRE Operand Controller E2E", Ordered, func() {
 		Expect(utils.DeployController(controllerNamespace, projectImage)).To(Succeed(),
 			"Failed to deploy controller")
 
+		By("setting SPIRE trust domain for SPIRE operand controller (no ZTWIM CR to discover from in Kind)")
+		setEnvCmd := exec.Command("kubectl", "set", "env",
+			"deployment/kagenti-controller-manager",
+			"-n", controllerNamespace,
+			"KAGENTI_SPIRE_TRUST_DOMAIN=example.org")
+		_, err = utils.Run(setEnvCmd)
+		Expect(err).NotTo(HaveOccurred())
+
 		By("waiting for controller-manager to be ready")
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
