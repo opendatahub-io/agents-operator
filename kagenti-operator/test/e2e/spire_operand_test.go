@@ -237,21 +237,21 @@ var _ = Describe("SPIRE Operand Controller E2E", Ordered, func() {
 	})
 
 	It("should reconcile drift when ZTWIM spec is modified", func() {
-		By("patching ZTWIM clusterName to wrong value")
+		By("patching ZTWIM bundleConfigMap to wrong value")
 		cmd := exec.Command("kubectl", "patch",
 			"zerotrustworkloadidentitymanagers.operator.openshift.io", "cluster",
-			"--type=merge", "-p", `{"spec":{"clusterName":"wrong-name"}}`)
+			"--type=merge", "-p", `{"spec":{"bundleConfigMap":"wrong-bundle"}}`)
 		_, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
 
-		By("waiting for clusterName to be restored")
+		By("waiting for bundleConfigMap to be restored")
 		Eventually(func(g Gomega) {
 			output, err := utils.KubectlGetJsonpath(
 				"zerotrustworkloadidentitymanagers.operator.openshift.io",
-				"cluster", "", "{.spec.clusterName}")
+				"cluster", "", "{.spec.bundleConfigMap}")
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(strings.TrimSpace(output)).To(Equal("agent-platform"))
-		}).Should(Succeed(), "ZTWIM clusterName was not restored after drift")
+			g.Expect(strings.TrimSpace(output)).To(Equal("spire-bundle"))
+		}).Should(Succeed(), "ZTWIM bundleConfigMap was not restored after drift")
 	})
 
 	It("should reconcile drift when child spec is modified", func() {
