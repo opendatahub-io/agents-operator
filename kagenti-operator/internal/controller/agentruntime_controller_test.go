@@ -702,7 +702,7 @@ var _ = Describe("AgentRuntime Controller", func() {
 		})
 
 		AfterEach(func() {
-			for _, name := range templateConfigMapNames {
+			for _, name := range []string{"authbridge-config", "authbridge-runtime-config", "envoy-config"} {
 				cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ClusterDefaultsNamespace}}
 				_ = k8sClient.Delete(ctx, cm)
 				cm = &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cmTestNS}}
@@ -807,12 +807,134 @@ var _ = Describe("AgentRuntime Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "authbridge-config", Namespace: cmTestNS}, abCfg)).To(Succeed())
 			Expect(abCfg.Data["KEYCLOAK_URL"]).To(Equal("http://existing"))
 
-			// The other 3 should be created from templates
-			for _, name := range []string{"authbridge-runtime-config", "spiffe-helper-config"} {
+			// authbridge-runtime-config should be created from template
+			for _, name := range []string{"authbridge-runtime-config"} {
 				cm := &corev1.ConfigMap{}
 				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: cmTestNS}, cm)).To(Succeed())
 				Expect(cm.Data["config.yaml"]).To(Equal("template-" + name))
 				Expect(cm.Labels[LabelManagedBy]).To(Equal(LabelManagedByValue))
+			}
+		})
+	})
+
+	Context("When ensuring spiffe-helper-config from PlatformConfig", func() {
+		const shTestNS = "sh-test-ns"
+
+		BeforeEach(func() {
+			testNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: shTestNS}}
+			_ = k8sClient.Create(ctx, testNS)
+		})
+
+		AfterEach(func() {
+			cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "spiffe-helper-config", Namespace: shTestNS}}
+			_ = k8sClient.Delete(ctx, cm)
+		})
+
+		It("should create spiffe-helper-config when missing", func() {
+			r := newReconciler()
+			r.GetPlatformConfig = func() *webhookconfig.PlatformConfig {
+				cfg := webhookconfig.CompiledDefaults()
+				cfg.Spiffe.HelperConfig = "test_agent_address = \"/test/socket\""
+				return cfg
+			}
+
+			Expect(r.ensureSpiffeHelperConfigMap(ctx, shTestNS)).To(Succeed())
+
+			created := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "spiffe-helper-config", Namespace: shTestNS}, created)).To(Succeed())
+			Expect(created.Data["helper.conf"]).To(Equal("test_agent_address = \"/test/socket\""))
+			Expect(created.Labels[LabelManagedBy]).To(Equal(LabelManagedByValue))
+		})
+
+		It("should overwrite spiffe-helper-config when content differs", func() {
+			existing := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "spiffe-helper-config",
+					Namespace: shTestNS,
+				},
+				Data: map[string]string{"helper.conf": "old_content"},
+			}
+			Expect(k8sClient.Create(ctx, existing)).To(Succeed())
+
+			r := newReconciler()
+			r.GetPlatformConfig = func() *webhookconfig.PlatformConfig {
+				cfg := webhookconfig.CompiledDefaults()
+				cfg.Spiffe.HelperConfig = "new_content"
+				return cfg
+			}
+
+			Expect(r.ensureSpiffeHelperConfigMap(ctx, shTestNS)).To(Succeed())
+
+			updated := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "spiffe-helper-config", Namespace: shTestNS}, updated)).To(Succeed())
+			Expect(updated.Data["helper.conf"]).To(Equal("new_content"))
+		})
+
+		It("should be idempotent when content matches", func() {
+			existing := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "spiffe-helper-config",
+					Namespace: shTestNS,
+					Labels:    map[string]string{LabelManagedBy: LabelManagedByValue},
+				},
+				Data: map[string]string{"helper.conf": "same_content"},
+			}
+			Expect(k8sClient.Create(ctx, existing)).To(Succeed())
+
+			r := newReconciler()
+			r.GetPlatformConfig = func() *webhookconfig.PlatformConfig {
+				cfg := webhookconfig.CompiledDefaults()
+				cfg.Spiffe.HelperConfig = "same_content"
+				return cfg
+			}
+
+			Expect(r.ensureSpiffeHelperConfigMap(ctx, shTestNS)).To(Succeed())
+
+			result := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "spiffe-helper-config", Namespace: shTestNS}, result)).To(Succeed())
+			Expect(result.Data["helper.conf"]).To(Equal("same_content"))
+		})
+
+		It("should adopt label on leftover CM with matching content", func() {
+			existing := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "spiffe-helper-config",
+					Namespace: shTestNS,
+					Labels:    map[string]string{"app.kubernetes.io/managed-by": "kustomize"},
+				},
+				Data: map[string]string{"helper.conf": "same_content"},
+			}
+			Expect(k8sClient.Create(ctx, existing)).To(Succeed())
+
+			r := newReconciler()
+			r.GetPlatformConfig = func() *webhookconfig.PlatformConfig {
+				cfg := webhookconfig.CompiledDefaults()
+				cfg.Spiffe.HelperConfig = "same_content"
+				return cfg
+			}
+
+			Expect(r.ensureSpiffeHelperConfigMap(ctx, shTestNS)).To(Succeed())
+
+			result := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "spiffe-helper-config", Namespace: shTestNS}, result)).To(Succeed())
+			Expect(result.Data["helper.conf"]).To(Equal("same_content"))
+			Expect(result.Labels[LabelManagedBy]).To(Equal(LabelManagedByValue))
+		})
+
+		It("should use CompiledDefaults when GetPlatformConfig is nil", func() {
+			r := newReconciler()
+			Expect(r.ensureSpiffeHelperConfigMap(ctx, shTestNS)).To(Succeed())
+
+			created := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "spiffe-helper-config", Namespace: shTestNS}, created)).To(Succeed())
+			Expect(created.Data["helper.conf"]).To(Equal(webhookconfig.DefaultSpiffeHelperConfig))
+		})
+	})
+
+	Context("When templateConfigMapNames excludes spiffe-helper-config", func() {
+		It("should not contain spiffe-helper-config", func() {
+			for _, name := range templateConfigMapNames {
+				Expect(name).NotTo(Equal("spiffe-helper-config"))
 			}
 		})
 	})

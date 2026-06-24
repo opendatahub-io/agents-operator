@@ -48,6 +48,11 @@ const (
 	// ConfigMap are watched by AgentRuntimeReconciler so the resolved-config
 	// hash picks them up and rolls affected workloads.
 	AuthBridgeRuntimeConfigMapName = "authbridge-runtime-config"
+
+	// SpiffeHelperConfigMapName is the namespace-scoped ConfigMap holding
+	// the spiffe-helper helper.conf. Derived from PlatformConfig by the
+	// controller; included in the config hash for rolling updates.
+	SpiffeHelperConfigMapName = "spiffe-helper-config"
 )
 
 // ClusterDefaultsNamespace is the namespace where cluster-level ConfigMaps
@@ -84,6 +89,10 @@ type resolvedConfig struct {
 	// we want any byte change to roll the workload. Empty string when
 	// the ConfigMap doesn't exist in the namespace.
 	AuthBridgeRuntime string `json:"authBridgeRuntime,omitempty"`
+
+	// SpiffeHelperConfig captures the spiffe-helper-config CM content so
+	// changes to PlatformConfig's spiffe.helperConfig trigger rolling updates.
+	SpiffeHelperConfig string `json:"spiffeHelperConfig,omitempty"`
 }
 
 // ConfigResult holds the computed hash and any warnings from the config resolution.
@@ -130,10 +139,19 @@ func resolveConfig(ctx context.Context, c client.Reader, namespace string) (reso
 		abRuntime = data["config.yaml"]
 	}
 
+	// Layer 2c: spiffe-helper-config (helper.conf).
+	// Derived from PlatformConfig by the controller; included in hash
+	// so changes to spiffe.helperConfig trigger rolling updates.
+	spiffeHelper := ""
+	if data := readConfigMapData(ctx, c, namespace, SpiffeHelperConfigMapName); len(data) > 0 {
+		spiffeHelper = data["helper.conf"]
+	}
+
 	return resolvedConfig{
-		FeatureGates:      featureGates,
-		Defaults:          merged,
-		AuthBridgeRuntime: abRuntime,
+		FeatureGates:       featureGates,
+		Defaults:           merged,
+		AuthBridgeRuntime:  abRuntime,
+		SpiffeHelperConfig: spiffeHelper,
 	}, warnings
 }
 

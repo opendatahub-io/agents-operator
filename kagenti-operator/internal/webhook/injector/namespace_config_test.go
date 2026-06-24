@@ -48,16 +48,12 @@ func TestReadNamespaceConfig_AllPresent(t *testing.T) {
 			"DEFAULT_OUTBOUND_POLICY": "passthrough",
 		},
 	}
-	spiffeCM := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: SpiffeHelperConfigMapName, Namespace: "ns1"},
-		Data:       map[string]string{"helper.conf": "agent_address = \"/spiffe-workload-api/spire-agent.sock\""},
-	}
 	routesCM := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: AuthproxyRoutesConfigMapName, Namespace: "ns1"},
 		Data:       map[string]string{"routes.yaml": "routes: []"},
 	}
 
-	reader := newFakeReader(abCM, spiffeCM, routesCM)
+	reader := newFakeReader(abCM, routesCM)
 	cfg, err := ReadNamespaceConfig(context.Background(), reader, "ns1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -74,9 +70,6 @@ func TestReadNamespaceConfig_AllPresent(t *testing.T) {
 	}
 	if cfg.Issuer != "http://keycloak:8080/realms/demo" {
 		t.Errorf("Issuer = %q", cfg.Issuer)
-	}
-	if cfg.SpiffeHelperConf == "" {
-		t.Error("SpiffeHelperConf is empty")
 	}
 	if cfg.TargetAudience != "auth-target" {
 		t.Errorf("TargetAudience = %q", cfg.TargetAudience)

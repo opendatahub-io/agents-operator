@@ -227,9 +227,14 @@ func logConfig(cfg *PlatformConfig, source string) {
 		"defaultAudience", cfg.TokenExchange.DefaultAudience,
 		"defaultScopes", cfg.TokenExchange.DefaultScopes,
 	)
+	helperSnippet := cfg.Spiffe.HelperConfig
+	if len(helperSnippet) > 80 {
+		helperSnippet = helperSnippet[:80] + "..."
+	}
 	log.Info("[config] spiffe",
 		"trustDomain", cfg.Spiffe.TrustDomain,
 		"socketPath", cfg.Spiffe.SocketPath,
+		"helperConfig", helperSnippet,
 	)
 	log.Info("=============================================")
 }

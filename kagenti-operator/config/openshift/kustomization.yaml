@@ -12,4 +12,3 @@ resources:
 
 patches:
 - path: patches/authbridge-keycloak.yaml
-- path: patches/spiffe-helper-keycloak.yaml
