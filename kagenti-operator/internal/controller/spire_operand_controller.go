@@ -69,6 +69,7 @@ type SpireOperandReconciler struct {
 	Scheme      *runtime.Scheme
 	Recorder    record.EventRecorder
 	TrustDomain string
+	ClusterName string
 }
 
 // +kubebuilder:rbac:groups=operator.openshift.io,resources=zerotrustworkloadidentitymanagers,verbs=create;get;list;update;watch
@@ -91,16 +92,21 @@ func (r *SpireOperandReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
-	// trustDomain is immutable on the ZTWIM CR — once set by the initial
-	// creator (bootstrap or Helm), it cannot be changed. Read the existing
-	// value and use it for all spec builders so we never trigger a rejected
-	// update. Fall back to our configured TrustDomain only for new CRs.
+	// trustDomain and clusterName are immutable on the ZTWIM CR — once set
+	// by the initial creator (bootstrap or Helm), they cannot be changed.
+	// Read existing values and use them for spec builders so we never
+	// trigger a rejected update. Fall back to configured values only for
+	// new CRs.
 	effectiveTD := r.TrustDomain
 	if td, found, _ := unstructured.NestedString(existing.Object, "spec", "trustDomain"); found && td != "" {
 		effectiveTD = td
 	}
+	effectiveCN := r.ClusterName
+	if cn, found, _ := unstructured.NestedString(existing.Object, "spec", "clusterName"); found && cn != "" {
+		effectiveCN = cn
+	}
 
-	if err := r.ensureUnstructuredCR(ctx, kd.ZTWIMGVK, spireOperandName, r.ztwimSpec(effectiveTD)); err != nil {
+	if err := r.ensureUnstructuredCR(ctx, kd.ZTWIMGVK, spireOperandName, r.ztwimSpec(effectiveTD, effectiveCN)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring ZTWIM CR: %w", err)
 	}
 
@@ -201,10 +207,13 @@ func mergeNestedMap(dst, src map[string]interface{}) {
 
 // --- Spec builders ---
 
-func (r *SpireOperandReconciler) ztwimSpec(trustDomain string) map[string]interface{} {
+func (r *SpireOperandReconciler) ztwimSpec(trustDomain, clusterName string) map[string]interface{} {
+	if clusterName == "" {
+		clusterName = "agent-platform"
+	}
 	return map[string]interface{}{
 		"trustDomain":     trustDomain,
-		"clusterName":     "agent-platform",
+		"clusterName":     clusterName,
 		"bundleConfigMap": "spire-bundle",
 	}
 }
@@ -340,6 +349,7 @@ func SpireOperandCRDExists(cfg *rest.Config) bool {
 type SpireBootstrapRunnable struct {
 	Client      client.Client
 	TrustDomain string
+	ClusterName string
 	Log         logr.Logger
 }
 
@@ -351,6 +361,8 @@ func (b *SpireBootstrapRunnable) Start(ctx context.Context) error {
 	if err := b.Client.Get(ctx, types.NamespacedName{Name: spireOperandName}, existing); err == nil {
 		b.Log.Info("SPIRE bootstrap: ZTWIM CR already exists, skipping creation")
 		return nil
+	} else if !errors.IsNotFound(err) {
+		return fmt.Errorf("checking ZTWIM CR existence: %w", err)
 	}
 
 	obj := &unstructured.Unstructured{}
@@ -360,9 +372,13 @@ func (b *SpireBootstrapRunnable) Start(ctx context.Context) error {
 		LabelManagedBy: LabelManagedByValue,
 	})
 
+	clusterName := b.ClusterName
+	if clusterName == "" {
+		clusterName = "agent-platform"
+	}
 	spec := map[string]interface{}{
 		"trustDomain":     b.TrustDomain,
-		"clusterName":     "agent-platform",
+		"clusterName":     clusterName,
 		"bundleConfigMap": "spire-bundle",
 	}
 	if err := unstructured.SetNestedField(obj.Object, spec, "spec"); err != nil {

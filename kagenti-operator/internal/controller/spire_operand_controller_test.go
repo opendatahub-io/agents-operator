@@ -362,10 +362,16 @@ var _ = Describe("SPIRE Operand Controller", func() {
 
 		It("should include trustDomain only in ZTWIM spec", func() {
 			r := &SpireOperandReconciler{TrustDomain: testTrustDomain}
-			spec := r.ztwimSpec(testTrustDomain)
+			spec := r.ztwimSpec(testTrustDomain, "")
 			Expect(spec["trustDomain"]).To(Equal(testTrustDomain))
 			Expect(spec["clusterName"]).To(Equal("agent-platform"))
 			Expect(spec["bundleConfigMap"]).To(Equal("spire-bundle"))
+		})
+
+		It("should use custom clusterName when provided", func() {
+			r := &SpireOperandReconciler{TrustDomain: testTrustDomain, ClusterName: "custom-cluster"}
+			spec := r.ztwimSpec(testTrustDomain, "custom-cluster")
+			Expect(spec["clusterName"]).To(Equal("custom-cluster"))
 		})
 
 		It("should preserve existing trustDomain on reconcile", func() {
