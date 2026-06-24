@@ -113,6 +113,7 @@ type AgentRuntimeReconciler struct {
 	EnableCardDiscovery  bool
 	SpireTrustDomain     string
 	GetFeatureGates      func() *webhookconfig.FeatureGates
+	GetPlatformConfig    func() *webhookconfig.PlatformConfig
 }
 
 func (r *AgentRuntimeReconciler) getFeatureGates() *webhookconfig.FeatureGates {
@@ -120,6 +121,15 @@ func (r *AgentRuntimeReconciler) getFeatureGates() *webhookconfig.FeatureGates {
 		return r.GetFeatureGates()
 	}
 	return webhookconfig.DefaultFeatureGates()
+}
+
+func (r *AgentRuntimeReconciler) getPlatformConfig() *webhookconfig.PlatformConfig {
+	if r.GetPlatformConfig != nil {
+		if cfg := r.GetPlatformConfig(); cfg != nil {
+			return cfg
+		}
+	}
+	return webhookconfig.CompiledDefaults()
 }
 
 // +kubebuilder:rbac:groups=agent.kagenti.dev,resources=agentruntimes,verbs=get;list;watch;create;update;patch;delete
@@ -194,6 +204,19 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 	}
 
+	// 4.5b. Ensure spiffe-helper-config CM is derived from PlatformConfig.
+	// Unlike template CMs above, this always overwrites to keep PlatformConfig
+	// as the single source of truth.
+	if err := r.ensureSpiffeHelperConfigMap(ctx, rt.Namespace); err != nil {
+		logger.Error(err, "Failed to ensure spiffe-helper-config")
+		if r.Recorder != nil {
+			r.Recorder.Eventf(rt, nil, corev1.EventTypeWarning, "ConfigMapEnsureError",
+				"EnsureSpiffeHelperConfig", err.Error())
+		}
+		r.updateErrorStatus(ctx, req.NamespacedName, ConditionTypeReady, "SpiffeHelperConfigError", err.Error())
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
 	// 4.6. Ensure namespace has Istio ambient mesh labels for ztunnel mTLS.
 	istioLabeled, istioErr := r.ensureIstioMeshLabels(ctx, rt.Namespace)
 	switch {
@@ -235,7 +258,7 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// 5. Compute config hash from merged configuration (cluster → namespace)
-	configResult, err := ComputeConfigHash(ctx, r.Client, rt.Namespace)
+	configResult, err := ComputeConfigHash(ctx, r.uncachedReader(), rt.Namespace)
 	if err != nil {
 		logger.Error(err, "Failed to compute config hash")
 		r.updateErrorStatus(ctx, req.NamespacedName, ConditionTypeReady, "ConfigHashError", err.Error())
@@ -1045,7 +1068,6 @@ func computeCardContentHash(cardData *agentv1alpha1.AgentCardData) string {
 var templateConfigMapNames = []string{
 	"authbridge-config",
 	"authbridge-runtime-config",
-	"spiffe-helper-config",
 }
 
 // ensureNamespaceConfigMaps copies template ConfigMaps from kagenti-system to the
@@ -1094,6 +1116,65 @@ func (r *AgentRuntimeReconciler) ensureNamespaceConfigMaps(ctx context.Context, 
 		}
 		logger.Info("Created ConfigMap from template", "namespace", namespace, "name", name)
 	}
+	return nil
+}
+
+// ensureSpiffeHelperConfigMap creates or updates the spiffe-helper-config ConfigMap
+// in the target namespace using content from PlatformConfig. Unlike template CMs
+// which are create-if-not-exists, this always overwrites because PlatformConfig is
+// the single source of truth.
+func (r *AgentRuntimeReconciler) ensureSpiffeHelperConfigMap(ctx context.Context, namespace string) error {
+	logger := log.FromContext(ctx)
+	cfg := r.getPlatformConfig()
+
+	desired := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      SpiffeHelperConfigMapName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				LabelManagedBy: LabelManagedByValue,
+			},
+		},
+		Data: map[string]string{
+			"helper.conf": cfg.Spiffe.HelperConfig,
+		},
+	}
+
+	existing := &corev1.ConfigMap{}
+	err := r.uncachedReader().Get(ctx, client.ObjectKey{Namespace: namespace, Name: SpiffeHelperConfigMapName}, existing)
+	if apierrors.IsNotFound(err) {
+		if err := r.Create(ctx, desired); err != nil {
+			if apierrors.IsAlreadyExists(err) {
+				return nil
+			}
+			return fmt.Errorf("failed to create spiffe-helper-config in %s: %w", namespace, err)
+		}
+		logger.Info("Created spiffe-helper-config from PlatformConfig", "namespace", namespace)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to check spiffe-helper-config in %s: %w", namespace, err)
+	}
+
+	needsUpdate := existing.Data["helper.conf"] != cfg.Spiffe.HelperConfig
+
+	if existing.Labels == nil {
+		existing.Labels = make(map[string]string)
+	}
+	if existing.Labels[LabelManagedBy] != LabelManagedByValue {
+		existing.Labels[LabelManagedBy] = LabelManagedByValue
+		needsUpdate = true
+	}
+
+	if !needsUpdate {
+		return nil
+	}
+
+	existing.Data = desired.Data
+	if err := r.Update(ctx, existing); err != nil {
+		return fmt.Errorf("failed to update spiffe-helper-config in %s: %w", namespace, err)
+	}
+	logger.Info("Updated spiffe-helper-config from PlatformConfig", "namespace", namespace)
 	return nil
 }
 

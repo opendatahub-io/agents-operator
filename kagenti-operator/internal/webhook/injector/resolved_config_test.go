@@ -65,14 +65,10 @@ func TestResolveConfig_SpiffeTrustDomain_FromPlatform(t *testing.T) {
 
 func TestResolveConfig_SidecarConfigs_FromNamespace(t *testing.T) {
 	ns := &NamespaceConfig{
-		SpiffeHelperConf:    "helper.conf content",
 		AuthproxyRoutesYAML: "routes.yaml content",
 	}
 
 	resolved := ResolveConfig(config.CompiledDefaults(), ns)
-	if resolved.SpiffeHelperConf != "helper.conf content" {
-		t.Errorf("SpiffeHelperConf should come from namespace")
-	}
 	if resolved.AuthproxyRoutesYAML != "routes.yaml content" {
 		t.Errorf("AuthproxyRoutesYAML should come from namespace")
 	}

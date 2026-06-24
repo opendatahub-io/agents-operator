@@ -220,6 +220,32 @@ var _ = Describe("AgentRuntime Config", func() {
 			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace)
 			Expect(r1.Hash).NotTo(Equal(r2.Hash))
 		})
+
+		It("should change when spiffe-helper-config content changes", func() {
+			const shHashNS = "sh-hash-ns"
+			shNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: shHashNS}}
+			_ = k8sClient.Create(ctx, shNS)
+
+			shCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "spiffe-helper-config",
+					Namespace: shHashNS,
+				},
+				Data: map[string]string{
+					"helper.conf": "agent_address = \"/old/socket\"",
+				},
+			}
+			Expect(k8sClient.Create(ctx, shCM)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, shCM) }()
+
+			r1, _ := ComputeConfigHash(ctx, k8sClient, shHashNS)
+
+			shCM.Data["helper.conf"] = "agent_address = \"/new/socket\""
+			Expect(k8sClient.Update(ctx, shCM)).To(Succeed())
+
+			r2, _ := ComputeConfigHash(ctx, k8sClient, shHashNS)
+			Expect(r1.Hash).NotTo(Equal(r2.Hash))
+		})
 	})
 
 	Context("resolveConfig two-layer merge", func() {

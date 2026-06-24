@@ -284,3 +284,21 @@ defaults:
       limits:
         cpu: 300m
         memory: 384Mi
+
+  # SPIFFE / spiffe-helper settings.
+  # Keep helperConfig in sync with DefaultSpiffeHelperConfig in internal/webhook/config/defaults.go.
+  spiffe:
+    trustDomain: cluster.local
+    socketPath: "unix:///spiffe-workload-api/spire-agent.sock"
+    helperConfig: |
+      agent_address = "/spiffe-workload-api/spire-agent.sock"
+      cmd = ""
+      cmd_args = ""
+      svid_file_name = "/opt/svid.pem"
+      svid_key_file_name = "/opt/svid_key.pem"
+      svid_bundle_file_name = "/opt/svid_bundle.pem"
+      cert_file_mode = 0644
+      key_file_mode = 0640
+      jwt_svids = [{jwt_audience="http://keycloak.localtest.me:8080/realms/kagenti", jwt_svid_file_name="/opt/jwt_svid.token"}]
+      jwt_svid_file_mode = 0644
+      include_federated_domains = true

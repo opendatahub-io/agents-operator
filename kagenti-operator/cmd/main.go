@@ -631,6 +631,7 @@ func main() {
 		EnableCardDiscovery: enableCardDiscovery,
 		SpireTrustDomain:    spireTrustDomain,
 		GetFeatureGates:     featureGateLoader.Get,
+		GetPlatformConfig:   configLoader.Get,
 	}
 	if enableCardDiscovery {
 		artReconciler.AgentFetcher = agentFetcher

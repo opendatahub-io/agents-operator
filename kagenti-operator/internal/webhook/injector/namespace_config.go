@@ -53,9 +53,6 @@ type NamespaceConfig struct {
 	SpiffeIdpAlias        string // Keycloak SPIFFE Identity Provider alias (e.g., "spire-spiffe")
 	JWTAudience           string // Audience for SPIFFE JWT-SVIDs (token-exchange identity.jwt_audience)
 
-	// From "spiffe-helper-config" ConfigMap
-	SpiffeHelperConf string // raw helper.conf content
-
 	// From "authproxy-routes" ConfigMap
 	AuthproxyRoutesYAML string // raw routes.yaml content
 
@@ -91,12 +88,9 @@ func ReadNamespaceConfig(ctx context.Context, c client.Reader, namespace string)
 	// uses SecretKeyRef to reference the secret by name, keeping credentials out of
 	// the NamespaceConfig struct and the webhook's memory.
 
-	// Read "spiffe-helper-config" ConfigMap
-	if cm, err := getConfigMap(ctx, c, namespace, SpiffeHelperConfigMapName); err != nil {
-		nsConfigLog.V(1).Info("ConfigMap not found", "name", SpiffeHelperConfigMapName, "namespace", namespace, "error", err)
-	} else {
-		cfg.SpiffeHelperConf = cm.Data["helper.conf"]
-	}
+	// Note: spiffe-helper-config is NOT read here. The controller derives it
+	// from PlatformConfig via ensureSpiffeHelperConfigMap(). The volume mount
+	// still references SpiffeHelperConfigMapName directly.
 
 	// Read "authproxy-routes" ConfigMap
 	if cm, err := getConfigMap(ctx, c, namespace, AuthproxyRoutesConfigMapName); err != nil {

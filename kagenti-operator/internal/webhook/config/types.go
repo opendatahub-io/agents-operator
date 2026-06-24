@@ -86,8 +86,9 @@ type TokenExchangeDefaults struct {
 }
 
 type SpiffeConfig struct {
-	TrustDomain string `json:"trustDomain" yaml:"trustDomain"`
-	SocketPath  string `json:"socketPath" yaml:"socketPath"`
+	TrustDomain  string `json:"trustDomain" yaml:"trustDomain"`
+	SocketPath   string `json:"socketPath" yaml:"socketPath"`
+	HelperConfig string `json:"helperConfig" yaml:"helperConfig"`
 }
 
 type ObservabilityConfig struct {

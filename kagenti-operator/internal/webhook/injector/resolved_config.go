@@ -45,7 +45,6 @@ type ResolvedConfig struct {
 	SpiffeIdpAlias        string // Keycloak SPIFFE Identity Provider alias
 
 	// Sidecar configs — from namespace CMs
-	SpiffeHelperConf    string
 	AuthproxyRoutesYAML string
 
 	// AuthBridge runtime config — from namespace "authbridge-runtime-config" ConfigMap
@@ -86,7 +85,6 @@ func ResolveConfig(platform *config.PlatformConfig, ns *NamespaceConfig) *Resolv
 		DefaultOutboundPolicy:      ns.DefaultOutboundPolicy,
 		ClientAuthType:             ns.ClientAuthType,
 		SpiffeIdpAlias:             ns.SpiffeIdpAlias,
-		SpiffeHelperConf:           ns.SpiffeHelperConf,
 		AuthproxyRoutesYAML:        ns.AuthproxyRoutesYAML,
 		AuthBridgeRuntimeYAML:      ns.AuthBridgeRuntimeYAML,
 	}
