@@ -744,6 +744,35 @@ func main() {
 		}
 	}
 
+	if controller.SpireOperandCRDExists(mgr.GetConfig()) {
+		if spireTrustDomain == "" {
+			setupLog.Info("ZTWIM CRDs present but SPIRE trust domain not available; " +
+				"SPIRE operand controller will not start until trust domain is discoverable")
+		} else {
+			spireClusterName := os.Getenv("KAGENTI_SPIRE_CLUSTER_NAME")
+			if err := mgr.Add(&controller.SpireBootstrapRunnable{
+				Client:      mgr.GetClient(),
+				TrustDomain: spireTrustDomain,
+				ClusterName: spireClusterName,
+				Log:         ctrl.Log.WithName("spire-bootstrap"),
+			}); err != nil {
+				setupLog.Error(err, "unable to add SPIRE bootstrap runnable")
+				os.Exit(1)
+			}
+			if err = (&controller.SpireOperandReconciler{
+				Client:      mgr.GetClient(),
+				Scheme:      mgr.GetScheme(),
+				Recorder:    mgr.GetEventRecorderFor("spire-operand-controller"),
+				TrustDomain: spireTrustDomain,
+				ClusterName: spireClusterName,
+			}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "SpireOperand")
+				os.Exit(1)
+			}
+			setupLog.Info("SPIRE operand controller enabled", "trustDomain", spireTrustDomain)
+		}
+	}
+
 	// Validation webhooks
 	// For local testing without webhook certificates, set ENABLE_WEBHOOKS=false:
 	//   ENABLE_WEBHOOKS=false ./bin/manager --leader-elect=false [other flags...]
