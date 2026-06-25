@@ -133,6 +133,10 @@ spec:
             - name: KAGENTI_SPIRE_TRUST_DOMAIN
               value: {{ .Values.signatureVerification.spireTrustDomain | quote }}
             {{- end }}
+            {{- if and .Values.signatureVerification .Values.signatureVerification.spireClusterName }}
+            - name: KAGENTI_SPIRE_CLUSTER_NAME
+              value: {{ .Values.signatureVerification.spireClusterName | quote }}
+            {{- end }}
             {{- if .Values.controllerManager.container.env }}
             {{- range $key, $value := .Values.controllerManager.container.env }}
             - name: {{ $key }}

@@ -61,6 +61,9 @@ Reconciles `AgentCard` CRs by resolving the backing workload via `spec.targetRef
 ### AgentCard Sync Controller
 Watches Deployments and StatefulSets labeled with `kagenti.io/type=agent` and one or more `protocol.kagenti.io/<name>` labels (e.g., `protocol.kagenti.io/a2a`). Automatically creates AgentCard resources with `targetRef` pointing to the discovered workloads. Sets owner references for garbage collection.
 
+### SPIRE Operand Controller
+Creates and reconciles 5 SPIRE operand CRs (`operator.openshift.io/v1alpha1`) when ZTWIM CRDs are present on the cluster. CRD-gated — no feature flag needed, automatically activates on OpenShift 4.19+. Manages ZeroTrustWorkloadIdentityManager (parent), SpiffeCSIDriver, SpireServer, SpireAgent, and SpireOIDCDiscoveryProvider (children). Corrects drift on any manual change or deletion. Uses a bootstrap runnable to create the initial ZTWIM CR at startup.
+
 ### NetworkPolicy Controller
 Watches AgentCard resources when `--enforce-network-policies` is enabled. Creates permissive NetworkPolicies for agents with verified signatures and restrictive NetworkPolicies for unverified agents. When identity binding is configured, both signature and binding must pass for permissive access.
 

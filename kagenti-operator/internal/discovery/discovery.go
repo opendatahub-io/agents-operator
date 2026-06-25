@@ -24,7 +24,8 @@ var (
 		Version: "v1",
 		Kind:    "Route",
 	}
-	ztwimGVK = schema.GroupVersionKind{
+	// ZTWIMGVK is the GroupVersionKind for the ZeroTrustWorkloadIdentityManager CR.
+	ZTWIMGVK = schema.GroupVersionKind{
 		Group:   "operator.openshift.io",
 		Version: "v1alpha1",
 		Kind:    "ZeroTrustWorkloadIdentityManager",
@@ -92,7 +93,7 @@ func DiscoverSPIRETrustDomain(ctx context.Context, c client.Reader, spireNamespa
 
 func discoverFromZTWIM(ctx context.Context, c client.Reader) (string, error) {
 	ztwim := &unstructured.Unstructured{}
-	ztwim.SetGroupVersionKind(ztwimGVK)
+	ztwim.SetGroupVersionKind(ZTWIMGVK)
 	if err := c.Get(ctx, types.NamespacedName{Name: "cluster"}, ztwim); err != nil {
 		return "", err
 	}

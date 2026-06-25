@@ -164,6 +164,8 @@ signatureVerification:
   # Set here only to override auto-discovery. Used by ClientRegistrationReconciler
   # to build SPIFFE-shaped Keycloak client IDs (spiffe://<trust-domain>/ns/<ns>/sa/<sa>).
   spireTrustDomain: ""
+  # SPIRE cluster name for the ZTWIM CR. Defaults to "agent-platform" if empty.
+  spireClusterName: ""
   # Key within the SPIRE trust bundle ConfigMap. Matches the SPIRE hardened Helm chart default
   # and the binary flag default. Override to "bundle.crt" only for older ZTWIM deployments.
   spireTrustBundle:
